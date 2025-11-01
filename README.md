@@ -1,35 +1,79 @@
-# AETHER - Autonomous Trading Agent
+# AETHER - Autonomous AI Trading Agent
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![React 18](https://img.shields.io/badge/react-18-blue.svg)](https://reactjs.org/)
+[![DeepSeek AI](https://img.shields.io/badge/AI-DeepSeek-purple.svg)](https://www.deepseek.com/)
 
-A sophisticated autonomous cryptocurrency trading agent powered by DeepSeek AI, featuring real-time market analysis, intelligent risk management, and a modern web dashboard for monitoring and control.
+**AETHER** is a sophisticated autonomous cryptocurrency trading agent powered by **DeepSeek AI**. It combines multi-timeframe technical analysis, intelligent risk management, and real-time execution with a beautiful web dashboard for complete control and monitoring.
 
-## 🎯 Features
+### Why AETHER?
 
-### Core Trading Capabilities
-- **Hybrid Strategy System**: Combines rule-based technical analysis (ATR-filtered Trend/Breakout, EMA) with AI-powered risk filtering
-- **AI-Only Mode**: Full autonomous decision-making using DeepSeek LLM
-- **Intelligent Risk Management**: Position sizing, leverage limits, stop-loss/take-profit monitoring, daily loss caps
-- **Multi-Exchange Support**: Binance (testnet & live) and Hyperliquid
-- **Real-time Execution**: Automated order placement with configurable intervals
+- **AI-Powered Decision Making** - DeepSeek AI analyzes market conditions and validates every trade
+- **Multi-Timeframe Analysis** - Combines 1D, 4H, 1H, 15m, 5m, and 1m data for comprehensive market view
+- **Adaptive Strategies** - Automatically switches between swing trading and scalping based on market conditions
+- **Smart Risk Management** - Dynamic position sizing, leverage limits, and automatic stop-loss/take-profit
+- **Interactive AI Chat** - Ask your agent questions and get real-time market insights
+- **Modern Dashboard** - Beautiful, responsive UI with live charts and real-time updates
+
+## Key Features
+
+### Trading Intelligence
+- **Adaptive Strategy System** - Automatically switches between swing trading (multi-day holds) and scalping (quick in-and-out) based on market conditions
+- **AI Risk Filter** - DeepSeek AI validates every trade, vetoing risky entries and approving high-confidence setups
+- **Multi-Timeframe Analysis** - Analyzes 6 timeframes simultaneously (1D → 1m) for comprehensive market view
+- **Volume Confirmation** - Requires strong volume (1.2x-1.5x average) to confirm breakouts and avoid fake moves
+- **Support/Resistance Detection** - Automatically calculates pivot points, swing highs/lows, and key price levels
+- **VWAP Filtering** - Uses Volume-Weighted Average Price to identify institutional order flow
+
+### Risk Management
+- **Smart Position Sizing** - Adaptive risk based on account size (5% for <$500, 3% for <$1K, 1% for $1K+)
+- **Dynamic Leverage** - Automatically scales leverage based on portfolio size (1x-3x)
+- **Auto Stop-Loss/Take-Profit** - Every position has automatic exit levels (0.2% SL, 0.3% TP for scalps)
+- **Daily Loss Cap** - Optional daily loss limit to prevent catastrophic drawdowns
+- **Cooldown Periods** - Prevents rapid-fire trading and overtrading
+- **Virtual Equity Mode** - Test with $100 virtual balance while using real testnet account
 
 ### Dashboard Features
-- **Live Market Chart**: Interactive candlestick/area charts with trade markers using TradingView Lightweight Charts
-- **Position Monitoring**: Real-time P&L tracking, leverage, notional values, and exit plans
-- **Trade History**: Complete audit trail with holding times, entry/exit prices, and performance metrics
-- **Agent Chat**: Intelligent message filtering showing key decisions and market analysis
-- **Emergency Controls**: One-click kill switch to close all positions, pause/resume agent
+- **Live TradingView Charts** - Professional candlestick/area charts with trade markers
+- **Interactive AI Chat** - Ask your agent questions like "when will you trade?" and get real-time answers
+- **Real-Time P&L Tracking** - Monitor unrealized P&L, leverage, and position details live
+- **Complete Trade History** - Audit trail with entry/exit prices, holding times, and performance
+- **Emergency Controls** - One-click kill switch to close all positions + pause/resume agent
+- **Agent Messages** - Intelligent filtering shows only key decisions and market analysis
 
 ### Technical Indicators
-- EMA (20, 50 periods)
-- RSI (14 period)
-- ATR (14 period)
-- Keltner Channels
-- Real-time price action analysis
+- **EMA** (50-period) - Trend direction
+- **RSI** (14-period) - Momentum and overbought/oversold
+- **ATR** (14-period) - Volatility measurement
+- **Keltner Channels** - Breakout detection
+- **VWAP** (1h, 5m) - Institutional order flow
+- **Pivot Points** (R1-R3, S1-S3) - Support/resistance levels
+- **OBV** (On-Balance Volume) - Volume trend confirmation
 
-## 🏗️ Architecture
+## How It Works
+
+AETHER operates in a continuous 30-second cycle, analyzing markets and making decisions:
+
+1. **Data Collection** - Fetches OHLCV data from exchange for 6 timeframes (1D, 4H, 1H, 15m, 5m, 1m)
+2. **Indicator Calculation** - Computes EMA, RSI, ATR, Keltner Channels, VWAP, Pivot Points, and volume metrics
+3. **Strategy Analysis** - Rule-based strategies (ATR Breakout or EMA Crossover) generate trade signals
+4. **AI Validation** - DeepSeek AI reviews the signal and market context, approving or vetoing the trade
+5. **Risk Check** - Risk manager validates position size, leverage, and portfolio limits
+6. **Execution** - If approved, order is placed on exchange with automatic stop-loss/take-profit
+7. **Monitoring** - Position is tracked every cycle for exit conditions (SL/TP hit, trend reversal, etc.)
+8. **Communication** - Agent sends intelligent updates to dashboard and responds to user questions
+
+### Decision Flow
+
+```
+Market Data → Strategy Signal → AI Filter → Risk Manager → Execute
+                                    ↓
+                              [VETO if risky]
+                              [APPROVE if confident]
+```
+
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -78,25 +122,39 @@ A sophisticated autonomous cryptocurrency trading agent powered by DeepSeek AI, 
         └──────────────────────────────────────────────┘
 ```
 
-## 📋 Prerequisites
+## Prerequisites
 
 - **Python 3.8+** with pip
 - **Node.js 16+** and npm
 - **Exchange Account**: Binance testnet (recommended) or live account
 - **DeepSeek API Key**: Get one at [platform.deepseek.com](https://platform.deepseek.com)
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Clone the Repository
 
+**Bash / Linux / macOS:**
 ```bash
 git clone <repository-url>
-cd spooky
+cd aether-trading-agent
+```
+
+**PowerShell / Windows:**
+```powershell
+git clone <repository-url>
+cd aether-trading-agent
 ```
 
 ### 2. Backend Setup
 
+**Bash / Linux / macOS:**
 ```bash
+cd backend
+pip install -r requirements.txt
+```
+
+**PowerShell / Windows:**
+```powershell
 cd backend
 pip install -r requirements.txt
 ```
@@ -120,44 +178,68 @@ MAX_LEVERAGE=3.0
 RUN_MODE=testnet
 
 # Strategy Mode: hybrid_atr, hybrid_ema, or ai_only
-STRATEGY_MODE=hybrid_atr
+STRATEGY_MODE=hybrid_atr or STRATEGY_MODE=ai_only
 DECISION_PROVIDER=deepseek
+
+# Virtual Equity (optional) - Test with virtual balance instead of real account balance
+# VIRTUAL_STARTING_EQUITY=100.0
 ```
 
 ### 3. Frontend Setup
 
+**Bash / Linux / macOS:**
 ```bash
+cd frontend
+npm install
+```
+
+**PowerShell / Windows:**
+```powershell
 cd frontend
 npm install
 ```
 
 ### 4. Start the Services
 
-**Terminal 1 - Start FastAPI Server:**
-```bash
-cd backend
-python api_server.py
-```
-The API server will run on `http://localhost:8000`
+**Terminal 1 - Start Trading Agent (includes API server):**
 
-**Terminal 2 - Start Trading Agent:**
+Bash / Linux / macOS:
 ```bash
 cd backend
 python main.py
 ```
 
-**Terminal 3 - Start Frontend:**
+PowerShell / Windows:
+```powershell
+cd backend
+python main.py
+```
+
+This will start both the trading loop AND the API server on `http://localhost:8000`
+
+**Terminal 2 - Start Frontend:**
+
+Bash / Linux / macOS:
 ```bash
 cd frontend
 npm run dev
 ```
+
+PowerShell / Windows:
+```powershell
+cd frontend
+npm run dev
+```
+
 The frontend will run on `http://localhost:3000`
 
 ### 5. Access the Dashboard
 
 Open your browser and navigate to `http://localhost:3000`
 
-## 📖 Configuration
+> **Note**: The trading agent now automatically starts the API server in a background thread. You no longer need to run `api_server.py` separately!
+
+## Configuration
 
 ### Environment Variables
 
@@ -189,7 +271,7 @@ Open your browser and navigate to `http://localhost:3000`
 - **`hybrid_ema`**: Simple EMA crossover strategy with AI risk filtering
 - **`ai_only`**: Pure AI decision-making without rule-based signals
 
-## 🔌 API Endpoints
+## API Endpoints
 
 ### Frontend → Backend Communication
 
@@ -200,6 +282,7 @@ Open your browser and navigate to `http://localhost:3000`
 | `/api/positions` | PUT | Sync all positions (used by agent) |
 | `/api/trades` | GET | Get completed trades history |
 | `/api/agent-messages` | GET | Get agent chat messages |
+| `/api/agent-chat` | POST | Send message to AI agent and get response |
 | `/api/emergency-close` | POST | Trigger emergency close all positions |
 | `/api/agent/pause` | POST | Pause the trading agent |
 | `/api/agent/resume` | POST | Resume the trading agent |
@@ -211,7 +294,7 @@ Open your browser and navigate to `http://localhost:3000`
 2. **Frontend → API Server**: Frontend polls API every 5 seconds via GET requests
 3. **Real-time Updates**: Position sync happens on each cycle, balance updates on P&L changes
 
-## 🎮 Usage
+## Usage
 
 ### Dashboard Controls
 
@@ -233,9 +316,14 @@ Open your browser and navigate to `http://localhost:3000`
 - Displays net P&L for each trade
 
 **Agent Chat Tab:**
+- **Interactive AI Chat** - Ask your agent questions in real-time!
+  - "when will you trade?" → Get specific entry conditions
+  - "why are you holding?" → Understand current market analysis
+  - "what's your strategy?" → Learn about decision-making process
 - Intelligent message filtering (no spam)
 - Shows buy/sell decisions, price targets, market analysis
 - Timestamped messages from DeepSeek AI
+- Auto-scrolls to latest messages
 
 #### Chart
 - Interactive candlestick or area chart
@@ -244,7 +332,7 @@ Open your browser and navigate to `http://localhost:3000`
 - Real-time price updates from Binance API
 
 
-## 🛡️ Safety Features
+## Safety Features
 
 ### Risk Management
 - **Position Sizing**: Configurable percentage of equity per trade
@@ -355,7 +443,7 @@ Each cycle is logged as a JSON object with:
 - Check `emergency_close.flag` exists in backend directory
 - Verify file permissions
 
-## 🚧 Development
+## Development
 
 ### Adding New Strategies
 
@@ -376,9 +464,23 @@ Each cycle is logged as a JSON object with:
 - Components: Modify React components in `frontend/src/components/`
 - API calls: Update `App.jsx` fetch endpoints
 
-##  License
+## License
 
-MIT License
+Apache License 2.0
+
+Copyright 2025 AETHER Trading Agent Contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 
 ## Disclaimer
 
