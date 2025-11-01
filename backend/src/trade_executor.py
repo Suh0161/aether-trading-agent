@@ -147,8 +147,8 @@ class TradeExecutor:
         order_value_usd = equity * size_pct
         order_size = order_value_usd / price
         
-        # Binance minimum notional value is ~$5 USD
-        MIN_ORDER_VALUE_USD = 5.0
+        # Binance minimum notional value is ~$10 USD (testnet requires higher minimum)
+        MIN_ORDER_VALUE_USD = 10.0
         
         if order_value_usd < MIN_ORDER_VALUE_USD:
             logger.warning(
