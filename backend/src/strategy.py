@@ -168,6 +168,11 @@ class ATRBreakoutStrategy:
         
         # === LONG ENTRY LOGIC ===
         if in_uptrend:
+            # Extract volume indicators for confirmation
+            volume_ratio_1h = indicators.get("volume_ratio_1h", 1.0)
+            volume_trend_1h = indicators.get("volume_trend_1h", "stable")
+            obv_trend_1h = indicators.get("obv_trend_1h", "neutral")
+            
             # Check entry on 15m timeframe (precise timing)
             # More reasonable conditions: breakout OR near upper band with momentum
             long_breakout_15m = keltner_upper_15m > 0 and price > keltner_upper_15m
@@ -178,21 +183,45 @@ class ATRBreakoutStrategy:
             long_primary_breakout = keltner_upper > 0 and price > keltner_upper
             long_near_upper_1h = keltner_upper > 0 and price > (keltner_upper * 0.995)
             
-            # Entry condition: Higher TF bullish + (breakout OR near band)
+            # Volume confirmation (GOAT-level addition)
+            # Strong volume: ratio > 1.5 (50% above average)
+            # Moderate volume: ratio > 1.2 (20% above average)
+            # Weak volume: ratio < 1.0 (below average)
+            volume_confirmed = volume_ratio_1h >= 1.2  # At least 20% above average
+            volume_strong = volume_ratio_1h >= 1.5  # 50% above average = strong conviction
+            
+            # OBV confirmation (money flow)
+            obv_bullish = obv_trend_1h == "bullish"
+            
+            # Entry condition: Higher TF bullish + (breakout OR near band) + VOLUME CONFIRMATION
             entry_timeframe = None
             entry_keltner = 0
             
             if (long_breakout_15m or long_near_upper_15m) and long_trend_15m:
-                # Use 15m for precise entry timing (preferred method)
-                entry_keltner = keltner_upper_15m
-                entry_timeframe = "15m"
+                # Check volume confirmation for 15m entries
+                if volume_confirmed:
+                    # Use 15m for precise entry timing (preferred method)
+                    entry_keltner = keltner_upper_15m
+                    entry_timeframe = "15m"
+                else:
+                    logger.info(f"15m long setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need ≥1.2) - waiting for confirmation")
             elif long_primary_breakout or long_near_upper_1h:
-                # Fallback to primary timeframe
-                entry_keltner = keltner_upper
-                entry_timeframe = "1h"
+                # Check volume confirmation for 1h entries
+                if volume_confirmed:
+                    # Fallback to primary timeframe
+                    entry_keltner = keltner_upper
+                    entry_timeframe = "1h"
+                else:
+                    logger.info(f"1h long setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need ≥1.2) - waiting for confirmation")
             
             if entry_timeframe:
-                # LONG entry confirmed - proceed with trade setup
+                # LONG entry confirmed with VOLUME - proceed with trade setup
+                # Boost confidence if volume is STRONG
+                base_confidence = 0.8
+                if volume_strong and obv_bullish:
+                    base_confidence = 0.95  # Very high confidence with strong volume + bullish OBV
+                    logger.info(f"[STRONG VOLUME] Confirmation: ratio={volume_ratio_1h:.2f}, OBV={obv_trend_1h}")
+                
                 return self._build_entry_signal(
                     action="long",
                     price=price,
@@ -203,11 +232,19 @@ class ATRBreakoutStrategy:
                     entry_keltner=entry_keltner,
                     trend_1d=trend_1d,
                     trend_4h=trend_4h,
-                    position_type="swing"
+                    position_type="swing",
+                    volume_ratio=volume_ratio_1h,
+                    obv_trend=obv_trend_1h,
+                    base_confidence=base_confidence
                 )
         
         # === SHORT ENTRY LOGIC ===
         elif in_downtrend:
+            # Extract volume indicators for confirmation
+            volume_ratio_1h = indicators.get("volume_ratio_1h", 1.0)
+            volume_trend_1h = indicators.get("volume_trend_1h", "stable")
+            obv_trend_1h = indicators.get("obv_trend_1h", "neutral")
+            
             # Check entry on 15m timeframe (precise timing for shorts)
             # More reasonable conditions: breakdown OR near lower band with momentum
             short_breakdown_15m = keltner_lower_15m > 0 and price < keltner_lower_15m
@@ -218,21 +255,42 @@ class ATRBreakoutStrategy:
             short_primary_breakdown = keltner_lower > 0 and price < keltner_lower
             short_near_lower_1h = keltner_lower > 0 and price < (keltner_lower * 1.005)
             
-            # Entry condition: Higher TF bearish + (breakdown OR near band)
+            # Volume confirmation (GOAT-level addition)
+            volume_confirmed = volume_ratio_1h >= 1.2  # At least 20% above average
+            volume_strong = volume_ratio_1h >= 1.5  # 50% above average = strong conviction
+            
+            # OBV confirmation (money flow)
+            obv_bearish = obv_trend_1h == "bearish"
+            
+            # Entry condition: Higher TF bearish + (breakdown OR near band) + VOLUME CONFIRMATION
             entry_timeframe = None
             entry_keltner = 0
             
             if (short_breakdown_15m or short_near_lower_15m) and short_trend_15m:
-                # Use 15m for precise entry timing (preferred method)
-                entry_keltner = keltner_lower_15m
-                entry_timeframe = "15m"
+                # Check volume confirmation for 15m entries
+                if volume_confirmed:
+                    # Use 15m for precise entry timing (preferred method)
+                    entry_keltner = keltner_lower_15m
+                    entry_timeframe = "15m"
+                else:
+                    logger.info(f"15m short setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need ≥1.2) - waiting for confirmation")
             elif short_primary_breakdown or short_near_lower_1h:
-                # Fallback to primary timeframe
-                entry_keltner = keltner_lower
-                entry_timeframe = "1h"
+                # Check volume confirmation for 1h entries
+                if volume_confirmed:
+                    # Fallback to primary timeframe
+                    entry_keltner = keltner_lower
+                    entry_timeframe = "1h"
+                else:
+                    logger.info(f"1h short setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need ≥1.2) - waiting for confirmation")
             
             if entry_timeframe:
-                # SHORT entry confirmed - proceed with trade setup
+                # SHORT entry confirmed with VOLUME - proceed with trade setup
+                # Boost confidence if volume is STRONG
+                base_confidence = 0.8
+                if volume_strong and obv_bearish:
+                    base_confidence = 0.95  # Very high confidence with strong volume + bearish OBV
+                    logger.info(f"[STRONG VOLUME] Confirmation: ratio={volume_ratio_1h:.2f}, OBV={obv_trend_1h}")
+                
                 return self._build_entry_signal(
                     action="short",
                     price=price,
@@ -243,7 +301,10 @@ class ATRBreakoutStrategy:
                     entry_keltner=entry_keltner,
                     trend_1d=trend_1d,
                     trend_4h=trend_4h,
-                    position_type="swing"
+                    position_type="swing",
+                    volume_ratio=volume_ratio_1h,
+                    obv_trend=obv_trend_1h,
+                    base_confidence=base_confidence
                 )
         
         # No clear trend or no entry signal yet
@@ -257,7 +318,9 @@ class ATRBreakoutStrategy:
     
     def _build_entry_signal(self, action: str, price: float, atr_14: float, equity: float, 
                            available_cash: float, entry_timeframe: str, entry_keltner: float,
-                           trend_1d: str, trend_4h: str, position_type: str) -> StrategySignal:
+                           trend_1d: str, trend_4h: str, position_type: str,
+                           volume_ratio: float = 1.0, obv_trend: str = "neutral",
+                           base_confidence: float = 0.8) -> StrategySignal:
         """
         Build entry signal for long or short trades.
         
@@ -272,6 +335,9 @@ class ATRBreakoutStrategy:
             trend_1d: Daily trend
             trend_4h: 4h trend
             position_type: "swing" or "scalp"
+            volume_ratio: Volume ratio (current / average)
+            obv_trend: On-Balance Volume trend ("bullish", "bearish", "neutral")
+            base_confidence: Base confidence level (adjusted for volume strength)
             
         Returns:
             StrategySignal with entry parameters
@@ -285,7 +351,7 @@ class ATRBreakoutStrategy:
                 confidence=0.3,
                 position_type=position_type
             )
-        
+            
         # Calculate stop loss and take profit based on direction
         stop_distance = atr_14 * self.stop_atr_multiplier
         
@@ -339,11 +405,19 @@ class ATRBreakoutStrategy:
         # Multi-timeframe confirmation in reason
         timeframe_info = f"Trend: 1D={trend_1d}, 4H={trend_4h}, Entry: {entry_timeframe}"
         
+        # Volume confirmation info (GOAT-level addition)
+        volume_info = f"Vol: {volume_ratio:.2f}x avg"
+        if volume_ratio >= 1.5:
+            volume_info += " [STRONG]"
+        elif volume_ratio >= 1.2:
+            volume_info += " OK"
+        obv_info = f"OBV: {obv_trend}"
+        
         return StrategySignal(
             action=action,
             size_pct=position_size_pct,
-            reason=f"Multi-TF {direction_desc}: price ${price:.2f} {keltner_comparison} {entry_timeframe} Keltner ${entry_keltner:.2f}. {timeframe_info}. SL: ${stop_loss:.2f}, TP: ${take_profit:.2f}",
-            confidence=0.85,  # Higher confidence with multi-TF confirmation
+            reason=f"Multi-TF {direction_desc}: price ${price:.2f} {keltner_comparison} {entry_timeframe} Keltner ${entry_keltner:.2f}. {timeframe_info}. {volume_info}, {obv_info}. SL: ${stop_loss:.2f}, TP: ${take_profit:.2f}",
+            confidence=base_confidence,  # Use volume-adjusted confidence
             stop_loss=stop_loss,
             take_profit=take_profit,
             position_type=position_type
@@ -414,12 +488,13 @@ class ScalpingStrategy:
         
         # If we have a LONG position, check exit conditions
         if position_size > 0:
-            # Quick exit if trend reversed
-            if trend_5m == "bearish" or trend_1m == "bearish":
+            # Exit if BOTH 5m AND 1m trends turn bearish (more conservative)
+            # OR if price drops below VWAP (losing momentum)
+            if (trend_5m == "bearish" and trend_1m == "bearish") or price < vwap_5m:
                 return StrategySignal(
                     action="close",
                     size_pct=1.0,
-                    reason=f"Scalp long exit: Trend reversed (5m={trend_5m}, 1m={trend_1m})",
+                    reason=f"Scalp long exit: Momentum lost (5m={trend_5m}, 1m={trend_1m}, price ${price:.2f} vs VWAP ${vwap_5m:.2f})",
                     confidence=0.8,
                     position_type="scalp"
                 )
@@ -434,12 +509,13 @@ class ScalpingStrategy:
         
         # If we have a SHORT position, check exit conditions
         elif position_size < 0:
-            # Quick exit if downtrend reversed
-            if trend_5m == "bullish" or trend_1m == "bullish":
+            # Exit if BOTH 5m AND 1m trends turn bullish (more conservative)
+            # OR if price rises above VWAP (losing momentum)
+            if (trend_5m == "bullish" and trend_1m == "bullish") or price > vwap_5m:
                 return StrategySignal(
                     action="close",
                     size_pct=1.0,
-                    reason=f"Scalp short exit: Downtrend reversed (5m={trend_5m}, 1m={trend_1m})",
+                    reason=f"Scalp short exit: Momentum lost (5m={trend_5m}, 1m={trend_1m}, price ${price:.2f} vs VWAP ${vwap_5m:.2f})",
                     confidence=0.8,
                     position_type="scalp"
                 )
@@ -457,6 +533,17 @@ class ScalpingStrategy:
         # === LONG SCALP ENTRY ===
         # VWAP Filter: Only long if price is above VWAP (confirms bullish intraday bias)
         if trend_5m == "bullish" and price > vwap_5m:
+            # Extract volume indicators for scalping confirmation
+            volume_ratio_5m = indicators.get("volume_ratio_5m", 1.0)
+            volume_ratio_1m = indicators.get("volume_ratio_1m", 1.0)
+            obv_trend_5m = indicators.get("obv_trend_5m", "neutral")
+            
+            # Volume confirmation for scalping (use 5m or 1m volume)
+            # For scalps, we want at least 1.3x average volume (higher threshold than swings)
+            volume_confirmed_5m = volume_ratio_5m >= 1.3
+            volume_confirmed_1m = volume_ratio_1m >= 1.3
+            volume_confirmed = volume_confirmed_5m or volume_confirmed_1m
+            
             # Check 1m momentum for longs
             long_momentum_1m = price > ema_20_1m and rsi_1m < 75  # Not overbought
             
@@ -470,11 +557,11 @@ class ScalpingStrategy:
             near_upper_1m = keltner_upper_1m > 0 and price > (keltner_upper_1m * 0.995)
             near_upper_5m = keltner_upper_5m > 0 and price > (keltner_upper_5m * 0.995)
             
-            # Entry: 5m bullish trend + price above VWAP + (breakout OR near band with momentum)
+            # Entry: 5m bullish trend + price above VWAP + (breakout OR near band with momentum) + VOLUME
             has_breakout = long_breakout_1m or long_breakout_5m
             has_momentum_entry = (near_upper_1m or near_upper_5m) and long_momentum_1m
             
-            if (has_breakout or has_momentum_entry) and long_momentum_1m:
+            if (has_breakout or has_momentum_entry) and long_momentum_1m and volume_confirmed:
                 # Calculate position size (smaller for scalping - max 3% of equity)
                 stop_distance = price * self.stop_loss_pct
                 
@@ -514,10 +601,16 @@ class ScalpingStrategy:
                     entry_type = "momentum"
                     entry_tf = "1m" if near_upper_1m else "5m"
                 
+                # Volume info for scalp
+                active_volume_ratio = volume_ratio_1m if volume_confirmed_1m else volume_ratio_5m
+                volume_info = f"Vol: {active_volume_ratio:.2f}x"
+                if active_volume_ratio >= 1.5:
+                    volume_info += " [STRONG]"  # Changed from emoji for Windows compatibility
+                
                 return StrategySignal(
                     action="long",
                     size_pct=position_size_pct,
-                    reason=f"Scalp long: {entry_tf} {entry_type}, price ${price:.2f} > VWAP ${vwap_5m:.2f}. SL: ${stop_loss:.2f}, TP: ${take_profit:.2f}",
+                    reason=f"Scalp long: {entry_tf} {entry_type}, price ${price:.2f} > VWAP ${vwap_5m:.2f}, {volume_info}. SL: ${stop_loss:.2f}, TP: ${take_profit:.2f}",
                     confidence=0.7,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
@@ -527,6 +620,17 @@ class ScalpingStrategy:
         # === SHORT SCALP ENTRY ===
         # VWAP Filter: Only short if price is below VWAP (confirms bearish intraday bias)
         elif trend_5m == "bearish" and price < vwap_5m:
+            # Extract volume indicators for scalping confirmation
+            volume_ratio_5m = indicators.get("volume_ratio_5m", 1.0)
+            volume_ratio_1m = indicators.get("volume_ratio_1m", 1.0)
+            obv_trend_5m = indicators.get("obv_trend_5m", "neutral")
+            
+            # Volume confirmation for scalping (use 5m or 1m volume)
+            # For scalps, we want at least 1.3x average volume (higher threshold than swings)
+            volume_confirmed_5m = volume_ratio_5m >= 1.3
+            volume_confirmed_1m = volume_ratio_1m >= 1.3
+            volume_confirmed = volume_confirmed_5m or volume_confirmed_1m
+            
             # Check 1m momentum for shorts
             short_momentum_1m = price < ema_20_1m and rsi_1m > 25  # Not oversold
             
@@ -540,11 +644,11 @@ class ScalpingStrategy:
             near_lower_1m = keltner_lower_1m > 0 and price < (keltner_lower_1m * 1.005)
             near_lower_5m = keltner_lower_5m > 0 and price < (keltner_lower_5m * 1.005)
             
-            # Entry: 5m bearish trend + price below VWAP + (breakdown OR near band with momentum)
+            # Entry: 5m bearish trend + price below VWAP + (breakdown OR near band with momentum) + VOLUME
             has_breakdown = short_breakdown_1m or short_breakdown_5m
             has_momentum_entry = (near_lower_1m or near_lower_5m) and short_momentum_1m
             
-            if (has_breakdown or has_momentum_entry) and short_momentum_1m:
+            if (has_breakdown or has_momentum_entry) and short_momentum_1m and volume_confirmed:
                 # Calculate position size (smaller for scalping - max 3% of equity)
                 stop_distance = price * self.stop_loss_pct
                 
@@ -584,10 +688,16 @@ class ScalpingStrategy:
                     entry_type = "momentum"
                     entry_tf = "1m" if near_lower_1m else "5m"
                 
+                # Volume info for scalp
+                active_volume_ratio = volume_ratio_1m if volume_confirmed_1m else volume_ratio_5m
+                volume_info = f"Vol: {active_volume_ratio:.2f}x"
+                if active_volume_ratio >= 1.5:
+                    volume_info += " [STRONG]"  # Changed from emoji for Windows compatibility
+                
                 return StrategySignal(
                     action="short",
                     size_pct=position_size_pct,
-                    reason=f"Scalp short: {entry_tf} {entry_type}, price ${price:.2f} < VWAP ${vwap_5m:.2f}. SL: ${stop_loss:.2f}, TP: ${take_profit:.2f}",
+                    reason=f"Scalp short: {entry_tf} {entry_type}, price ${price:.2f} < VWAP ${vwap_5m:.2f}, {volume_info}. SL: ${stop_loss:.2f}, TP: ${take_profit:.2f}",
                     confidence=0.7,
                     stop_loss=stop_loss,
                     take_profit=take_profit,

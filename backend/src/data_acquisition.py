@@ -197,6 +197,53 @@ class DataAcquisition:
             nearest_swing_high = max(swing_highs) if swing_highs else recent_high
             nearest_swing_low = min(swing_lows) if swing_lows else recent_low
             
+            # ========== VOLUME ANALYSIS ==========
+            # Calculate volume metrics for confirmation
+            current_volume = float(df['volume'].iloc[-1])
+            avg_volume_20 = float(df['volume'].rolling(window=20).mean().iloc[-1])
+            avg_volume_50 = float(df['volume'].rolling(window=50).mean().iloc[-1])
+            
+            # Volume spike detection (current volume vs average)
+            volume_ratio_20 = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
+            volume_ratio_50 = current_volume / avg_volume_50 if avg_volume_50 > 0 else 1.0
+            
+            # Volume trend (is volume increasing or decreasing?)
+            # Compare last 5 candles average vs previous 5 candles average
+            if len(df) >= 10:
+                recent_volume_avg = float(df['volume'].iloc[-5:].mean())
+                previous_volume_avg = float(df['volume'].iloc[-10:-5].mean())
+                volume_trend = "increasing" if recent_volume_avg > previous_volume_avg * 1.1 else \
+                              "decreasing" if recent_volume_avg < previous_volume_avg * 0.9 else \
+                              "stable"
+            else:
+                volume_trend = "stable"
+            
+            # On-Balance Volume (OBV) - cumulative volume indicator
+            # OBV increases on up days, decreases on down days
+            obv = 0.0
+            for i in range(1, len(df)):
+                if df['close'].iloc[i] > df['close'].iloc[i-1]:
+                    obv += df['volume'].iloc[i]
+                elif df['close'].iloc[i] < df['close'].iloc[i-1]:
+                    obv -= df['volume'].iloc[i]
+            
+            # OBV trend (is money flowing in or out?)
+            obv_sma_10 = 0.0
+            if len(df) >= 10:
+                obv_values = []
+                temp_obv = 0.0
+                for i in range(1, len(df)):
+                    if df['close'].iloc[i] > df['close'].iloc[i-1]:
+                        temp_obv += df['volume'].iloc[i]
+                    elif df['close'].iloc[i] < df['close'].iloc[i-1]:
+                        temp_obv -= df['volume'].iloc[i]
+                    obv_values.append(temp_obv)
+                
+                if len(obv_values) >= 10:
+                    obv_sma_10 = sum(obv_values[-10:]) / 10
+            
+            obv_trend = "bullish" if obv > obv_sma_10 else "bearish" if obv < obv_sma_10 else "neutral"
+            
             indicators = {
                 'ema_20': float(current_ema_20),
                 'ema_50': float(ema_50.iloc[-1]),
@@ -218,6 +265,16 @@ class DataAcquisition:
                 # Swing High/Low (Recent price action S/R)
                 'swing_high': float(nearest_swing_high),
                 'swing_low': float(nearest_swing_low),
+                
+                # Volume Analysis (NEW - for breakout confirmation)
+                'current_volume': current_volume,
+                'avg_volume_20': avg_volume_20,
+                'avg_volume_50': avg_volume_50,
+                'volume_ratio_20': volume_ratio_20,  # Current vol / 20-period avg
+                'volume_ratio_50': volume_ratio_50,  # Current vol / 50-period avg
+                'volume_trend': volume_trend,  # "increasing", "decreasing", "stable"
+                'obv': obv,  # On-Balance Volume
+                'obv_trend': obv_trend,  # "bullish", "bearish", "neutral"
             }
             
             logger.debug(f"Computed indicators: {indicators}")
@@ -379,6 +436,26 @@ class DataAcquisition:
                 'support_3': indicators_1h.get('support_3', current_price),
                 'swing_high': indicators_1h.get('swing_high', current_price),
                 'swing_low': indicators_1h.get('swing_low', current_price),
+                
+                # Volume Analysis (NEW - for breakout confirmation)
+                # Use 1h volume as primary, with 5m/1m for scalping
+                'volume_1h': indicators_1h.get('current_volume', 0),
+                'avg_volume_20_1h': indicators_1h.get('avg_volume_20', 0),
+                'volume_ratio_1h': indicators_1h.get('volume_ratio_20', 1.0),
+                'volume_trend_1h': indicators_1h.get('volume_trend', 'stable'),
+                'obv_trend_1h': indicators_1h.get('obv_trend', 'neutral'),
+                
+                'volume_5m': indicators_5m.get('current_volume', 0),
+                'avg_volume_20_5m': indicators_5m.get('avg_volume_20', 0),
+                'volume_ratio_5m': indicators_5m.get('volume_ratio_20', 1.0),
+                'volume_trend_5m': indicators_5m.get('volume_trend', 'stable'),
+                'obv_trend_5m': indicators_5m.get('obv_trend', 'neutral'),
+                
+                'volume_1m': indicators_1m.get('current_volume', 0),
+                'avg_volume_20_1m': indicators_1m.get('avg_volume_20', 0),
+                'volume_ratio_1m': indicators_1m.get('volume_ratio_20', 1.0),
+                'volume_trend_1m': indicators_1m.get('volume_trend', 'stable'),
+                'obv_trend_1m': indicators_1m.get('obv_trend', 'neutral'),
             }
             
             # Create market snapshot with multi-timeframe indicators

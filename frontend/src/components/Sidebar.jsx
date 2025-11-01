@@ -7,8 +7,85 @@ function Sidebar({ positions, trades, agentMessages }) {
   const [hoveredRow, setHoveredRow] = useState(null)
   const [showExitPlan, setShowExitPlan] = useState(null)
   const rowRefs = useRef({})
+  const [userMessage, setUserMessage] = useState('')
+  const [isSending, setIsSending] = useState(false)
+  const chatScrollRef = useRef(null)
+  const [isAutoStick, setIsAutoStick] = useState(true)
+  const [optimisticMessages, setOptimisticMessages] = useState([])
 
   const totalUnrealizedPnL = positions.reduce((sum, pos) => sum + pos.unrealPnL, 0)
+  
+  // Handle sending user message
+  const handleSendMessage = async (e) => {
+    e.preventDefault()
+    if (!userMessage.trim() || isSending) return
+    
+    const messageText = userMessage.trim()
+    const tempId = `temp_${Date.now()}`
+    
+    // Add optimistic user message immediately
+    const optimisticUserMsg = {
+      id: tempId,
+      sender: 'USER',
+      text: messageText,
+      timestamp: new Date().toLocaleString('en-GB', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(',', '')
+    }
+    setOptimisticMessages(prev => [...prev, optimisticUserMsg])
+    setUserMessage('')
+    setIsSending(true)
+    
+    // Scroll to bottom immediately
+    requestAnimationFrame(() => {
+      const el = chatScrollRef.current
+      if (el) {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+      }
+    })
+    
+    try {
+      const response = await fetch('http://localhost:8000/api/agent-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: messageText }),
+      })
+      
+      if (!response.ok) {
+        const error = await response.json()
+        console.error('Error sending message:', error)
+        alert(error.detail || 'Failed to send message')
+        // Remove optimistic message on error
+        setOptimisticMessages(prev => prev.filter(m => m.id !== tempId))
+      } else {
+        // Clear optimistic messages after successful send (backend will provide real ones)
+        setTimeout(() => {
+          setOptimisticMessages(prev => prev.filter(m => m.id !== tempId))
+        }, 1000)
+      }
+    } catch (error) {
+      console.error('Error sending message:', error)
+      alert('Failed to send message. Is the backend running?')
+      setOptimisticMessages(prev => prev.filter(m => m.id !== tempId))
+    } finally {
+      setIsSending(false)
+    }
+  }
+  
+  // Auto-stick to bottom when new messages arrive only if user is near bottom
+  useEffect(() => {
+    if (activeTab !== 'chat') return
+    const el = chatScrollRef.current
+    if (!el) return
+    if (isAutoStick) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    }
+  }, [agentMessages, optimisticMessages, activeTab, isAutoStick])
+
+  const handleChatScroll = () => {
+    const el = chatScrollRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    setIsAutoStick(distanceFromBottom < 120)
+  }
   
   // Close exit plan when clicking outside
   useEffect(() => {
@@ -70,7 +147,9 @@ function Sidebar({ positions, trades, agentMessages }) {
         </button>
       </div>
 
-      <div className="sidebar-content">
+      <div 
+        className={`sidebar-content ${activeTab === 'chat' ? 'no-padding' : ''}`}
+      >
         {activeTab === 'positions' && (
           <div className="positions-section">
             <div className="positions-header">
@@ -269,7 +348,7 @@ function Sidebar({ positions, trades, agentMessages }) {
                             <span className="metric-label">Quantity:</span>
                             <span className="metric-value">
                               {typeof trade.quantity === 'number' 
-                                ? trade.quantity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                                ? trade.quantity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8 })
                                 : trade.quantity}
                             </span>
                           </div>
@@ -307,20 +386,29 @@ function Sidebar({ positions, trades, agentMessages }) {
 
         {activeTab === 'chat' && (
           <div className="chat-section">
-            {agentMessages.length === 0 ? (
+            {agentMessages.length === 0 && optimisticMessages.length === 0 ? (
               <div className="empty-state">
                 <p>No agent messages yet</p>
               </div>
             ) : (
-              <div className="chat-messages">
-                {[...agentMessages].reverse().map((message) => (
-                  <div key={message.id} className="chat-message">
+              <div className="chat-messages" ref={chatScrollRef} onScroll={handleChatScroll}>
+                {[...agentMessages, ...optimisticMessages].map((message) => (
+                  <div key={message.id} className={`chat-message ${message.sender === 'USER' ? 'user-message' : ''}`}>
                     <div className="message-header">
-                      <div className="message-sender-wrapper">
-                        <img src="/deepseek.png" alt="DeepSeek" className="message-avatar-logo" />
-                        <span className="message-sender">DEEPSEEK</span>
-                      </div>
-                      <span className="message-time">{message.timestamp}</span>
+                      {message.sender === 'USER' ? (
+                        <>
+                          <span className="message-sender user-sender">YOU</span>
+                          <span className="message-time">{message.timestamp}</span>
+                        </>
+                      ) : (
+                        <>
+                          <div className="message-sender-wrapper">
+                            <img src="/deepseek.png" alt="DeepSeek" className="message-avatar-logo" />
+                            <span className="message-sender">DEEPSEEK</span>
+                          </div>
+                          <span className="message-time">{message.timestamp}</span>
+                        </>
+                      )}
                     </div>
                     <div className="message-content">
                       {message.text}
@@ -329,6 +417,36 @@ function Sidebar({ positions, trades, agentMessages }) {
                 ))}
               </div>
             )}
+            
+            <form className="chat-input-form" onSubmit={handleSendMessage}>
+              <div className="chat-input-wrapper">
+                <input
+                  type="text"
+                  className="chat-input"
+                  placeholder="Ask the agent anything..."
+                  value={userMessage}
+                  onChange={(e) => setUserMessage(e.target.value)}
+                  disabled={isSending}
+                />
+                <button
+                  type="submit"
+                  className="chat-send-btn"
+                  disabled={isSending || !userMessage.trim()}
+                  aria-label="Send message"
+                >
+                  {isSending ? (
+                    <svg className="send-icon spinning" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="12" cy="12" r="10" opacity="0.25"/>
+                      <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round"/>
+                    </svg>
+                  ) : (
+                    <svg className="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         )}
       </div>

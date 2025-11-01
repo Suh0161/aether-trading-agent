@@ -122,15 +122,15 @@ def main() -> int:
             load_dotenv(args.env, override=True)
         
         config = Config.from_env()
-        logger.info("✓ Configuration loaded successfully")
+        logger.info("[OK] Configuration loaded successfully")
         
     except ValueError as e:
-        logger.error(f"✗ Configuration error: {e}")
+        logger.error(f"[ERROR] Configuration error: {e}")
         logger.error("Please check your .env file and ensure all required variables are set.")
         logger.error("See .env.example for reference.")
         return 1
     except Exception as e:
-        logger.error(f"✗ Unexpected error loading configuration: {e}")
+        logger.error(f"[ERROR] Unexpected error loading configuration: {e}")
         return 1
     
     # Display run mode warning
@@ -156,13 +156,13 @@ def main() -> int:
     try:
         logger.info("Initializing loop controller...")
         controller = LoopController(config)
-        logger.info("✓ Loop controller initialized")
+        logger.info("[OK] Loop controller initialized")
         
     except NotImplementedError as e:
-        logger.error(f"✗ Initialization error: {e}")
+        logger.error(f"[ERROR] Initialization error: {e}")
         return 1
     except Exception as e:
-        logger.error(f"✗ Failed to initialize loop controller: {e}", exc_info=True)
+        logger.error(f"[ERROR] Failed to initialize loop controller: {e}", exc_info=True)
         return 1
     
     # Register signal handlers for graceful shutdown
@@ -172,14 +172,38 @@ def main() -> int:
     try:
         logger.info("Running startup connectivity tests...")
         if not controller.startup():
-            logger.error("✗ Startup tests failed")
+            logger.error("[ERROR] Startup tests failed")
             logger.error("Please check your API credentials and network connectivity.")
             return 1
-        logger.info("✓ All startup tests passed")
+        logger.info("[OK] All startup tests passed")
         
     except Exception as e:
-        logger.error(f"✗ Startup test error: {e}", exc_info=True)
+        logger.error(f"[ERROR] Startup test error: {e}", exc_info=True)
         return 1
+    
+    # Start API server in background thread
+    try:
+        import threading
+        import uvicorn
+        import api_server
+        
+        # Register controller BEFORE starting API server
+        api_server.loop_controller_instance = controller
+        logger.info("Loop controller registered with API server")
+        
+        def run_api_server():
+            uvicorn.run(api_server.app, host="0.0.0.0", port=8000, log_level="warning")
+        
+        api_thread = threading.Thread(target=run_api_server, daemon=True)
+        api_thread.start()
+        
+        # Give API server a moment to initialize
+        import time
+        time.sleep(2)
+        logger.info("API server started in background on http://0.0.0.0:8000")
+    except Exception as e:
+        logger.warning(f"Failed to start API server: {e}")
+        logger.warning("Interactive chat will not be available")
     
     # Start main loop
     try:
@@ -199,7 +223,7 @@ def main() -> int:
         controller.shutdown()
         return 0
     except Exception as e:
-        logger.error(f"✗ Fatal error in main loop: {e}", exc_info=True)
+        logger.error(f"[ERROR] Fatal error in main loop: {e}", exc_info=True)
         return 1
 
 

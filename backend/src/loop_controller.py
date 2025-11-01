@@ -77,6 +77,12 @@ class LoopController:
         self.initial_real_equity: Optional[float] = None
         self.virtual_starting_equity = config.virtual_starting_equity
         
+        # Store last snapshot for interactive chat
+        self.last_snapshot = None
+        
+        # Track current position size for interactive chat
+        self.current_position_size = 0.0
+        
         logger.info("Loop controller initialized successfully")
     
     def _init_decision_provider(self, config: Config) -> DecisionProvider:
@@ -131,14 +137,14 @@ class LoopController:
         logger.info("Testing exchange connectivity...")
         try:
             balance = self.trade_executor.exchange.fetch_balance()
-            logger.info(f"✓ Exchange connection successful")
+            logger.info(f"[OK] Exchange connection successful")
             
             # Log available balance (without exposing exact amounts in production)
             total_balance = balance.get('total', {})
             if total_balance:
                 logger.info(f"  Available currencies: {list(total_balance.keys())[:5]}")
         except Exception as e:
-            logger.error(f"✗ Exchange connection failed: {e}")
+            logger.error(f"[ERROR] Exchange connection failed: {e}")
             return False
         
         # Test 2: DeepSeek API connectivity
@@ -160,14 +166,14 @@ class LoopController:
             response = self.decision_provider.get_decision(test_snapshot, 0.0, 100.0)
             
             if "error" in response.lower() or "deepseek api error" in response.lower():
-                logger.error(f"✗ DeepSeek API test failed: {response}")
+                logger.error(f"[ERROR] DeepSeek API test failed: {response}")
                 return False
             
-            logger.info(f"✓ DeepSeek API connection successful")
+            logger.info(f"[OK] DeepSeek API connection successful")
             logger.debug(f"  Test response: {response[:100]}...")
             
         except Exception as e:
-            logger.error(f"✗ DeepSeek API connection failed: {e}")
+            logger.error(f"[ERROR] DeepSeek API connection failed: {e}")
             return False
         
         logger.info("=" * 60)
@@ -206,6 +212,7 @@ class LoopController:
                 logger.info("Step 1: Fetching market snapshot...")
                 try:
                     snapshot = self.data_acquisition.fetch_market_snapshot(self.config.symbol)
+                    self.last_snapshot = snapshot  # Store for interactive chat
                     logger.info(f"  Price: {snapshot.price}, Bid: {snapshot.bid}, Ask: {snapshot.ask}")
                 except Exception as e:
                     logger.error(f"Failed to fetch market snapshot: {e}")
@@ -222,13 +229,27 @@ class LoopController:
                     quote_currency = self.config.symbol.split('/')[1]
                     real_equity = balance['total'].get(quote_currency, 0.0)
                     
+                    # Get position size (base currency) - needed for initial equity calculation
+                    base_currency = self.config.symbol.split('/')[0]
+                    position_size = balance['total'].get(base_currency, 0.0)
+                    
                     # Track initial real equity on first fetch (for virtual equity calculation)
                     if self.initial_real_equity is None:
-                        self.initial_real_equity = real_equity
-                        if self.virtual_starting_equity:
-                            logger.info(f"  Initial real equity: ${real_equity:,.2f}")
-                            logger.info(f"  Virtual starting equity: ${self.virtual_starting_equity:,.2f}")
-                            logger.info(f"  Virtual equity mode ENABLED - agent will use virtual equity for calculations")
+                        # If there's a pre-existing position, we need to wait until it's closed
+                        # before we can accurately track virtual equity changes
+                        if position_size != 0 and self.virtual_starting_equity:
+                            position_value = abs(position_size) * snapshot.price
+                            logger.warning(f"  Pre-existing position detected: {position_size} {base_currency} (${position_value:,.2f})")
+                            logger.warning(f"  Virtual equity tracking will start AFTER this position is closed")
+                            logger.warning(f"  Reason: We don't know the entry price of pre-existing positions")
+                            # Don't set initial_real_equity yet - wait for position to close
+                        else:
+                            # No pre-existing position, safe to start tracking
+                            self.initial_real_equity = real_equity
+                            if self.virtual_starting_equity:
+                                logger.info(f"  Initial real equity: ${real_equity:,.2f}")
+                                logger.info(f"  Virtual starting equity: ${self.virtual_starting_equity:,.2f}")
+                                logger.info(f"  Virtual equity mode ENABLED - agent will use virtual equity for calculations")
                     
                     # Calculate virtual equity if enabled
                     # Virtual equity starts at virtual_starting_equity and tracks P&L changes
@@ -239,12 +260,11 @@ class LoopController:
                     else:
                         equity = real_equity
                     
-                    # Get position size (base currency)
-                    base_currency = self.config.symbol.split('/')[0]
-                    position_size = balance['total'].get(base_currency, 0.0)
-                    
                     logger.info(f"  Equity (used for calculations): {equity} {quote_currency}")
                     logger.info(f"  Position: {position_size} {base_currency}")
+                    
+                    # Store for interactive chat
+                    self.current_position_size = position_size
                     
                 except Exception as e:
                     logger.error(f"Failed to fetch position/equity: {e}")
@@ -259,7 +279,7 @@ class LoopController:
                     current_price = snapshot.price
                     
                     if stored_stop_loss and current_price <= stored_stop_loss:
-                        logger.warning(f"⚠️ STOP LOSS HIT! Price ${current_price:.2f} <= Stop Loss ${stored_stop_loss:.2f}")
+                        logger.warning(f"[WARNING] STOP LOSS HIT! Price ${current_price:.2f} <= Stop Loss ${stored_stop_loss:.2f}")
                         raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Stop loss triggered: price ${current_price:.2f} <= ${stored_stop_loss:.2f}"}}'
                         # Clear stored stop loss/take profit
                         if self.config.symbol in self.position_stop_losses:
@@ -285,7 +305,7 @@ class LoopController:
                 if raw_llm_output is None:
                     emergency_flag = os.path.join(os.path.dirname(os.path.dirname(__file__)), "emergency_close.flag")
                     if os.path.exists(emergency_flag):
-                        logger.warning("⚠️ EMERGENCY CLOSE TRIGGERED!")
+                        logger.warning("[WARNING] EMERGENCY CLOSE TRIGGERED!")
                         os.remove(emergency_flag)
                         if position_size != 0:
                             logger.info("Forcing immediate position close...")
@@ -465,9 +485,8 @@ class LoopController:
                             actual_leverage = (position_value / equity) if equity > 0 else 0.0
                             leverage_str = f"{actual_leverage:.2f}X" if actual_leverage > 0 else "0X"
                             
-                            # Get position type (swing or scalp)
-                            position_type = self.position_types.get(self.config.symbol, 'swing')
-                            side_label = position_type.upper()  # Display "SWING" or "SCALP" instead of "LONG"
+                            # Determine position direction (LONG or SHORT)
+                            side_label = 'LONG' if position_size > 0 else 'SHORT'
                             
                             positions_list.append({
                                 'side': side_label,
@@ -487,8 +506,10 @@ class LoopController:
                         # Sync all positions at once (replaces old data)
                         self.api_client.sync_positions(positions_list)
                         
-                        # Calculate available cash (equity - position value)
-                        available_cash = equity - position_value
+                        # Available cash is the equity (which already accounts for open positions)
+                        # In virtual equity mode, equity = starting_equity + realized_pnl
+                        # Position value is shown separately in the positions tab
+                        available_cash = equity
                         
                         # Update balance with correct cash and P&L
                         self.api_client.update_balance(available_cash, total_unrealized_pnl)
@@ -501,12 +522,9 @@ class LoopController:
                         
                         # If trade was executed AND it's a CLOSE/SELL action, log the completed trade
                         if execution_result.executed and execution_result.filled_size and decision.action in ['close', 'sell']:
-                            # Determine trade side (for close action, determine if it was LONG or SHORT)
-                            trade_side = decision.action.upper()
-                            if decision.action == 'close':
-                                # When closing, determine side based on original_position_size before closing
-                                # original_position_size > 0 means LONG position, < 0 means SHORT position
-                                trade_side = 'LONG' if original_position_size > 0 else 'SHORT'
+                            # Determine trade direction (LONG/SHORT) based on original position size
+                            # original_position_size > 0 means LONG position, < 0 means SHORT position
+                            trade_side = 'LONG' if original_position_size > 0 else 'SHORT'
                             
                             # Calculate P&L for completed trades
                             trade_pnl = 0.0
@@ -536,10 +554,8 @@ class LoopController:
                             # Calculate holding time from timestamps (format: "19H 7M" or "4H 53M")
                             holding_time = self._calculate_holding_time(entry_timestamp, exit_timestamp)
                             
-                            # Quantity: positive for LONG, negative for SHORT (like in the image)
+                            # Quantity: use actual filled size (keep precision for small amounts)
                             quantity_value = abs(execution_result.filled_size)
-                            if trade_side == 'SHORT':
-                                quantity_value = -quantity_value  # Negative for SHORT trades
                             
                             self.api_client.add_trade(
                                 coin=self.config.symbol.split('/')[0],
@@ -651,6 +667,8 @@ MARKET CONTEXT:
 - Support/Resistance: S1=${indicators.get('support_1', 0)/1000:.1f}k, R1=${indicators.get('resistance_1', 0)/1000:.1f}k, Pivot=${indicators.get('pivot', 0)/1000:.1f}k
 - VWAP 5m: ${indicators.get('vwap_5m', 0)/1000:.1f}k (price is {'above' if price > indicators.get('vwap_5m', price) else 'below'})
 - Swing High: ${indicators.get('swing_high', 0)/1000:.1f}k, Swing Low: ${indicators.get('swing_low', 0)/1000:.1f}k
+- Volume (1h): {indicators.get('volume_ratio_1h', 1.0):.2f}x average ({'STRONG' if indicators.get('volume_ratio_1h', 1.0) >= 1.5 else 'MODERATE' if indicators.get('volume_ratio_1h', 1.0) >= 1.2 else 'WEAK'})
+- Volume Trend: {indicators.get('volume_trend_1h', 'stable')} | OBV: {indicators.get('obv_trend_1h', 'neutral')}
 
 YOUR TASK:
 Write a brief, natural message (1-3 sentences) explaining what you're doing and why, like you're updating a friend. Be conversational, confident, and VARY your phrasing. Use first person ("I'm buying", "I'll wait", "watching for").
@@ -660,14 +678,15 @@ IMPORTANT - Include market context in your reasoning:
 - Mention VWAP position (e.g., "price above VWAP", "below VWAP so bearish bias")
 - Mention multi-timeframe alignment (e.g., "1d/4h bullish", "5m bearish")
 - Mention key price action (e.g., "rejected at swing high", "broke above pivot")
+- Mention VOLUME when relevant (e.g., "strong volume confirms breakout", "weak volume, waiting for confirmation", "volume spike at support")
 
 VARY YOUR PHRASING - Don't repeat the same words. Use different expressions:
 
 BUYING/ENTERING (vary these):
-- "Going long at $67.2k - bounced perfectly from S1 support and price is above VWAP. Target R1 at $68.5k."
-- "Taking a scalp here at $67.1k. 5m momentum strong, price above VWAP, aiming for quick $200."
-- "Entering swing position at $67.4k. 1d/4h trends aligned bullish, broke above pivot point."
-- "Buying the dip at $66.8k - swing low support held, good risk/reward to R2."
+- "Going long at $67.2k - bounced perfectly from S1 support with strong volume. Price above VWAP, target R1 at $68.5k."
+- "Taking a scalp here at $67.1k. 5m momentum strong, volume spiking, price above VWAP, aiming for quick $200."
+- "Entering swing position at $67.4k. 1d/4h trends aligned bullish, broke above pivot with conviction (1.6x volume)."
+- "Buying the dip at $66.8k - swing low support held with volume spike, good risk/reward to R2."
 
 HOLDING (vary these):
 - "Holding my long from $67.2k, now at $67.8k (+$600 unrealized). Still below R1 resistance so room to run."

@@ -46,9 +46,9 @@ class HybridDecisionProvider:
         Get trading decision using hybrid approach with adaptive fallback.
         
         Adaptive Strategy:
-        1. Try swing trading first (primary mode)
-        2. If no swing opportunity, fall back to scalping
-        3. AI filters both swing and scalp signals
+        1. If we have a position, route to the correct strategy based on position type
+        2. If no position, try swing trading first, then scalping as fallback
+        3. AI filters all entry signals
         
         Args:
             snapshot: Current market snapshot
@@ -58,6 +58,19 @@ class HybridDecisionProvider:
         Returns:
             JSON string with decision
         """
+        # Check if we have an existing position and its type
+        position_type = None
+        if position_size != 0:
+            # Import here to avoid circular dependency
+            import api_server
+            if hasattr(api_server, 'loop_controller_instance') and api_server.loop_controller_instance:
+                position_type = api_server.loop_controller_instance.position_types.get(snapshot.symbol)
+        
+        # If we have a SCALP position, use scalping strategy for exit logic
+        if position_size != 0 and position_type == "scalp":
+            logger.info(f"Existing SCALP position detected, using scalping strategy for management")
+            return self._check_scalping_fallback(snapshot, position_size, equity)
+        
         # Step 1: Get signal from swing strategy (primary)
         swing_signal = self.strategy.analyze(snapshot, position_size, equity)
         
@@ -250,6 +263,12 @@ SUPPORT/RESISTANCE LEVELS (Key Price Zones):
 - Swing High: ${indicators.get('swing_high', 0):,.2f} (recent resistance)
 - Swing Low: ${indicators.get('swing_low', 0):,.2f} (recent support)
 
+VOLUME ANALYSIS (Breakout Confirmation):
+- 1h Volume: {indicators.get('volume_ratio_1h', 1.0):.2f}x average ({'STRONG' if indicators.get('volume_ratio_1h', 1.0) >= 1.5 else 'MODERATE' if indicators.get('volume_ratio_1h', 1.0) >= 1.2 else 'WEAK'})
+- 5m Volume: {indicators.get('volume_ratio_5m', 1.0):.2f}x average ({'STRONG' if indicators.get('volume_ratio_5m', 1.0) >= 1.5 else 'MODERATE' if indicators.get('volume_ratio_5m', 1.0) >= 1.3 else 'WEAK'})
+- Volume Trend: {indicators.get('volume_trend_1h', 'stable')} (1h), {indicators.get('volume_trend_5m', 'stable')} (5m)
+- OBV (Money Flow): {indicators.get('obv_trend_1h', 'neutral')} (1h), {indicators.get('obv_trend_5m', 'neutral')} (5m)
+
 YOUR JOB:
 You are a RISK FILTER, not a strategy. The rule-based strategy has already identified this opportunity.
 Your job is to VETO only if there are SERIOUS red flags. When in doubt, APPROVE.
@@ -268,15 +287,18 @@ STRONG VETO CONDITIONS (should veto):
 - For SCALP SHORTS: 5m trend is bullish OR price above VWAP (conflicts with short) - WRONG DIRECTION
 - **For LONGS: Price at/near resistance (R1, R2, R3, swing high) - LIKELY REJECTION**
 - **For SHORTS: Price at/near support (S1, S2, S3, swing low) - LIKELY BOUNCE**
+- **Breakout with WEAK volume (< 1.2x avg for swings, < 1.3x for scalps) - LIKELY FAKE BREAKOUT**
 - Obvious fake breakout/breakdown pattern (price just rejected) - TRAP
 
 APPROVE CONDITIONS (default to approve):
-- For SWING LONGS: Multi-TF alignment bullish (1d/4h), RSI < 75, NOT at resistance
-- For SWING SHORTS: Multi-TF alignment bearish (1d/4h), RSI > 25, NOT at support
-- For SCALP LONGS: 5m bullish + price ABOVE VWAP + NOT at resistance
-- For SCALP SHORTS: 5m bearish + price BELOW VWAP + NOT at support
-- **BEST LONGS: Entry at/near support (S1, S2, swing low) - HIGH PROBABILITY**
-- **BEST SHORTS: Entry at/near resistance (R1, R2, swing high) - HIGH PROBABILITY**
+- For SWING LONGS: Multi-TF alignment bullish (1d/4h), RSI < 75, NOT at resistance, volume ≥ 1.2x
+- For SWING SHORTS: Multi-TF alignment bearish (1d/4h), RSI > 25, NOT at support, volume ≥ 1.2x
+- For SCALP LONGS: 5m bullish + price ABOVE VWAP + NOT at resistance + volume ≥ 1.3x
+- For SCALP SHORTS: 5m bearish + price BELOW VWAP + NOT at support + volume ≥ 1.3x
+- **BEST LONGS: Entry at/near support (S1, S2, swing low) WITH VOLUME SPIKE - HIGH PROBABILITY**
+- **BEST SHORTS: Entry at/near resistance (R1, R2, swing high) WITH VOLUME SPIKE - HIGH PROBABILITY**
+- **STRONG volume (≥ 1.5x) + bullish OBV = EXTRA CONFIDENCE for longs**
+- **STRONG volume (≥ 1.5x) + bearish OBV = EXTRA CONFIDENCE for shorts**
 - Available cash is sufficient
 - Leverage is within limits
 - Position size is reasonable
@@ -293,18 +315,19 @@ OUTPUT FORMAT:
 First word MUST be either "APPROVE" or "VETO", then brief reason (max 10 words).
 
 SWING examples:
-Example: "APPROVE - multi-TF bullish, clean breakout, RSI 65, cash OK"
+Example: "APPROVE - multi-TF bullish, clean breakout, RSI 65, 1.4x volume, cash OK"
 Example: "VETO - RSI 85 overbought on 1h/4h, reversal likely"
+Example: "APPROVE - strong 1.6x volume, bullish OBV, broke R1, continuation setup"
 
 SCALP examples:
-Example: "APPROVE - price above VWAP, bounced from S1, 1m breakout"
-Example: "VETO - price at R1 resistance, long risky, wait for breakout"
-Example: "APPROVE - price rejected at swing high, below VWAP, short valid"
+Example: "APPROVE - price above VWAP, bounced from S1, 1.5x volume spike"
+Example: "VETO - price at R1 resistance, weak 0.9x volume, likely fake"
+Example: "APPROVE - rejected at swing high, below VWAP, 1.4x volume, short valid"
 
-S/R examples:
-Example: "APPROVE - bounced from swing low $109.5k, support holding"
-Example: "VETO - price at R2 $111k resistance, likely rejection"
-Example: "APPROVE - broke above R1 with volume, continuation likely"
+S/R + Volume examples:
+Example: "APPROVE - bounced from swing low $109.5k with 1.7x volume, support confirmed"
+Example: "VETO - price at R2 $111k resistance, weak volume, likely rejection"
+Example: "APPROVE - broke above R1 with strong 1.8x volume, OBV bullish, continuation"
 
 General:
 Example: "VETO - insufficient cash, need $500 have $100"
