@@ -158,7 +158,7 @@ function Chart({ symbol, trades = [] }) {
                             position: trade.side === 'LONG' ? 'belowBar' : 'aboveBar',
                             color: trade.side === 'LONG' ? '#16a34a' : '#dc2626',
                             shape: trade.side === 'LONG' ? 'arrowUp' : 'arrowDown',
-                            text: `BUY ${trade.side === 'LONG' ? '↑' : '↓'} $${trade.entryPrice.toFixed(2)}`,
+                            text: `${trade.side === 'LONG' ? '↑' : '↓'} $${trade.entryPrice.toFixed(2)}`,
                             size: 1,
                         })
                     }
@@ -170,7 +170,7 @@ function Chart({ symbol, trades = [] }) {
                             position: trade.side === 'LONG' ? 'aboveBar' : 'belowBar',
                             color: trade.pnl >= 0 ? '#16a34a' : '#dc2626',
                             shape: 'circle',
-                            text: `SELL $${trade.exitPrice.toFixed(2)} ${trade.pnl >= 0 ? '✅' : '❌'}`,
+                            text: `$${trade.exitPrice.toFixed(2)} ${trade.pnl >= 0 ? '✅' : '❌'}`,
                             size: 1,
                         })
                     }
@@ -303,7 +303,7 @@ function Chart({ symbol, trades = [] }) {
                             position: trade.side === 'LONG' ? 'belowBar' : 'aboveBar',
                             color: trade.side === 'LONG' ? '#16a34a' : '#dc2626',
                             shape: trade.side === 'LONG' ? 'arrowUp' : 'arrowDown',
-                            text: `BUY ${trade.side === 'LONG' ? '↑' : '↓'} $${trade.entryPrice.toFixed(2)}`,
+                            text: `${trade.side === 'LONG' ? '↑' : '↓'} $${trade.entryPrice.toFixed(2)}`,
                             size: 1,
                         })
                     }
@@ -315,7 +315,7 @@ function Chart({ symbol, trades = [] }) {
                             position: trade.side === 'LONG' ? 'aboveBar' : 'belowBar',
                             color: trade.pnl >= 0 ? '#16a34a' : '#dc2626',
                             shape: 'circle',
-                            text: `SELL $${trade.exitPrice.toFixed(2)} ${trade.pnl >= 0 ? '✅' : '❌'}`,
+                            text: `$${trade.exitPrice.toFixed(2)} ${trade.pnl >= 0 ? '✅' : '❌'}`,
                             size: 1,
                         })
                     }

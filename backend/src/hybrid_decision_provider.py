@@ -170,14 +170,27 @@ class HybridDecisionProvider:
                 timeout=10.0
             )
             
-            ai_response = response.choices[0].message.content.strip().lower()
+            ai_response = response.choices[0].message.content.strip()
+            ai_response_lower = ai_response.lower()
             
             # Parse AI response (looking for "approve" or "veto")
-            if "veto" in ai_response or "reject" in ai_response or "no" in ai_response[:10]:
-                logger.info(f"AI response: {ai_response[:200]}")
-                return False
+            # Check first word to avoid false positives
+            first_word = ai_response_lower.split()[0] if ai_response_lower else ""
             
-            return True
+            if first_word in ["veto", "reject", "no"]:
+                logger.info(f"AI VETOED: {ai_response[:200]}")
+                return False
+            elif first_word == "approve":
+                logger.info(f"AI APPROVED: {ai_response[:200]}")
+                return True
+            else:
+                # Fallback: check if veto/reject appears early in response
+                if "veto" in ai_response_lower[:50] or "reject" in ai_response_lower[:50]:
+                    logger.info(f"AI VETOED (fallback): {ai_response[:200]}")
+                    return False
+                # Default to approve if unclear
+                logger.warning(f"AI response unclear, defaulting to APPROVE: {ai_response[:100]}")
+                return True
             
         except Exception as e:
             logger.error(f"AI filter failed: {e}")
@@ -226,38 +239,75 @@ SWING TIMEFRAMES (for swing trades):
 - Primary Keltner Upper: ${indicators.get('keltner_upper', 0):,.2f}
 
 SCALPING TIMEFRAMES (for scalp trades):
-- 5m trend: {indicators.get('trend_5m', 'unknown')}, Keltner Upper ${indicators.get('keltner_upper_5m', 0):,.2f}, RSI {indicators.get('rsi_14_5m', 50):.1f}
-- 1m trend: {indicators.get('trend_1m', 'unknown')}, Keltner Upper ${indicators.get('keltner_upper_1m', 0):,.2f}, RSI {indicators.get('rsi_14_1m', 50):.1f}
+- 5m trend: {indicators.get('trend_5m', 'unknown')}, Keltner Upper ${indicators.get('keltner_upper_5m', 0):,.2f}, RSI {indicators.get('rsi_14_5m', 50):.1f}, VWAP ${indicators.get('vwap_5m', 0):,.2f}
+- 1m trend: {indicators.get('trend_1m', 'unknown')}, Keltner Upper ${indicators.get('keltner_upper_1m', 0):,.2f}, RSI {indicators.get('rsi_14_1m', 50):.1f}, VWAP ${indicators.get('vwap_1m', 0):,.2f}
+- **VWAP Position:** Price ${snapshot.price:,.2f} is {'ABOVE' if snapshot.price > indicators.get('vwap_5m', snapshot.price) else 'BELOW'} 5m VWAP (${indicators.get('vwap_5m', 0):,.2f})
+
+SUPPORT/RESISTANCE LEVELS (Key Price Zones):
+- Pivot: ${indicators.get('pivot', 0):,.2f}
+- Resistance: R1=${indicators.get('resistance_1', 0):,.2f}, R2=${indicators.get('resistance_2', 0):,.2f}, R3=${indicators.get('resistance_3', 0):,.2f}
+- Support: S1=${indicators.get('support_1', 0):,.2f}, S2=${indicators.get('support_2', 0):,.2f}, S3=${indicators.get('support_3', 0):,.2f}
+- Swing High: ${indicators.get('swing_high', 0):,.2f} (recent resistance)
+- Swing Low: ${indicators.get('swing_low', 0):,.2f} (recent support)
 
 YOUR JOB:
-Decide if this trade setup is likely to FAIL or succeed.
+You are a RISK FILTER, not a strategy. The rule-based strategy has already identified this opportunity.
+Your job is to VETO only if there are SERIOUS red flags. When in doubt, APPROVE.
 
-VETO if:
-- Fake breakout / bull trap likely
-- Market regime changed (news, funding, etc.)
-- Extreme volatility / rug risk
-- Overbought conditions (RSI > 75 for swing, RSI > 80 for scalp)
-- Insufficient available cash (if required_cash > available_cash)
-- Leverage too high (if leverage_used exceeds smart max leverage)
-- Position size too aggressive for current market conditions
-- For SCALP trades: 5m or 1m trend not aligned with entry
-- Account too small for the proposed position size
+CRITICAL VETO CONDITIONS (must veto):
+- Insufficient available cash (required_cash > available_cash) - CANNOT execute
+- Leverage exceeds smart max leverage - TOO RISKY
+- Account too small for position size (< $50 total) - TOO SMALL
 
-APPROVE if:
-- Clean breakout with follow-through
-- Trend is strong (multi-TF alignment for swing, 5m/1m alignment for scalp)
-- Risk/reward is favorable (at least 2:1 for swing, 1.5:1 for scalp)
-- Enough available cash to execute trade
-- Account can afford the position size
-- Leverage is within smart limits for this account size
-- Position size is appropriate for market volatility
-- For SCALP trades: Quick momentum confirmed on lower timeframes
+STRONG VETO CONDITIONS (should veto):
+- For LONGS: Extreme overbought (RSI > 80 on multiple timeframes) - LIKELY REVERSAL
+- For SHORTS: Extreme oversold (RSI < 20 on multiple timeframes) - LIKELY REVERSAL
+- For SWING LONGS: 1d or 4h trend is bearish (conflicts with long entry) - WRONG DIRECTION
+- For SWING SHORTS: 1d or 4h trend is bullish (conflicts with short entry) - WRONG DIRECTION
+- For SCALP LONGS: 5m trend is bearish OR price below VWAP (conflicts with long) - WRONG DIRECTION
+- For SCALP SHORTS: 5m trend is bullish OR price above VWAP (conflicts with short) - WRONG DIRECTION
+- **For LONGS: Price at/near resistance (R1, R2, R3, swing high) - LIKELY REJECTION**
+- **For SHORTS: Price at/near support (S1, S2, S3, swing low) - LIKELY BOUNCE**
+- Obvious fake breakout/breakdown pattern (price just rejected) - TRAP
+
+APPROVE CONDITIONS (default to approve):
+- For SWING LONGS: Multi-TF alignment bullish (1d/4h), RSI < 75, NOT at resistance
+- For SWING SHORTS: Multi-TF alignment bearish (1d/4h), RSI > 25, NOT at support
+- For SCALP LONGS: 5m bullish + price ABOVE VWAP + NOT at resistance
+- For SCALP SHORTS: 5m bearish + price BELOW VWAP + NOT at support
+- **BEST LONGS: Entry at/near support (S1, S2, swing low) - HIGH PROBABILITY**
+- **BEST SHORTS: Entry at/near resistance (R1, R2, swing high) - HIGH PROBABILITY**
+- Available cash is sufficient
+- Leverage is within limits
+- Position size is reasonable
+- Clean breakout/breakdown with follow-through potential
+- Even if not perfect, if no critical red flags exist → APPROVE
+
+IMPORTANT:
+- The strategy has already done the analysis and found this setup
+- You are just a safety check, not the primary decision maker
+- APPROVE by default unless you see SERIOUS problems
+- Don't be overly conservative - trust the strategy unless there's a real issue
 
 OUTPUT FORMAT:
-First word must be either "APPROVE" or "VETO", then brief reason.
+First word MUST be either "APPROVE" or "VETO", then brief reason (max 10 words).
 
-Example: "APPROVE - clean breakout with strong momentum"
-Example: "VETO - likely fake breakout, RSI overbought"
+SWING examples:
+Example: "APPROVE - multi-TF bullish, clean breakout, RSI 65, cash OK"
+Example: "VETO - RSI 85 overbought on 1h/4h, reversal likely"
+
+SCALP examples:
+Example: "APPROVE - price above VWAP, bounced from S1, 1m breakout"
+Example: "VETO - price at R1 resistance, long risky, wait for breakout"
+Example: "APPROVE - price rejected at swing high, below VWAP, short valid"
+
+S/R examples:
+Example: "APPROVE - bounced from swing low $109.5k, support holding"
+Example: "VETO - price at R2 $111k resistance, likely rejection"
+Example: "APPROVE - broke above R1 with volume, continuation likely"
+
+General:
+Example: "VETO - insufficient cash, need $500 have $100"
 
 Your decision:"""
         

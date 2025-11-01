@@ -59,17 +59,21 @@ class RiskManager:
             logger.info("Risk check: hold action auto-approved")
             return RiskResult(approved=True, reason="")
         
-        # Rule 2: Close validation
-        if decision.action == "close" and position_size == 0:
-            logger.warning("Risk check: denied - no position to close")
-            return RiskResult(approved=False, reason="no position to close")
+        # Rule 2: Close/Sell validation - auto-approve closing positions
+        if decision.action in ["close", "sell"]:
+            if position_size == 0:
+                logger.warning("Risk check: denied - no position to close")
+                return RiskResult(approved=False, reason="no position to close")
+            else:
+                logger.info("Risk check: close/sell action approved (exiting position)")
+                return RiskResult(approved=True, reason="")
         
         # Rule 3: Price validity
         if snapshot.price <= 0:
             logger.warning(f"Risk check: denied - invalid price {snapshot.price}")
             return RiskResult(approved=False, reason="no valid price")
         
-        # Rule 4: Position size limit
+        # Rule 4: Position size limit (only for opening new positions)
         proposed_size = (equity * decision.size_pct) / snapshot.price
         max_allowed_size = (equity * self.max_equity_usage_pct) / snapshot.price
         

@@ -288,10 +288,17 @@
   width: fit-content;
 }
 
-.col-side.long {
+.col-side.long,
+.col-side.scalp {
   color: #16a34a;
   background: rgba(22, 163, 74, 0.1);
   border: 1px solid rgba(22, 163, 74, 0.2);
+}
+
+.col-side.swing {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.1);
+  border: 1px solid rgba(37, 99, 235, 0.2);
 }
 
 .col-side.short {

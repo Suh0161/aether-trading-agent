@@ -88,6 +88,14 @@ async def add_trade(trade: Dict[str, Any]):
     return {"status": "success", "trade": trade}
 
 
+@app.delete("/api/trades")
+async def clear_trades():
+    """Clear all completed trades"""
+    global trades_data
+    trades_data = []
+    return {"status": "success", "message": "All trades cleared"}
+
+
 @app.post("/api/agent-messages")
 async def add_agent_message(message: Dict[str, Any]):
     """Add an agent message"""

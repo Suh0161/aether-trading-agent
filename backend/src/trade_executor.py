@@ -143,12 +143,28 @@ class TradeExecutor:
         Returns:
             Order size in base currency units
         """
-        order_size = (equity * size_pct) / price
+        # Calculate raw order size
+        order_value_usd = equity * size_pct
+        order_size = order_value_usd / price
         
-        # Round to exchange precision (3 decimals for BTC, adjust as needed)
-        order_size = round(order_size, 3)
+        # Binance minimum notional value is ~$5 USD
+        MIN_ORDER_VALUE_USD = 5.0
         
-        logger.info(f"Calculated order size: {order_size} (equity={equity}, size_pct={size_pct}, price={price})")
+        if order_value_usd < MIN_ORDER_VALUE_USD:
+            logger.warning(
+                f"Order value ${order_value_usd:.2f} is below minimum ${MIN_ORDER_VALUE_USD:.2f}. "
+                f"Increasing to minimum."
+            )
+            order_value_usd = MIN_ORDER_VALUE_USD
+            order_size = order_value_usd / price
+        
+        # Round to exchange precision (8 decimals - Binance's maximum for BTC)
+        order_size = round(order_size, 8)
+        
+        logger.info(
+            f"Calculated order size: {order_size} BTC (${order_value_usd:.2f} USD) "
+            f"(equity={equity}, size_pct={size_pct}, price={price})"
+        )
         return order_size
     
     def _execute_long(self, symbol: str, order_size: float) -> ExecutionResult:

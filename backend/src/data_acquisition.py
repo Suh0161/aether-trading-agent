@@ -135,13 +135,89 @@ class DataAcquisition:
             if pd.notna(current_atr) and current_atr > max_allowed_atr:
                 logger.warning(f"ATR capped: raw ATR=${current_atr:.2f} ({current_atr/current_price*100:.2f}%), capped to ${capped_atr:.2f} ({max_atr_percentage*100}%)")
             
+            # Compute VWAP (Volume Weighted Average Price)
+            # VWAP = Cumulative(Typical Price × Volume) / Cumulative(Volume)
+            # Typical Price = (High + Low + Close) / 3
+            df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+            df['tp_volume'] = df['typical_price'] * df['volume']
+            
+            # Calculate cumulative sums for VWAP
+            cumulative_tp_volume = df['tp_volume'].cumsum()
+            cumulative_volume = df['volume'].cumsum()
+            
+            # VWAP calculation (avoid division by zero)
+            vwap = cumulative_tp_volume / cumulative_volume
+            current_vwap = float(vwap.iloc[-1]) if cumulative_volume.iloc[-1] > 0 else current_price
+            
+            # Compute Pivot Points (Classic Daily Pivots)
+            # Use recent candles to calculate pivot levels
+            # Use the previous completed candle for pivot calculation (standard approach)
+            # This prevents using stale/extreme values from old spikes
+            if len(df) >= 2:
+                recent_high = float(df['high'].iloc[-2])
+                recent_low = float(df['low'].iloc[-2])
+                recent_close = float(df['close'].iloc[-2])
+            else:
+                # Fallback if not enough data
+                recent_high = float(df['high'].iloc[-1])
+                recent_low = float(df['low'].iloc[-1])
+                recent_close = float(df['close'].iloc[-1])
+            
+            pivot = (recent_high + recent_low + recent_close) / 3
+            resistance_1 = (2 * pivot) - recent_low
+            support_1 = (2 * pivot) - recent_high
+            resistance_2 = pivot + (recent_high - recent_low)
+            support_2 = pivot - (recent_high - recent_low)
+            resistance_3 = recent_high + 2 * (pivot - recent_low)
+            support_3 = recent_low - 2 * (recent_high - pivot)
+            
+            # Detect Swing Highs and Lows (recent support/resistance zones)
+            # Look back 50 candles for significant swing points
+            lookback = min(50, len(df))
+            swing_highs = []
+            swing_lows = []
+            
+            for i in range(lookback - 5, lookback):
+                if i >= 2 and i < len(df) - 2:
+                    # Swing high: higher than 2 candles on each side
+                    if (df['high'].iloc[i] > df['high'].iloc[i-1] and 
+                        df['high'].iloc[i] > df['high'].iloc[i-2] and
+                        df['high'].iloc[i] > df['high'].iloc[i+1] and
+                        df['high'].iloc[i] > df['high'].iloc[i+2]):
+                        swing_highs.append(float(df['high'].iloc[i]))
+                    
+                    # Swing low: lower than 2 candles on each side
+                    if (df['low'].iloc[i] < df['low'].iloc[i-1] and 
+                        df['low'].iloc[i] < df['low'].iloc[i-2] and
+                        df['low'].iloc[i] < df['low'].iloc[i+1] and
+                        df['low'].iloc[i] < df['low'].iloc[i+2]):
+                        swing_lows.append(float(df['low'].iloc[i]))
+            
+            # Get most recent swing high/low (closest to current price)
+            nearest_swing_high = max(swing_highs) if swing_highs else recent_high
+            nearest_swing_low = min(swing_lows) if swing_lows else recent_low
+            
             indicators = {
                 'ema_20': float(current_ema_20),
                 'ema_50': float(ema_50.iloc[-1]),
                 'rsi_14': float(rsi_14.iloc[-1]),
                 'atr_14': float(capped_atr),  # Use capped ATR value
                 'keltner_upper': float(keltner_upper),
-                'keltner_lower': float(keltner_lower)
+                'keltner_lower': float(keltner_lower),
+                'vwap': current_vwap,  # VWAP for intraday scalping
+                
+                # Pivot Points (Support/Resistance levels)
+                'pivot': float(pivot),
+                'resistance_1': float(resistance_1),
+                'resistance_2': float(resistance_2),
+                'resistance_3': float(resistance_3),
+                'support_1': float(support_1),
+                'support_2': float(support_2),
+                'support_3': float(support_3),
+                
+                # Swing High/Low (Recent price action S/R)
+                'swing_high': float(nearest_swing_high),
+                'swing_low': float(nearest_swing_low),
             }
             
             logger.debug(f"Computed indicators: {indicators}")
@@ -286,6 +362,23 @@ class DataAcquisition:
                 'keltner_lower_1m': indicators_1m.get('keltner_lower', 0),
                 'rsi_14_1m': indicators_1m.get('rsi_14', 50),
                 'trend_1m': 'bullish' if current_price > indicators_1m.get('ema_50', 0) else 'bearish',
+                
+                # VWAP for intraday scalping (volume-weighted average price)
+                'vwap_1h': indicators_1h.get('vwap', current_price),
+                'vwap_15m': indicators_15m.get('vwap', current_price),
+                'vwap_5m': indicators_5m.get('vwap', current_price),
+                'vwap_1m': indicators_1m.get('vwap', current_price),
+                
+                # Support/Resistance Levels (from 1h timeframe - main analysis)
+                'pivot': indicators_1h.get('pivot', current_price),
+                'resistance_1': indicators_1h.get('resistance_1', current_price),
+                'resistance_2': indicators_1h.get('resistance_2', current_price),
+                'resistance_3': indicators_1h.get('resistance_3', current_price),
+                'support_1': indicators_1h.get('support_1', current_price),
+                'support_2': indicators_1h.get('support_2', current_price),
+                'support_3': indicators_1h.get('support_3', current_price),
+                'swing_high': indicators_1h.get('swing_high', current_price),
+                'swing_low': indicators_1h.get('swing_low', current_price),
             }
             
             # Create market snapshot with multi-timeframe indicators

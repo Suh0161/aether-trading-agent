@@ -66,6 +66,8 @@ class LoopController:
         # Track stop loss and take profit for automatic monitoring
         self.position_stop_losses = {}  # {symbol: stop_loss_price}
         self.position_take_profits = {}  # {symbol: take_profit_price}
+        # Track position type (swing/scalp) for UI display
+        self.position_types = {}  # {symbol: 'swing' or 'scalp'}
         
         # Track last agent message to avoid spam
         self.last_message_type = None  # Track last message type sent
@@ -381,12 +383,17 @@ class LoopController:
                                 # Save entry price before deletion for trade logging
                                 entry_price_for_closed_trade = self.position_entry_prices.get(self.config.symbol)
                         
-                        # Track entry price, timestamp, stop loss, and take profit when position is opened
+                        # Track entry price, timestamp, stop loss, take profit, and position type when position is opened
                         if execution_result.executed and execution_result.filled_size:
-                            if decision.action == 'long' and execution_result.fill_price:
+                            if decision.action in ['long', 'short'] and execution_result.fill_price:
                                 self.position_entry_prices[self.config.symbol] = execution_result.fill_price
                                 self.position_entry_timestamps[self.config.symbol] = int(time.time())
                                 logger.info(f"  Recorded entry price: ${execution_result.fill_price:.2f}")
+                                
+                                # Store position type (swing or scalp)
+                                position_type = getattr(decision, 'position_type', 'swing')
+                                self.position_types[self.config.symbol] = position_type
+                                logger.info(f"  Position type: {position_type.upper()}")
                                 
                                 # Store stop loss and take profit if provided
                                 if decision.stop_loss is not None:
@@ -396,7 +403,7 @@ class LoopController:
                                     self.position_take_profits[self.config.symbol] = decision.take_profit
                                     logger.info(f"  Set take profit: ${decision.take_profit:.2f}")
                             elif decision.action in ['sell', 'close']:
-                                # Clear entry price, timestamp, stop loss, and take profit when position is closed
+                                # Clear entry price, timestamp, stop loss, take profit, and position type when position is closed
                                 if self.config.symbol in self.position_entry_prices:
                                     del self.position_entry_prices[self.config.symbol]
                                 if self.config.symbol in self.position_entry_timestamps:
@@ -405,6 +412,8 @@ class LoopController:
                                     del self.position_stop_losses[self.config.symbol]
                                 if self.config.symbol in self.position_take_profits:
                                     del self.position_take_profits[self.config.symbol]
+                                if self.config.symbol in self.position_types:
+                                    del self.position_types[self.config.symbol]
                         
                         # Adjust position_size if we just closed the position
                         # This ensures accurate position tracking in the same cycle
@@ -418,10 +427,10 @@ class LoopController:
                         position_value = 0.0
                         positions_list = []
                         
-                        # Build position data if exists
-                        if position_size > 0:
+                        # Build position data if exists (both LONG and SHORT)
+                        if position_size != 0:
                             base_currency = self.config.symbol.split('/')[0]
-                            notional = position_size * snapshot.price
+                            notional = abs(position_size) * snapshot.price
                             position_value = notional
                             
                             # Calculate unrealized P&L
@@ -433,12 +442,20 @@ class LoopController:
                                 entry_price = snapshot.price
                                 logger.warning(f"  Pre-existing position detected. Using current price ${entry_price:.2f} as entry (P&L will track from now)")
                             
-                            unreal_pnl = (snapshot.price - entry_price) * position_size
+                            # Calculate P&L based on position direction
+                            if position_size > 0:  # LONG position
+                                unreal_pnl = (snapshot.price - entry_price) * position_size
+                            else:  # SHORT position (position_size < 0)
+                                unreal_pnl = (entry_price - snapshot.price) * abs(position_size)
+                            
                             total_unrealized_pnl += unreal_pnl
                             logger.info(f"  P&L calculation: Entry=${entry_price:.2f}, Current=${snapshot.price:.2f}, Size={position_size:.6f}, P&L=${unreal_pnl:.2f}")
                             
                             # Calculate P&L percentage
-                            pnl_percentage = ((snapshot.price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                            if position_size > 0:  # LONG
+                                pnl_percentage = ((snapshot.price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                            else:  # SHORT
+                                pnl_percentage = ((entry_price - snapshot.price) / entry_price) * 100 if entry_price > 0 else 0
                             
                             # Get stop loss and take profit for this position
                             stop_loss = self.position_stop_losses.get(self.config.symbol)
@@ -448,8 +465,12 @@ class LoopController:
                             actual_leverage = (position_value / equity) if equity > 0 else 0.0
                             leverage_str = f"{actual_leverage:.2f}X" if actual_leverage > 0 else "0X"
                             
+                            # Get position type (swing or scalp)
+                            position_type = self.position_types.get(self.config.symbol, 'swing')
+                            side_label = position_type.upper()  # Display "SWING" or "SCALP" instead of "LONG"
+                            
                             positions_list.append({
-                                'side': 'LONG',
+                                'side': side_label,
                                 'coin': base_currency,
                                 'leverage': leverage_str,
                                 'notional': notional,
@@ -478,8 +499,8 @@ class LoopController:
                             available_cash, total_unrealized_pnl, cycle_count
                         )
                         
-                        # If trade was executed, log it
-                        if execution_result.executed and execution_result.filled_size:
+                        # If trade was executed AND it's a CLOSE/SELL action, log the completed trade
+                        if execution_result.executed and execution_result.filled_size and decision.action in ['close', 'sell']:
                             # Determine trade side (for close action, determine if it was LONG or SHORT)
                             trade_side = decision.action.upper()
                             if decision.action == 'close':
@@ -627,34 +648,48 @@ MARKET CONTEXT:
 - Daily Trend: {indicators.get('trend_1d', 'unknown')}
 - 4H Trend: {indicators.get('trend_4h', 'unknown')}
 - 1H RSI: {indicators.get('rsi_14', 50):.1f}
+- Support/Resistance: S1=${indicators.get('support_1', 0)/1000:.1f}k, R1=${indicators.get('resistance_1', 0)/1000:.1f}k, Pivot=${indicators.get('pivot', 0)/1000:.1f}k
+- VWAP 5m: ${indicators.get('vwap_5m', 0)/1000:.1f}k (price is {'above' if price > indicators.get('vwap_5m', price) else 'below'})
+- Swing High: ${indicators.get('swing_high', 0)/1000:.1f}k, Swing Low: ${indicators.get('swing_low', 0)/1000:.1f}k
 
 YOUR TASK:
-Write a brief, natural message (2-3 sentences max) explaining what you're doing and why, like you're updating a friend on your trades. Be conversational, confident, and clear. Use first person ("I'm buying", "I'll sell", "I'm thinking of holding").
+Write a brief, natural message (1-3 sentences) explaining what you're doing and why, like you're updating a friend. Be conversational, confident, and VARY your phrasing. Use first person ("I'm buying", "I'll wait", "watching for").
 
-Examples of good style:
+IMPORTANT - Include market context in your reasoning:
+- Mention S/R levels (e.g., "bounced from support at $109.7k", "testing R1 resistance")
+- Mention VWAP position (e.g., "price above VWAP", "below VWAP so bearish bias")
+- Mention multi-timeframe alignment (e.g., "1d/4h bullish", "5m bearish")
+- Mention key price action (e.g., "rejected at swing high", "broke above pivot")
 
-BUYING/ENTERING:
-- "I'm buying BTC at $67,234 with 8.5% of my portfolio. The breakout looks clean across multiple timeframes, so I'm going in with a stop at $66,500 and aiming for $68,500."
-- "Taking a quick scalp long at $67,100. The 5m chart is showing strong momentum and I'll take profit around $67,300."
-- "I'm opening a swing position here at $67,450. Daily and 4h trends are aligned bullish, so I'm comfortable holding this with a target at $69,000."
+VARY YOUR PHRASING - Don't repeat the same words. Use different expressions:
 
-HOLDING:
-- "I'm holding my position as it's up $215 right now. Price is at $67,450 and the trend is still intact, so I'm sticking with the plan."
-- "Still in my swing trade at $67,600. I'm thinking of holding until we hit the $68,500 target since the momentum is strong."
-- "Holding tight on this one. It's down $150 but the setup is still valid, so I'm giving it room to work."
-- "My position is profitable at $67,800 with $340 unrealized gains. I'll keep holding as long as the trend stays bullish."
+BUYING/ENTERING (vary these):
+- "Going long at $67.2k - bounced perfectly from S1 support and price is above VWAP. Target R1 at $68.5k."
+- "Taking a scalp here at $67.1k. 5m momentum strong, price above VWAP, aiming for quick $200."
+- "Entering swing position at $67.4k. 1d/4h trends aligned bullish, broke above pivot point."
+- "Buying the dip at $66.8k - swing low support held, good risk/reward to R2."
 
-SELLING/CLOSING:
-- "I'm closing my position at $68,500 with a $1,265 profit. Hit my target perfectly."
-- "Taking profit here at $67,900. Made $665 on this swing trade and I'm happy with that."
-- "Stop-loss hit at $66,500, taking a $734 loss. Protecting my capital as planned."
-- "I'm selling at $67,100. The trend reversed and I don't want to give back more profits, so I'm out with a small $85 gain."
-- "Closing this trade at $66,800. It's not working out as expected and I'll look for a better setup."
+HOLDING (vary these):
+- "Holding my long from $67.2k, now at $67.8k (+$600 unrealized). Still below R1 resistance so room to run."
+- "Staying in this swing trade. Price testing R1 but 4h trend still bullish, I'll hold for R2."
+- "Position down $150 but support at S1 is holding. Giving it room to work."
+- "Up $340 on this trade. Price between pivot and R1, trend intact, holding."
 
-WAITING/NO POSITION:
-- "I'm staying in cash for now. The market isn't giving me a clear setup yet, so I'm waiting for better conditions."
-- "No trades right now. I'm watching BTC at $67,200 but I need to see a cleaner breakout before I commit."
-- "Sitting on my hands here. The higher timeframes are mixed and I don't want to force a trade."
+SELLING/CLOSING (vary these):
+- "Closing at $68.5k for +$1,265 profit. Hit R1 resistance perfectly, taking the win."
+- "Out at $67.9k with +$665. Price rejected at swing high, smart to exit here."
+- "Stop hit at $66.5k, -$734 loss. Broke below S1 support, capital preservation mode."
+- "Exiting at $67.1k for small +$85 gain. Trend reversed below VWAP, not worth the risk."
+
+WAITING/NO POSITION (vary these - BE CREATIVE):
+- "Watching from sidelines. Price at R1 resistance $110.5k - need to see breakout or rejection before entering."
+- "No position. Price below VWAP and 5m bearish, but at S1 support - waiting to see if it bounces or breaks."
+- "Staying patient. Price between pivot and R1, no clear setup yet. Want to see which way it breaks."
+- "Holding cash. 1d/4h trends mixed, price chopping between S1 and R1. Need cleaner structure."
+- "Waiting for better entry. Price testing swing high resistance - if it breaks I'll go long, if rejects I'll short."
+- "No trade yet. Below VWAP but near swing low support - watching for bounce or breakdown."
+
+BE CREATIVE - Don't copy these examples exactly. Mix and match concepts. Explain your actual market analysis.
 
 Write ONLY the message, nothing else:"""
             
