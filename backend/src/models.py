@@ -26,6 +26,7 @@ class DecisionObject:
     reason: str
     stop_loss: Optional[float] = None  # Stop loss price for position monitoring
     take_profit: Optional[float] = None  # Take profit price for position monitoring
+    position_type: str = "swing"  # "swing" | "scalp" - indicates trade duration style
 
 
 @dataclass

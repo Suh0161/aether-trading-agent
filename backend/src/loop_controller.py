@@ -51,6 +51,15 @@ class LoopController:
             logger.warning(f"Failed to initialize API client: {e}")
             self.api_client = None
         
+        # Initialize OpenAI client for AI-generated messages
+        try:
+            from openai import OpenAI
+            self.openai_client = OpenAI(api_key=config.deepseek_api_key, base_url="https://api.deepseek.com")
+            logger.info("OpenAI client initialized for AI message generation")
+        except Exception as e:
+            logger.warning(f"Failed to initialize OpenAI client for messages: {e}")
+            self.openai_client = None
+        
         # Track entry prices and timestamps for P&L calculation and trade logging
         self.position_entry_prices = {}  # {symbol: entry_price}
         self.position_entry_timestamps = {}  # {symbol: entry_timestamp} - Unix timestamp in seconds
@@ -61,6 +70,10 @@ class LoopController:
         # Track last agent message to avoid spam
         self.last_message_type = None  # Track last message type sent
         self.last_message_cycle = 0  # Track which cycle last message was sent
+        
+        # Track initial real equity for virtual equity calculation
+        self.initial_real_equity: Optional[float] = None
+        self.virtual_starting_equity = config.virtual_starting_equity
         
         logger.info("Loop controller initialized successfully")
     
@@ -108,6 +121,8 @@ class LoopController:
         logger.info(f"Exchange: {self.config.exchange_type}")
         logger.info(f"Decision Provider: {self.config.decision_provider}")
         logger.info(f"Loop Interval: {self.config.loop_interval_seconds}s")
+        if self.config.virtual_starting_equity:
+            logger.info(f"Virtual Equity Mode: ENABLED (Starting at ${self.config.virtual_starting_equity:,.2f})")
         logger.info("=" * 60)
         
         # Test 1: Exchange connectivity
@@ -139,8 +154,8 @@ class LoopController:
                 indicators={"ema_20": 50000.0, "ema_50": 49500.0, "rsi_14": 50.0}
             )
             
-            # Make a test call
-            response = self.decision_provider.get_decision(test_snapshot, 0.0, 10000.0)
+            # Make a test call (using $100 for test - actual equity comes from exchange)
+            response = self.decision_provider.get_decision(test_snapshot, 0.0, 100.0)
             
             if "error" in response.lower() or "deepseek api error" in response.lower():
                 logger.error(f"✗ DeepSeek API test failed: {response}")
@@ -203,13 +218,30 @@ class LoopController:
                     
                     # Get equity (total USDT or quote currency)
                     quote_currency = self.config.symbol.split('/')[1]
-                    equity = balance['total'].get(quote_currency, 0.0)
+                    real_equity = balance['total'].get(quote_currency, 0.0)
+                    
+                    # Track initial real equity on first fetch (for virtual equity calculation)
+                    if self.initial_real_equity is None:
+                        self.initial_real_equity = real_equity
+                        if self.virtual_starting_equity:
+                            logger.info(f"  Initial real equity: ${real_equity:,.2f}")
+                            logger.info(f"  Virtual starting equity: ${self.virtual_starting_equity:,.2f}")
+                            logger.info(f"  Virtual equity mode ENABLED - agent will use virtual equity for calculations")
+                    
+                    # Calculate virtual equity if enabled
+                    # Virtual equity starts at virtual_starting_equity and tracks P&L changes
+                    if self.virtual_starting_equity is not None and self.initial_real_equity is not None:
+                        equity_change = real_equity - self.initial_real_equity
+                        equity = self.virtual_starting_equity + equity_change
+                        logger.info(f"  Real equity: ${real_equity:,.2f} | Virtual equity: ${equity:,.2f} (change: ${equity_change:+,.2f})")
+                    else:
+                        equity = real_equity
                     
                     # Get position size (base currency)
                     base_currency = self.config.symbol.split('/')[0]
                     position_size = balance['total'].get(base_currency, 0.0)
                     
-                    logger.info(f"  Equity: {equity} {quote_currency}")
+                    logger.info(f"  Equity (used for calculations): {equity} {quote_currency}")
                     logger.info(f"  Position: {position_size} {base_currency}")
                     
                 except Exception as e:
@@ -412,10 +444,14 @@ class LoopController:
                             stop_loss = self.position_stop_losses.get(self.config.symbol)
                             take_profit = self.position_take_profits.get(self.config.symbol)
                             
+                            # Calculate actual leverage used (position value / equity)
+                            actual_leverage = (position_value / equity) if equity > 0 else 0.0
+                            leverage_str = f"{actual_leverage:.2f}X" if actual_leverage > 0 else "0X"
+                            
                             positions_list.append({
                                 'side': 'LONG',
                                 'coin': base_currency,
-                                'leverage': '1X',
+                                'leverage': leverage_str,
                                 'notional': notional,
                                 'unrealPnL': unreal_pnl,
                                 'entryPrice': entry_price,
@@ -539,51 +575,145 @@ class LoopController:
         else:
             logger.warning(f"Cycle took {elapsed:.1f}s, longer than interval {self.config.loop_interval_seconds}s")
     
+    def _generate_ai_message(
+        self, decision, snapshot, position_size: float, equity: float,
+        available_cash: float, unrealized_pnl: float
+    ) -> str:
+        """
+        Use AI to generate natural, conversational trading messages.
+        
+        Args:
+            decision: Trading decision
+            snapshot: Market snapshot
+            position_size: Current position size
+            equity: Account equity
+            available_cash: Available cash
+            unrealized_pnl: Unrealized P&L
+            
+        Returns:
+            Natural language message from AI
+        """
+        if not self.openai_client:
+            # Fallback to simple message if AI not available
+            return f"{decision.action.upper()}: {decision.reason}"
+        
+        try:
+            # Get position type
+            position_type = getattr(decision, 'position_type', 'swing')
+            
+            # Build context for AI
+            indicators = snapshot.indicators
+            price = snapshot.price
+            
+            # Build prompt for AI message generation
+            prompt = f"""You are a professional crypto trader explaining your decision to your client in a casual, conversational way.
+
+CURRENT SITUATION:
+- Action: {decision.action.upper()}
+- Position Type: {position_type} (swing = multi-day hold, scalp = quick in/out)
+- BTC Price: ${price:,.2f}
+- Your Equity: ${equity:,.2f}
+- Available Cash: ${available_cash:,.2f}
+- Current Position Size: {position_size:.6f} BTC
+- Unrealized P&L: ${unrealized_pnl:,.2f}
+
+DECISION DETAILS:
+- Reason: {decision.reason}
+- Position Size: {decision.size_pct*100:.1f}% of equity
+{f"- Stop Loss: ${decision.stop_loss:,.2f}" if decision.stop_loss else ""}
+{f"- Take Profit: ${decision.take_profit:,.2f}" if decision.take_profit else ""}
+
+MARKET CONTEXT:
+- Daily Trend: {indicators.get('trend_1d', 'unknown')}
+- 4H Trend: {indicators.get('trend_4h', 'unknown')}
+- 1H RSI: {indicators.get('rsi_14', 50):.1f}
+
+YOUR TASK:
+Write a brief, natural message (2-3 sentences max) explaining what you're doing and why, like you're updating a friend on your trades. Be conversational, confident, and clear. Use first person ("I'm buying", "I'll sell", "I'm thinking of holding").
+
+Examples of good style:
+
+BUYING/ENTERING:
+- "I'm buying BTC at $67,234 with 8.5% of my portfolio. The breakout looks clean across multiple timeframes, so I'm going in with a stop at $66,500 and aiming for $68,500."
+- "Taking a quick scalp long at $67,100. The 5m chart is showing strong momentum and I'll take profit around $67,300."
+- "I'm opening a swing position here at $67,450. Daily and 4h trends are aligned bullish, so I'm comfortable holding this with a target at $69,000."
+
+HOLDING:
+- "I'm holding my position as it's up $215 right now. Price is at $67,450 and the trend is still intact, so I'm sticking with the plan."
+- "Still in my swing trade at $67,600. I'm thinking of holding until we hit the $68,500 target since the momentum is strong."
+- "Holding tight on this one. It's down $150 but the setup is still valid, so I'm giving it room to work."
+- "My position is profitable at $67,800 with $340 unrealized gains. I'll keep holding as long as the trend stays bullish."
+
+SELLING/CLOSING:
+- "I'm closing my position at $68,500 with a $1,265 profit. Hit my target perfectly."
+- "Taking profit here at $67,900. Made $665 on this swing trade and I'm happy with that."
+- "Stop-loss hit at $66,500, taking a $734 loss. Protecting my capital as planned."
+- "I'm selling at $67,100. The trend reversed and I don't want to give back more profits, so I'm out with a small $85 gain."
+- "Closing this trade at $66,800. It's not working out as expected and I'll look for a better setup."
+
+WAITING/NO POSITION:
+- "I'm staying in cash for now. The market isn't giving me a clear setup yet, so I'm waiting for better conditions."
+- "No trades right now. I'm watching BTC at $67,200 but I need to see a cleaner breakout before I commit."
+- "Sitting on my hands here. The higher timeframes are mixed and I don't want to force a trade."
+
+Write ONLY the message, nothing else:"""
+            
+            # Call AI
+            response = self.openai_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=150,
+                temperature=0.7,
+                timeout=5.0
+            )
+            
+            message = response.choices[0].message.content.strip()
+            
+            # Remove quotes if AI added them
+            if message.startswith('"') and message.endswith('"'):
+                message = message[1:-1]
+            if message.startswith("'") and message.endswith("'"):
+                message = message[1:-1]
+            
+            return message
+            
+        except Exception as e:
+            logger.warning(f"Failed to generate AI message: {e}")
+            # Fallback to simple message
+            return f"{decision.action.upper()}: {decision.reason}"
+    
     def _send_smart_agent_message(
         self, decision, snapshot, position_size: float, equity: float,
         available_cash: float, unrealized_pnl: float, cycle_count: int
     ) -> None:
         """
-        Send agent messages using AI's natural reasoning - no hardcoded templates.
+        Send AI-generated natural messages to users.
         
         Rules:
-        - Always send: BUY, SELL, CLOSE actions (use AI's reason)
-        - Skip: Repetitive "hold" messages unless AI provides useful context
-        - Use: AI's decision.reason directly - no emojis, no templates
+        - Always send: BUY, SELL, CLOSE actions
+        - Send hold messages every 10 cycles to avoid spam
         """
         if not self.api_client:
             return
         
-        # === ALWAYS SEND: Important actions (BUY, SELL, CLOSE) ===
+        # === ALWAYS SEND: Important actions ===
         if decision.action in ["long", "sell", "close"]:
-            # Use AI's own reasoning - no formatting, no emojis
-            message = decision.reason
+            message = self._generate_ai_message(
+                decision, snapshot, position_size, equity, 
+                available_cash, unrealized_pnl
+            )
             self.api_client.add_agent_message(message)
             self.last_message_type = decision.action
             self.last_message_cycle = cycle_count
             return
         
-        # === SMART HOLD MESSAGES: Only send when AI provides useful context ===
+        # === HOLD MESSAGES: Send periodically to avoid spam ===
         elif decision.action == "hold":
-            # Skip empty or generic hold messages
-            reason = decision.reason.strip().lower()
-            
-            # Skip if reason is too generic or empty
-            generic_reasons = ["hold", "waiting", "no action", "holding"]
-            if not decision.reason or (any(gen in reason for gen in generic_reasons) and len(decision.reason) < 20):
-                # Only send if significant event occurred
-                if cycle_count == 1:
-                    # First cycle - send initial message
-                    message = decision.reason if decision.reason else "System initialized"
-                    self.api_client.add_agent_message(message)
-                    self.last_message_type = "hold"
-                    self.last_message_cycle = cycle_count
-                return
-            
-            # Check if we've sent similar message recently (avoid spam)
-            if cycle_count - self.last_message_cycle >= 10:
-                # Use AI's reasoning directly - no templates
-                message = decision.reason
+            if cycle_count == 1 or (cycle_count - self.last_message_cycle) >= 10:
+                message = self._generate_ai_message(
+                    decision, snapshot, position_size, equity,
+                    available_cash, unrealized_pnl
+                )
                 self.api_client.add_agent_message(message)
                 self.last_message_type = "hold"
                 self.last_message_cycle = cycle_count

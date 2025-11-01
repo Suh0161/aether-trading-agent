@@ -3,7 +3,7 @@
 import logging
 from openai import OpenAI
 from src.models import MarketSnapshot
-from src.strategy import ATRBreakoutStrategy, SimpleEMAStrategy, StrategySignal
+from src.strategy import ATRBreakoutStrategy, SimpleEMAStrategy, ScalpingStrategy, StrategySignal
 
 logger = logging.getLogger(__name__)
 
@@ -29,17 +29,26 @@ class HybridDecisionProvider:
         self.api_key = api_key
         self.client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
         
-        # Initialize strategy
+        # Initialize strategies
         if strategy_type == "atr":
             self.strategy = ATRBreakoutStrategy()
-            logger.info("Using ATR Breakout Strategy")
+            logger.info("Using ATR Breakout Strategy (swing)")
         else:
             self.strategy = SimpleEMAStrategy()
             logger.info("Using Simple EMA Strategy")
+        
+        # Initialize scalping strategy for fallback
+        self.scalping_strategy = ScalpingStrategy()
+        logger.info("Scalping strategy initialized (fallback mode)")
     
     def get_decision(self, snapshot: MarketSnapshot, position_size: float, equity: float) -> str:
         """
-        Get trading decision using hybrid approach.
+        Get trading decision using hybrid approach with adaptive fallback.
+        
+        Adaptive Strategy:
+        1. Try swing trading first (primary mode)
+        2. If no swing opportunity, fall back to scalping
+        3. AI filters both swing and scalp signals
         
         Args:
             snapshot: Current market snapshot
@@ -49,30 +58,93 @@ class HybridDecisionProvider:
         Returns:
             JSON string with decision
         """
-        # Step 1: Get signal from rule-based strategy
-        signal = self.strategy.analyze(snapshot, position_size, equity)
+        # Step 1: Get signal from swing strategy (primary)
+        swing_signal = self.strategy.analyze(snapshot, position_size, equity)
         
-        logger.info(f"Strategy signal: {signal.action} (confidence: {signal.confidence:.2f})")
-        logger.info(f"Strategy reason: {signal.reason}")
+        logger.info(f"Swing signal: {swing_signal.action} (confidence: {swing_signal.confidence:.2f}, type: {swing_signal.position_type})")
+        logger.info(f"Swing reason: {swing_signal.reason}")
         
-        # Step 2: If strategy says hold/close, no need for AI filter
-        if signal.action in ["hold", "close"]:
-            return self._format_decision(signal)
+        # Step 2: If swing strategy has a position or wants to close, use it directly
+        if swing_signal.action in ["close"]:
+            # Always respect close signals
+            return self._format_decision(swing_signal)
         
-        # Step 3: Strategy wants to enter - ask AI to filter
-        if signal.action in ["long", "short"]:
-            ai_approved = self._ai_filter(snapshot, signal, position_size, equity)
+        # Step 3: If swing strategy wants to enter, ask AI to filter
+        if swing_signal.action in ["long", "short"]:
+            ai_approved = self._ai_filter(snapshot, swing_signal, position_size, equity)
             
             if not ai_approved:
-                # AI vetoed the trade
-                logger.warning("AI filter VETOED the trade")
-                return '{"action": "hold", "size_pct": 0.0, "reason": "AI filter vetoed: ' + signal.reason + '"}'
+                # AI vetoed the swing trade - check scalping as fallback
+                logger.warning("AI filter VETOED swing trade, checking scalping fallback")
+                return self._check_scalping_fallback(snapshot, position_size, equity)
             
-            logger.info("AI filter APPROVED the trade")
-            return self._format_decision(signal)
+            logger.info("AI filter APPROVED swing trade")
+            return self._format_decision(swing_signal)
         
-        # Fallback
-        return '{"action": "hold", "size_pct": 0.0, "reason": "Unknown signal"}'
+        # Step 4: Swing strategy says "hold" - check if we should try scalping
+        # Only fall back to scalping if:
+        # - No current position (position_size == 0)
+        # - Swing confidence is very low (0.0) - meaning no swing setup available
+        # - This allows scalping when swing has no opportunities
+        
+        if swing_signal.action == "hold" and position_size == 0 and swing_signal.confidence == 0.0:
+            # No swing opportunity - try scalping as fallback
+            logger.info("No swing opportunity detected (confidence=0.0), checking scalping fallback")
+            return self._check_scalping_fallback(snapshot, position_size, equity)
+        
+        # Step 5: Swing strategy says "hold" but we're in a swing position
+        # Or swing strategy has some confidence but no entry yet
+        # In these cases, respect the swing hold signal
+        return self._format_decision(swing_signal)
+    
+    def _check_scalping_fallback(self, snapshot: MarketSnapshot, position_size: float, equity: float) -> str:
+        """
+        Check scalping strategy as fallback when swing has no opportunities.
+        
+        Args:
+            snapshot: Current market snapshot
+            position_size: Current position size
+            equity: Account equity
+            
+        Returns:
+            JSON string with decision
+        """
+        # Get scalping signal
+        scalp_signal = self.scalping_strategy.analyze(snapshot, position_size, equity)
+        
+        logger.info(f"Scalp signal: {scalp_signal.action} (confidence: {scalp_signal.confidence:.2f})")
+        logger.info(f"Scalp reason: {scalp_signal.reason}")
+        
+        # If scalping wants to close (we're in a scalp position), use it
+        if scalp_signal.action == "close":
+            return self._format_decision(scalp_signal)
+        
+        # If scalping wants to enter, ask AI to filter
+        if scalp_signal.action in ["long", "short"]:
+            ai_approved = self._ai_filter(snapshot, scalp_signal, position_size, equity)
+            
+            if not ai_approved:
+                logger.warning("AI filter VETOED scalp trade")
+                return '{"action": "hold", "size_pct": 0.0, "reason": "AI filter vetoed scalp: ' + scalp_signal.reason + '", "position_type": "scalp"}'
+            
+            logger.info("AI filter APPROVED scalp trade")
+            return self._format_decision(scalp_signal)
+        
+        # Scalping also says hold - return hold signal
+        return self._format_decision(scalp_signal)
+    
+    def _get_smart_leverage(self, equity: float) -> float:
+        """Get smart max leverage for current equity (matches risk_manager logic)."""
+        if equity < 500:
+            return 1.0
+        elif equity < 1000:
+            return 1.5
+        elif equity < 5000:
+            return 2.0
+        elif equity < 10000:
+            return 2.5
+        else:
+            return 3.0
     
     def _ai_filter(self, snapshot: MarketSnapshot, signal: StrategySignal, position_size: float, equity: float) -> bool:
         """
@@ -138,14 +210,24 @@ ACCOUNT STATUS (MONEY MANAGEMENT):
 - Available cash: ${available_cash:,.2f}
 - Required cash for this trade: ${required_cash:,.2f}
 - Current leverage: {leverage_used:.2f}x
+- Smart max leverage (adaptive): {self._get_smart_leverage(equity):.2f}x
+  (System uses adaptive leverage: smaller accounts = more conservative)
 
-MARKET CONTEXT:
+MARKET CONTEXT (Multi-Timeframe Analysis):
 - Current price: ${snapshot.price:,.2f}
-- EMA20: ${indicators.get('ema_20', 0):,.2f}
-- EMA50: ${indicators.get('ema_50', 0):,.2f}
-- RSI(14): {indicators.get('rsi_14', 50):.1f}
+- Position Type: {signal.position_type.upper()}
+
+SWING TIMEFRAMES (for swing trades):
+- Daily trend: {indicators.get('trend_1d', 'unknown')} (EMA50: ${indicators.get('ema_50_1d', 0):,.2f})
+- 4h trend: {indicators.get('trend_4h', 'unknown')} (EMA50: ${indicators.get('ema_50_4h', 0):,.2f}, RSI {indicators.get('rsi_14_4h', 50):.1f})
+- Primary (1h): EMA20 ${indicators.get('ema_20', 0):,.2f}, EMA50 ${indicators.get('ema_50', 0):,.2f}, RSI {indicators.get('rsi_14', 50):.1f}
+- 15m entry: Trend {indicators.get('trend_15m', 'unknown')}, Keltner Upper ${indicators.get('keltner_upper_15m', 0):,.2f}, RSI {indicators.get('rsi_14_15m', 50):.1f}
 - ATR(14): ${indicators.get('atr_14', 0):,.2f}
-- Keltner Upper: ${indicators.get('keltner_upper', 0):,.2f}
+- Primary Keltner Upper: ${indicators.get('keltner_upper', 0):,.2f}
+
+SCALPING TIMEFRAMES (for scalp trades):
+- 5m trend: {indicators.get('trend_5m', 'unknown')}, Keltner Upper ${indicators.get('keltner_upper_5m', 0):,.2f}, RSI {indicators.get('rsi_14_5m', 50):.1f}
+- 1m trend: {indicators.get('trend_1m', 'unknown')}, Keltner Upper ${indicators.get('keltner_upper_1m', 0):,.2f}, RSI {indicators.get('rsi_14_1m', 50):.1f}
 
 YOUR JOB:
 Decide if this trade setup is likely to FAIL or succeed.
@@ -154,16 +236,22 @@ VETO if:
 - Fake breakout / bull trap likely
 - Market regime changed (news, funding, etc.)
 - Extreme volatility / rug risk
-- Overbought conditions
+- Overbought conditions (RSI > 75 for swing, RSI > 80 for scalp)
 - Insufficient available cash (if required_cash > available_cash)
-- Leverage too high (if leverage_used > 2.0x)
+- Leverage too high (if leverage_used exceeds smart max leverage)
+- Position size too aggressive for current market conditions
+- For SCALP trades: 5m or 1m trend not aligned with entry
+- Account too small for the proposed position size
 
 APPROVE if:
 - Clean breakout with follow-through
-- Trend is strong
-- Risk/reward is favorable
+- Trend is strong (multi-TF alignment for swing, 5m/1m alignment for scalp)
+- Risk/reward is favorable (at least 2:1 for swing, 1.5:1 for scalp)
 - Enough available cash to execute trade
 - Account can afford the position size
+- Leverage is within smart limits for this account size
+- Position size is appropriate for market volatility
+- For SCALP trades: Quick momentum confirmed on lower timeframes
 
 OUTPUT FORMAT:
 First word must be either "APPROVE" or "VETO", then brief reason.
@@ -182,7 +270,8 @@ Your decision:"""
         decision = {
             "action": signal.action,
             "size_pct": signal.size_pct,
-            "reason": signal.reason
+            "reason": signal.reason,
+            "position_type": signal.position_type
         }
         
         # Include stop loss and take profit if available

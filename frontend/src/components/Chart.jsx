@@ -138,7 +138,7 @@ function Chart({ symbol, trades = [] }) {
                 .forEach((trade) => {
                     // Use actual timestamps if available, otherwise fallback to estimated positions
                     let entryTime, exitTime
-                    
+
                     if (trade.entryTimestamp && trade.exitTimestamp) {
                         // Use real timestamps from trade data
                         entryTime = trade.entryTimestamp
@@ -283,7 +283,7 @@ function Chart({ symbol, trades = [] }) {
                 .forEach((trade) => {
                     // Use actual timestamps if available, otherwise fallback to estimated positions
                     let entryTime, exitTime
-                    
+
                     if (trade.entryTimestamp && trade.exitTimestamp) {
                         // Use real timestamps from trade data
                         entryTime = trade.entryTimestamp
@@ -365,7 +365,7 @@ function Chart({ symbol, trades = [] }) {
                     </div>
                 </div>
             </div>
-            
+
             <div className="timeframe-selector">
                 {timeframes.map(tf => (
                     <button
@@ -377,7 +377,7 @@ function Chart({ symbol, trades = [] }) {
                     </button>
                 ))}
             </div>
-            
+
             <div ref={chartContainerRef} className={`chart ${isUpdating ? 'updating' : ''}`} />
         </div>
     )

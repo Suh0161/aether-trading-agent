@@ -31,6 +31,9 @@ class Config:
     daily_loss_cap_pct: Optional[float]
     cooldown_seconds: Optional[int]
     
+    # Virtual equity (for testing with capped balance)
+    virtual_starting_equity: Optional[float]  # If set, agent uses this as starting equity
+    
     # LLM
     decision_provider: str
     strategy_mode: str  # "hybrid_atr", "hybrid_ema", "ai_only"
@@ -106,6 +109,17 @@ class Config:
             except ValueError:
                 raise ValueError("COOLDOWN_SECONDS must be a valid integer")
         
+        # Load virtual starting equity (optional, for testing)
+        virtual_starting_equity = None
+        virtual_equity_str = os.getenv("VIRTUAL_STARTING_EQUITY")
+        if virtual_equity_str:
+            try:
+                virtual_starting_equity = float(virtual_equity_str)
+                if virtual_starting_equity <= 0:
+                    raise ValueError("VIRTUAL_STARTING_EQUITY must be greater than 0")
+            except ValueError:
+                raise ValueError("VIRTUAL_STARTING_EQUITY must be a valid float")
+        
         # Validate numeric ranges
         if loop_interval_seconds <= 0:
             raise ValueError("LOOP_INTERVAL_SECONDS must be greater than 0")
@@ -138,6 +152,7 @@ class Config:
             run_mode=run_mode,
             daily_loss_cap_pct=daily_loss_cap_pct,
             cooldown_seconds=cooldown_seconds,
+            virtual_starting_equity=virtual_starting_equity,
             decision_provider=decision_provider,
             strategy_mode=strategy_mode,
         )

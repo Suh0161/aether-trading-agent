@@ -130,7 +130,7 @@ class APIClient:
         if entry_timestamp is None:
             entry_timestamp = exit_timestamp  # Fallback if not provided
         
-        timestamp = datetime.fromtimestamp(exit_timestamp).strftime("%m/%d, %I:%M %p")
+        timestamp = datetime.fromtimestamp(exit_timestamp).strftime("%d/%m %H:%M")
         
         return self._post("trades", {
             "id": exit_timestamp,  # Use exit timestamp as ID

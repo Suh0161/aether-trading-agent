@@ -80,14 +80,30 @@ class RiskManager:
             )
             return RiskResult(approved=False, reason="exceeds max position size")
         
-        # Rule 5: Leverage limit
+        # Rule 5: Smart leverage limit (adaptive based on portfolio size)
         proposed_position_value = proposed_size * snapshot.price
-        max_leverage_value = equity * self.max_leverage
+        
+        # Calculate smart leverage based on portfolio size
+        # Smaller accounts = more conservative leverage, larger accounts = can use more
+        smart_max_leverage = self._calculate_smart_leverage(equity)
+        max_leverage_value = equity * smart_max_leverage
+        
+        # Also check current leverage if we have a position
+        current_position_value = position_size * snapshot.price if position_size > 0 else 0.0
+        total_proposed_value = current_position_value + proposed_position_value
+        proposed_leverage = (total_proposed_value / equity) if equity > 0 else 0.0
+        
+        if proposed_leverage > smart_max_leverage:
+            logger.warning(
+                f"Risk check: denied - proposed leverage {proposed_leverage:.2f}x "
+                f"exceeds smart max leverage {smart_max_leverage:.2f}x (equity: ${equity:,.2f})"
+            )
+            return RiskResult(approved=False, reason=f"exceeds smart max leverage ({smart_max_leverage:.2f}x)")
         
         if proposed_position_value > max_leverage_value:
             logger.warning(
                 f"Risk check: denied - proposed position value {proposed_position_value:.2f} "
-                f"exceeds max leverage value {max_leverage_value:.2f}"
+                f"exceeds max leverage value {max_leverage_value:.2f} (smart max: {smart_max_leverage:.2f}x)"
             )
             return RiskResult(approved=False, reason="exceeds max leverage")
         
@@ -138,6 +154,42 @@ class RiskManager:
         
         return RiskResult(approved=True, reason="")
     
+    def _calculate_smart_leverage(self, equity: float) -> float:
+        """
+        Calculate smart maximum leverage based on portfolio size.
+        
+        Smaller portfolios use more conservative leverage:
+        - $0-$500:   1.0x (very conservative)
+        - $500-$1k:  1.5x (conservative)
+        - $1k-$5k:   2.0x (moderate)
+        - $5k-$10k:  2.5x (moderate-high)
+        - $10k+:     3.0x (can use configured max)
+        
+        Args:
+            equity: Current account equity
+            
+        Returns:
+            Maximum allowed leverage multiplier
+        """
+        # Use configured max leverage as absolute maximum
+        absolute_max = self.max_leverage
+        
+        if equity < 500:
+            # Very small accounts: very conservative (1x = no leverage)
+            return min(1.0, absolute_max)
+        elif equity < 1000:
+            # Small accounts: conservative (1.5x)
+            return min(1.5, absolute_max)
+        elif equity < 5000:
+            # Medium accounts: moderate (2x)
+            return min(2.0, absolute_max)
+        elif equity < 10000:
+            # Large accounts: moderate-high (2.5x)
+            return min(2.5, absolute_max)
+        else:
+            # Very large accounts: can use configured max (default 3x)
+            return absolute_max
+    
     def _update_daily_equity(self, equity: float) -> None:
         """
         Update starting equity at the beginning of each UTC day.
@@ -153,3 +205,6 @@ class RiskManager:
             self.starting_equity = equity
             self.current_day = current_day
             logger.info(f"New UTC day: starting equity set to {equity:.2f}")
+            # Log smart leverage for new day
+            smart_leverage = self._calculate_smart_leverage(equity)
+            logger.info(f"Smart leverage for equity ${equity:,.2f}: {smart_leverage:.2f}x")

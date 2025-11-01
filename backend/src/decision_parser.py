@@ -91,11 +91,18 @@ class DecisionParser:
                 logger.warning(f"Invalid take_profit type, ignoring. Raw response: {raw_response}")
                 take_profit = None
         
+        # Extract position_type (optional, defaults to "swing")
+        position_type = data.get("position_type", "swing")
+        if position_type not in ["swing", "scalp"]:
+            logger.warning(f"Invalid position_type '{position_type}', defaulting to 'swing'. Raw response: {raw_response}")
+            position_type = "swing"
+        
         # All validations passed
         return DecisionObject(
             action=action,
             size_pct=float(size_pct),
             reason=reason,
             stop_loss=stop_loss,
-            take_profit=take_profit
+            take_profit=take_profit,
+            position_type=position_type
         )

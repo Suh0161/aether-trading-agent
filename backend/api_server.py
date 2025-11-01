@@ -91,7 +91,7 @@ async def add_trade(trade: Dict[str, Any]):
 @app.post("/api/agent-messages")
 async def add_agent_message(message: Dict[str, Any]):
     """Add an agent message"""
-    message["timestamp"] = datetime.now().strftime("%m/%d %H:%M:%S")
+    message["timestamp"] = datetime.now().strftime("%d/%m %H:%M")
     agent_messages_data.append(message)
     return {"status": "success", "message": message}
 
