@@ -1,0 +1,6 @@
+ccxt
+python-dotenv
+openai
+pandas
+fastapi
+uvicorn[standard]
