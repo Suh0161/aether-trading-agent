@@ -68,6 +68,10 @@ class LoopController:
         self.position_take_profits = {}  # {symbol: take_profit_price}
         # Track position type (swing/scalp) for UI display
         self.position_types = {}  # {symbol: 'swing' or 'scalp'}
+        # Track leverage and risk/reward for position monitoring
+        self.position_leverages = {}  # {symbol: leverage_multiplier}
+        self.position_risk_amounts = {}  # {symbol: risk_amount_usd}
+        self.position_reward_amounts = {}  # {symbol: reward_amount_usd}
         
         # Track last agent message to avoid spam
         self.last_message_type = None  # Track last message type sent
@@ -422,8 +426,24 @@ class LoopController:
                                 if decision.take_profit is not None:
                                     self.position_take_profits[self.config.symbol] = decision.take_profit
                                     logger.info(f"  Set take profit: ${decision.take_profit:.2f}")
+                                
+                                # Store leverage, risk amount, and reward amount if provided
+                                leverage = getattr(decision, 'leverage', 1.0)
+                                risk_amount = getattr(decision, 'risk_amount', None)
+                                reward_amount = getattr(decision, 'reward_amount', None)
+                                
+                                self.position_leverages[self.config.symbol] = leverage
+                                logger.info(f"  Leverage: {leverage:.1f}x")
+                                
+                                if risk_amount is not None:
+                                    self.position_risk_amounts[self.config.symbol] = risk_amount
+                                    logger.info(f"  Risk amount (if SL hits): ${risk_amount:.2f}")
+                                
+                                if reward_amount is not None:
+                                    self.position_reward_amounts[self.config.symbol] = reward_amount
+                                    logger.info(f"  Reward amount (if TP hits): ${reward_amount:.2f}")
                             elif decision.action in ['sell', 'close']:
-                                # Clear entry price, timestamp, stop loss, take profit, and position type when position is closed
+                                # Clear entry price, timestamp, stop loss, take profit, position type, leverage, and risk/reward when position is closed
                                 if self.config.symbol in self.position_entry_prices:
                                     del self.position_entry_prices[self.config.symbol]
                                 if self.config.symbol in self.position_entry_timestamps:
@@ -434,6 +454,12 @@ class LoopController:
                                     del self.position_take_profits[self.config.symbol]
                                 if self.config.symbol in self.position_types:
                                     del self.position_types[self.config.symbol]
+                                if self.config.symbol in self.position_leverages:
+                                    del self.position_leverages[self.config.symbol]
+                                if self.config.symbol in self.position_risk_amounts:
+                                    del self.position_risk_amounts[self.config.symbol]
+                                if self.config.symbol in self.position_reward_amounts:
+                                    del self.position_reward_amounts[self.config.symbol]
                         
                         # Adjust position_size if we just closed the position
                         # This ensures accurate position tracking in the same cycle

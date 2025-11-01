@@ -287,6 +287,9 @@ async def agent_chat(request: ChatRequest):
             entry_price = None
             stop_loss = None
             take_profit = None
+            leverage = 1.0
+            risk_amount = None
+            reward_amount = None
             unrealized_pnl = 0.0
             
             if loop_controller_instance:
@@ -297,7 +300,7 @@ async def agent_chat(request: ChatRequest):
                 if hasattr(loop_controller_instance, 'position_types') and loop_controller_instance.position_types:
                     position_type = list(loop_controller_instance.position_types.values())[0] if loop_controller_instance.position_types else None
                 
-                # Get entry price, stop loss, take profit
+                # Get entry price, stop loss, take profit, leverage, risk, reward
                 symbol = snapshot.symbol
                 if hasattr(loop_controller_instance, 'position_entry_prices'):
                     entry_price = loop_controller_instance.position_entry_prices.get(symbol)
@@ -305,6 +308,12 @@ async def agent_chat(request: ChatRequest):
                     stop_loss = loop_controller_instance.position_stop_losses.get(symbol)
                 if hasattr(loop_controller_instance, 'position_take_profits'):
                     take_profit = loop_controller_instance.position_take_profits.get(symbol)
+                if hasattr(loop_controller_instance, 'position_leverages'):
+                    leverage = loop_controller_instance.position_leverages.get(symbol, 1.0)
+                if hasattr(loop_controller_instance, 'position_risk_amounts'):
+                    risk_amount = loop_controller_instance.position_risk_amounts.get(symbol)
+                if hasattr(loop_controller_instance, 'position_reward_amounts'):
+                    reward_amount = loop_controller_instance.position_reward_amounts.get(symbol)
                 
                 # Calculate unrealized P&L if we have a position
                 if current_position != 0 and entry_price:
@@ -325,16 +334,22 @@ async def agent_chat(request: ChatRequest):
             
             # Build position info string
             if current_position != 0:
+                # Calculate actual risk/reward if not provided
+                actual_risk = risk_amount if risk_amount else (abs((entry_price - stop_loss) * current_position) if stop_loss and entry_price else 0)
+                actual_reward = reward_amount if reward_amount else (abs((take_profit - entry_price) * current_position) if take_profit and entry_price else 0)
+                
                 position_info = f"""
 CURRENT POSITION:
 - Type: {position_type.upper() if position_type else 'UNKNOWN'}
 - Size: {current_position:.8f} BTC (${abs(current_position) * price:,.2f} notional)
 - Direction: {'LONG' if current_position > 0 else 'SHORT'}
+- Leverage: {leverage:.1f}x
 - Entry Price: ${entry_price:,.2f} {f'(entered at ${entry_price:,.2f})' if entry_price else ''}
 - Current Price: ${price:,.2f}
 - Unrealized P&L: ${unrealized_pnl:+,.2f} ({(unrealized_pnl / (abs(current_position) * entry_price) * 100):+.2f}% if entry_price else 0)
-- Stop Loss: ${stop_loss:,.2f} {f'(risk ${abs((entry_price - stop_loss) * current_position):,.2f})' if stop_loss and entry_price else '(not set)'}
-- Take Profit: ${take_profit:,.2f} {f'(potential ${abs((take_profit - entry_price) * current_position):,.2f})' if take_profit and entry_price else '(not set)'}"""
+- Stop Loss: ${stop_loss:,.2f} (risk: ${actual_risk:.2f} if hit)
+- Take Profit: ${take_profit:,.2f} (reward: ${actual_reward:.2f} if hit)
+- Risk:Reward Ratio: 1:{(actual_reward / actual_risk):.2f} if actual_risk > 0 else 'N/A'"""
             else:
                 position_info = "\nCURRENT POSITION: NO OPEN POSITION"
             

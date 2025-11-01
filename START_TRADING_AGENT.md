@@ -148,8 +148,10 @@ Open http://localhost:5173 and you'll see:
 - **ALWAYS use testnet first!** Set `RUN_MODE=testnet` and `BINANCE_TESTNET=true`
 - Use `VIRTUAL_STARTING_EQUITY=100` to test with small virtual balance
 - Monitor the agent closely for the first 24-48 hours
-- Check terminal logs for decision reasoning
+- Check terminal logs for decision reasoning and position sizing details
 - Use emergency controls in the header (PAUSE AI, CLOSE ALL)
+- **Understand position sizing**: High-confidence trades can use up to 25% capital with 3x leverage (= 75% of account)
+- **Start conservative**: The agent will be more aggressive than before - monitor closely!
 
 ## Troubleshooting
 

@@ -27,9 +27,10 @@
 - **VWAP Filtering** - Uses Volume-Weighted Average Price to identify institutional order flow
 
 ### Risk Management
-- **Smart Position Sizing** - Adaptive risk based on account size (5% for <$500, 3% for <$1K, 1% for $1K+)
-- **Dynamic Leverage** - Automatically scales leverage based on portfolio size (1x-3x)
-- **Auto Stop-Loss/Take-Profit** - Every position has automatic exit levels (0.2% SL, 0.3% TP for scalps)
+- **Two-Layer Position Sizing** - Layer 1: Capital allocation based on confidence (6-25% of equity). Layer 2: Leverage multiplier (1-3x) for amplification
+- **Confidence-Based Leverage** - High-confidence setups (≥0.9) get 3x leverage, medium (0.6-0.8) get 1.5-2x, low (<0.6) get 1x
+- **Smart Capital Allocation** - Allocates 25% capital for high-confidence swings, 15% for scalps, down to 6% for uncertain setups
+- **Auto Stop-Loss/Take-Profit** - Every position has automatic exit levels with calculated risk/reward ratios
 - **Daily Loss Cap** - Optional daily loss limit to prevent catastrophic drawdowns
 - **Cooldown Periods** - Prevents rapid-fire trading and overtrading
 - **Virtual Equity Mode** - Test with $100 virtual balance while using real testnet account
@@ -57,12 +58,13 @@ AETHER operates in a continuous 30-second cycle, analyzing markets and making de
 
 1. **Data Collection** - Fetches OHLCV data from exchange for 6 timeframes (1D, 4H, 1H, 15m, 5m, 1m)
 2. **Indicator Calculation** - Computes EMA, RSI, ATR, Keltner Channels, VWAP, Pivot Points, and volume metrics
-3. **Strategy Analysis** - Rule-based strategies (ATR Breakout or EMA Crossover) generate trade signals
-4. **AI Validation** - DeepSeek AI reviews the signal and market context, approving or vetoing the trade
-5. **Risk Check** - Risk manager validates position size, leverage, and portfolio limits
-6. **Execution** - If approved, order is placed on exchange with automatic stop-loss/take-profit
-7. **Monitoring** - Position is tracked every cycle for exit conditions (SL/TP hit, trend reversal, etc.)
-8. **Communication** - Agent sends intelligent updates to dashboard and responds to user questions
+3. **Strategy Analysis** - Rule-based strategies (ATR Breakout or EMA Crossover) generate trade signals with confidence scores
+4. **Position Sizing** - Two-layer system calculates capital allocation (6-25%) and leverage multiplier (1-3x) based on confidence
+5. **AI Validation** - DeepSeek AI reviews the signal and market context, approving or vetoing the trade
+6. **Risk Check** - Risk manager validates position size, leverage, and portfolio limits
+7. **Execution** - If approved, order is placed on exchange with automatic stop-loss/take-profit
+8. **Monitoring** - Position is tracked every cycle for exit conditions (SL/TP hit, trend reversal, etc.)
+9. **Communication** - Agent sends intelligent updates to dashboard and responds to user questions with full position awareness
 
 ### Decision Flow
 
@@ -238,6 +240,65 @@ The frontend will run on `http://localhost:3000`
 Open your browser and navigate to `http://localhost:3000`
 
 > **Note**: The trading agent now automatically starts the API server in a background thread. You no longer need to run `api_server.py` separately!
+
+## Position Sizing System
+
+AETHER uses a sophisticated **two-layer position sizing system** that adapts to trade confidence:
+
+### Layer 1: Capital Allocation (How much $ to use)
+
+Based on the strategy's confidence score (0.0 to 1.0):
+
+| Confidence | Swing Trades | Scalp Trades | Example ($100 account) |
+|------------|--------------|--------------|------------------------|
+| ≥ 0.8 (High) | 25% of equity | 15% of equity | $25 or $15 |
+| 0.6-0.8 (Medium) | 12% of equity | 10% of equity | $12 or $10 |
+| < 0.6 (Low) | 6% of equity | 5% of equity | $6 or $5 |
+
+### Layer 2: Leverage Multiplier (How much to amplify)
+
+Based on confidence + setup quality:
+
+| Confidence | Leverage | Position Multiplier |
+|------------|----------|---------------------|
+| ≥ 0.9 (Very High) | 3.0x | Capital × 3 |
+| ≥ 0.8 (High) | 2.0x | Capital × 2 |
+| ≥ 0.7 (Medium-High) | 1.5x | Capital × 1.5 |
+| ≥ 0.6 (Medium) | 1.2x | Capital × 1.2 |
+| < 0.6 (Low) | 1.0x | No amplification |
+
+### Real-World Examples
+
+**Example 1: Perfect Swing Setup (Confidence 0.95)**
+- Account: $100
+- Capital Allocation: 25% = $25
+- Leverage: 3.0x
+- **Final Position: $75 of BTC**
+- Risk if SL hits: ~$1.50
+- Reward if TP hits: ~$3.00
+
+**Example 2: Good Scalp Setup (Confidence 0.75)**
+- Account: $100
+- Capital Allocation: 15% = $15
+- Leverage: 1.5x
+- **Final Position: $22.50 of BTC**
+- Risk if SL hits: ~$0.45
+- Reward if TP hits: ~$0.68
+
+**Example 3: Uncertain Setup (Confidence 0.55)**
+- Account: $100
+- Capital Allocation: 6% = $6
+- Leverage: 1.0x
+- **Final Position: $6 of BTC**
+- Risk if SL hits: ~$0.12
+- Reward if TP hits: ~$0.24
+
+### What Affects Confidence?
+
+- **Volume Strength**: Strong volume (≥1.5x avg) boosts confidence to 0.95
+- **Multi-Timeframe Alignment**: All timeframes trending same direction increases confidence
+- **Breakout Quality**: Clean breakouts above/below Keltner bands increase confidence
+- **S/R Positioning**: Trading away from resistance/support increases confidence
 
 ## Configuration
 

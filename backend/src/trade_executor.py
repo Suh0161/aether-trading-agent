@@ -93,8 +93,9 @@ class TradeExecutor:
             if action == "close":
                 return self._execute_close(snapshot.symbol, position_size)
             
-            # Calculate order size for long/short actions
-            order_size = self._calculate_order_size(equity, decision.size_pct, snapshot.price)
+            # Calculate order size for long/short actions (with leverage)
+            leverage = getattr(decision, 'leverage', 1.0)  # Default to 1.0 if not provided
+            order_size = self._calculate_order_size(equity, decision.size_pct, snapshot.price, leverage)
             
             if order_size <= 0:
                 logger.warning(f"Calculated order size is {order_size}, skipping execution")
@@ -131,20 +132,24 @@ class TradeExecutor:
                 error=str(e)
             )
     
-    def _calculate_order_size(self, equity: float, size_pct: float, price: float) -> float:
+    def _calculate_order_size(self, equity: float, size_pct: float, price: float, leverage: float = 1.0) -> float:
         """
-        Calculate order size based on equity and size percentage.
+        Calculate order size based on equity, size percentage, and leverage.
         
         Args:
             equity: Current account equity
-            size_pct: Percentage of equity to use (0.0 to 1.0)
+            size_pct: Percentage of equity to use as capital (0.0 to 1.0)
             price: Current market price
+            leverage: Leverage multiplier (1.0 = no leverage, 2.0 = 2x, 3.0 = 3x)
             
         Returns:
             Order size in base currency units
         """
-        # Calculate raw order size
-        order_value_usd = equity * size_pct
+        # LAYER 1: Calculate capital allocation (how much $ to use from account)
+        capital_amount = equity * size_pct
+        
+        # LAYER 2: Apply leverage multiplier (how much to amplify)
+        order_value_usd = capital_amount * leverage
         order_size = order_value_usd / price
         
         # Binance minimum notional value is ~$10 USD (testnet requires higher minimum)
@@ -163,7 +168,8 @@ class TradeExecutor:
         
         logger.info(
             f"Calculated order size: {order_size} BTC (${order_value_usd:.2f} USD) "
-            f"(equity={equity}, size_pct={size_pct}, price={price})"
+            f"[Capital: ${capital_amount:.2f} ({size_pct*100:.1f}%), Leverage: {leverage:.1f}x] "
+            f"(equity={equity}, price={price})"
         )
         return order_size
     

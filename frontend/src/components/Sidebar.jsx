@@ -56,10 +56,10 @@ function Sidebar({ positions, trades, agentMessages }) {
         // Remove optimistic message on error
         setOptimisticMessages(prev => prev.filter(m => m.id !== tempId))
       } else {
-        // Clear optimistic messages after successful send (backend will provide real ones)
+        // Clear optimistic message immediately (will be filtered out by duplicate check anyway)
         setTimeout(() => {
           setOptimisticMessages(prev => prev.filter(m => m.id !== tempId))
-        }, 1000)
+        }, 100)
       }
     } catch (error) {
       console.error('Error sending message:', error)
@@ -392,7 +392,7 @@ function Sidebar({ positions, trades, agentMessages }) {
               </div>
             ) : (
               <div className="chat-messages" ref={chatScrollRef} onScroll={handleChatScroll}>
-                {[...agentMessages, ...optimisticMessages].map((message) => (
+                {[...agentMessages, ...optimisticMessages.filter(opt => !agentMessages.some(msg => msg.id === opt.id || (msg.text === opt.text && msg.sender === opt.sender)))].map((message) => (
                   <div key={message.id} className={`chat-message ${message.sender === 'USER' ? 'user-message' : ''}`}>
                     <div className="message-header">
                       {message.sender === 'USER' ? (

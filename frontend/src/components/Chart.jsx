@@ -9,7 +9,7 @@ function Chart({ symbol, trades = [] }) {
     const [currentPrice, setCurrentPrice] = useState(0)
     const [priceChange, setPriceChange] = useState(0)
     const [chartType, setChartType] = useState('candlestick') // 'candlestick' or 'area'
-    const [timeframe, setTimeframe] = useState('1D') // Selected timeframe
+    const [timeframe, setTimeframe] = useState('1h') // Selected candle interval
     const [isUpdating, setIsUpdating] = useState(false)
 
     // Create chart once
@@ -61,17 +61,17 @@ function Chart({ symbol, trades = [] }) {
 
         seriesRef.current = series
 
-        // Map timeframe to Binance interval
+        // Map timeframe button to Binance interval and data limit
         const getInterval = () => {
             const intervalMap = {
-                '1D': { interval: '5m', limit: 288 },
-                '5D': { interval: '15m', limit: 480 },
-                '1M': { interval: '1h', limit: 720 },
-                '3M': { interval: '4h', limit: 540 },
-                '6M': { interval: '1d', limit: 180 },
-                '1Y': { interval: '1d', limit: 365 },
+                '5m': { interval: '5m', limit: 288 },    // 5-min candles, ~1 day of data
+                '15m': { interval: '15m', limit: 480 },  // 15-min candles, ~5 days of data
+                '1h': { interval: '1h', limit: 720 },    // 1-hour candles, ~1 month of data
+                '4h': { interval: '4h', limit: 540 },    // 4-hour candles, ~3 months of data
+                '1d': { interval: '1d', limit: 180 },    // Daily candles, ~6 months of data
+                '1w': { interval: '1w', limit: 104 },    // Weekly candles, ~2 years of data
             }
-            return intervalMap[timeframe] || { interval: '5m', limit: 200 }
+            return intervalMap[timeframe] || { interval: '1h', limit: 500 }
         }
 
         // Fetch real data from Binance
@@ -206,17 +206,17 @@ function Chart({ symbol, trades = [] }) {
 
         const series = seriesRef.current
 
-        // Map timeframe to Binance interval
+        // Map timeframe button to Binance interval and data limit
         const getInterval = () => {
             const intervalMap = {
-                '1D': { interval: '5m', limit: 288 },
-                '5D': { interval: '15m', limit: 480 },
-                '1M': { interval: '1h', limit: 720 },
-                '3M': { interval: '4h', limit: 540 },
-                '6M': { interval: '1d', limit: 180 },
-                '1Y': { interval: '1d', limit: 365 },
+                '5m': { interval: '5m', limit: 288 },    // 5-min candles, ~1 day of data
+                '15m': { interval: '15m', limit: 480 },  // 15-min candles, ~5 days of data
+                '1h': { interval: '1h', limit: 720 },    // 1-hour candles, ~1 month of data
+                '4h': { interval: '4h', limit: 540 },    // 4-hour candles, ~3 months of data
+                '1d': { interval: '1d', limit: 180 },    // Daily candles, ~6 months of data
+                '1w': { interval: '1w', limit: 104 },    // Weekly candles, ~2 years of data
             }
-            return intervalMap[timeframe] || { interval: '5m', limit: 200 }
+            return intervalMap[timeframe] || { interval: '1h', limit: 500 }
         }
 
         // Fetch real data from Binance
@@ -334,7 +334,7 @@ function Chart({ symbol, trades = [] }) {
         }
     }, [symbol, trades, chartType, timeframe])
 
-    const timeframes = ['1D', '5D', '1M', '3M', '6M', '1Y']
+    const timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
 
     return (
         <div className="chart-container">

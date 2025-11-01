@@ -86,17 +86,29 @@ Then restart the agent.
 - Price Levels: VWAP, Pivot Points (R1-R3, S1-S3), Swing High/Low
 
 **Risk Management**:
-- Risk per trade: 1-5% (adaptive based on account size)
-- Max position: 10% of equity
 - Stop loss: ATR×2 (swing), ATR×1 (scalp)
 - Take profit: 2R (swing), 1.5R (scalp)
 - Virtual equity cap: $100 for testing (configurable)
+- Max leverage: 3x (for high-confidence setups)
 
-**Position Sizing**:
-- Accounts < $500: 5% risk per trade
-- Accounts < $1000: 3% risk per trade
-- Accounts ≥ $1000: 1% risk per trade
-- Minimum position: 0.5% (scalp), 1% (swing)
+**Position Sizing (Two-Layer System)**:
+
+**Layer 1 - Capital Allocation**:
+- High confidence (≥0.8): 25% equity (swings), 15% equity (scalps)
+- Medium confidence (0.6-0.8): 12% equity (swings), 10% equity (scalps)
+- Low confidence (<0.6): 6% equity (swings), 5% equity (scalps)
+
+**Layer 2 - Leverage Multiplier**:
+- Very high confidence (≥0.9): 3.0x leverage
+- High confidence (≥0.8): 2.0x leverage
+- Medium-high confidence (≥0.7): 1.5x leverage
+- Medium confidence (≥0.6): 1.2x leverage
+- Low confidence (<0.6): 1.0x leverage (no amplification)
+
+**Example**: High-confidence swing (0.85) with $100 account:
+- Capital: 25% = $25
+- Leverage: 2.0x
+- **Final Position: $50 of BTC**
 
 ## Key Features
 

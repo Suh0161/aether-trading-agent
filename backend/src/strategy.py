@@ -11,12 +11,15 @@ logger = logging.getLogger(__name__)
 class StrategySignal:
     """Signal from a trading strategy."""
     action: str  # "long" | "short" | "close" | "hold"
-    size_pct: float  # 0.0 to 1.0
+    size_pct: float  # 0.0 to 1.0 (percentage of equity to allocate as capital)
     reason: str
     confidence: float  # 0.0 to 1.0
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     position_type: str = "swing"  # "swing" | "scalp" - indicates trade duration style
+    leverage: float = 1.0  # Leverage multiplier (1.0 = no leverage, 2.0 = 2x, 3.0 = 3x)
+    risk_amount: Optional[float] = None  # Dollar amount at risk if SL hits
+    reward_amount: Optional[float] = None  # Dollar amount if TP hits
 
 
 class ATRBreakoutStrategy:
@@ -366,18 +369,64 @@ class ATRBreakoutStrategy:
             direction_desc = "breakdown"
             keltner_comparison = "<"
         
-        # Smart position sizing: Adaptive risk based on account size
-        if equity < 500:
-            risk_pct = 0.05  # 5% risk for accounts under $500
-        elif equity < 1000:
-            risk_pct = 0.03  # 3% risk for accounts under $1000
-        else:
-            risk_pct = 0.01  # 1% risk for larger accounts
+        # === TWO-LAYER POSITION SIZING SYSTEM ===
         
-        risk_amount = equity * risk_pct
-        calculated_size = risk_amount / stop_distance / price
-        # Ensure minimum 1% position size for small accounts, max 10%
-        position_size_pct = max(min(calculated_size, 0.10), 0.01)
+        # LAYER 1: Capital Allocation (how much $ to use from account)
+        # Based on confidence level
+        if base_confidence >= 0.8:
+            # High confidence: allocate 20-30% of equity
+            capital_allocation_pct = 0.25  # 25% of equity
+        elif base_confidence >= 0.6:
+            # Medium confidence: allocate 10-15% of equity
+            capital_allocation_pct = 0.12  # 12% of equity
+        else:
+            # Low confidence: allocate 5-8% of equity
+            capital_allocation_pct = 0.06  # 6% of equity
+        
+        # LAYER 2: Leverage Multiplier (how much to amplify with leverage)
+        # Based on confidence + setup quality
+        if base_confidence >= 0.9:
+            # Very high confidence (strong volume + perfect setup): 2.5-3X leverage
+            leverage = 3.0
+        elif base_confidence >= 0.8:
+            # High confidence: 2-2.5X leverage
+            leverage = 2.0
+        elif base_confidence >= 0.7:
+            # Medium-high confidence: 1.5-2X leverage
+            leverage = 1.5
+        elif base_confidence >= 0.6:
+            # Medium confidence: 1-1.5X leverage
+            leverage = 1.2
+        else:
+            # Low confidence: 0.5-1X leverage (conservative)
+            leverage = 1.0
+        
+        # Calculate final position size
+        # position_size_pct = capital allocation (what % of equity to use)
+        # This will be multiplied by leverage in the trade executor
+        position_size_pct = capital_allocation_pct
+        
+        # Calculate risk and reward amounts
+        capital_amount = equity * capital_allocation_pct
+        position_notional = capital_amount * leverage  # Total position size with leverage
+        position_btc = position_notional / price
+        
+        # Risk: if SL hits, how much $ do we lose?
+        risk_amount = abs(price - (stop_loss if action == "long" else stop_loss)) * position_btc
+        
+        # Reward: if TP hits, how much $ do we gain?
+        reward_amount = abs((take_profit if action == "long" else take_profit) - price) * position_btc
+        
+        # Ensure minimum position size (at least $5 notional after leverage)
+        min_notional = 15.0  # Binance minimum is ~$10, add buffer
+        if position_notional < min_notional:
+            # Adjust capital allocation to meet minimum
+            required_capital = min_notional / leverage
+            position_size_pct = required_capital / equity
+            logger.info(f"Adjusted position size to meet minimum notional: {position_size_pct*100:.2f}% capital")
+        
+        # Cap maximum position size at 30% of equity (safety limit)
+        position_size_pct = min(position_size_pct, 0.30)
         
         # Money management: Check if we have enough available cash
         required_cash = equity * position_size_pct
@@ -413,14 +462,24 @@ class ATRBreakoutStrategy:
             volume_info += " OK"
         obv_info = f"OBV: {obv_trend}"
         
+        # Position sizing summary for logging
+        logger.info(
+            f"Position sizing: Capital={capital_allocation_pct*100:.1f}% (${capital_amount:.2f}), "
+            f"Leverage={leverage:.1f}x, Notional=${position_notional:.2f}, "
+            f"Risk=${risk_amount:.2f}, Reward=${reward_amount:.2f}, R:R={reward_amount/risk_amount:.2f}"
+        )
+        
         return StrategySignal(
             action=action,
             size_pct=position_size_pct,
-            reason=f"Multi-TF {direction_desc}: price ${price:.2f} {keltner_comparison} {entry_timeframe} Keltner ${entry_keltner:.2f}. {timeframe_info}. {volume_info}, {obv_info}. SL: ${stop_loss:.2f}, TP: ${take_profit:.2f}",
+            reason=f"Multi-TF {direction_desc}: price ${price:.2f} {keltner_comparison} {entry_timeframe} Keltner ${entry_keltner:.2f}. {timeframe_info}. {volume_info}, {obv_info}. Capital: {capital_allocation_pct*100:.0f}%, Leverage: {leverage:.1f}x, Risk: ${risk_amount:.2f}, Reward: ${reward_amount:.2f}",
             confidence=base_confidence,  # Use volume-adjusted confidence
             stop_loss=stop_loss,
             take_profit=take_profit,
-            position_type=position_type
+            position_type=position_type,
+            leverage=leverage,
+            risk_amount=risk_amount,
+            reward_amount=reward_amount
         )
 
 
@@ -562,21 +621,49 @@ class ScalpingStrategy:
             has_momentum_entry = (near_upper_1m or near_upper_5m) and long_momentum_1m
             
             if (has_breakout or has_momentum_entry) and long_momentum_1m and volume_confirmed:
-                # Calculate position size (smaller for scalping - max 3% of equity)
+                # Calculate position size using TWO-LAYER SYSTEM for scalps
                 stop_distance = price * self.stop_loss_pct
                 
-                # Adaptive risk: Higher risk % for small accounts
-                if equity < 500:
-                    risk_pct = 0.05  # 5% risk for accounts under $500
-                elif equity < 1000:
-                    risk_pct = 0.03  # 3% risk for accounts under $1000
-                else:
-                    risk_pct = 0.01  # 1% risk for larger accounts
+                # Base confidence for scalps (lower than swings)
+                base_confidence = 0.7
                 
-                risk_amount = equity * risk_pct
-                calculated_size = risk_amount / stop_distance / price
-                # Ensure minimum 0.5% position size for small accounts, max 3%
-                position_size_pct = max(min(calculated_size, 0.03), 0.005)
+                # Boost confidence if volume is VERY strong
+                if volume_ratio_5m >= 1.5 or volume_ratio_1m >= 1.5:
+                    base_confidence = 0.8
+                
+                # LAYER 1: Capital Allocation (scalps are smaller than swings)
+                if base_confidence >= 0.8:
+                    capital_allocation_pct = 0.15  # 15% for high-confidence scalps
+                elif base_confidence >= 0.6:
+                    capital_allocation_pct = 0.10  # 10% for medium-confidence scalps
+                else:
+                    capital_allocation_pct = 0.05  # 5% for low-confidence scalps
+                
+                # LAYER 2: Leverage (scalps use less leverage than swings)
+                if base_confidence >= 0.8:
+                    leverage = 2.0  # 2X for high-confidence scalps
+                elif base_confidence >= 0.7:
+                    leverage = 1.5  # 1.5X for medium-confidence scalps
+                else:
+                    leverage = 1.0  # 1X for low-confidence scalps
+                
+                position_size_pct = capital_allocation_pct
+                
+                # Calculate risk and reward
+                capital_amount = equity * capital_allocation_pct
+                position_notional = capital_amount * leverage
+                position_btc = position_notional / price
+                risk_amount = stop_distance * position_btc
+                reward_amount = (price * self.profit_target_pct) * position_btc
+                
+                # Ensure minimum notional
+                min_notional = 15.0
+                if position_notional < min_notional:
+                    required_capital = min_notional / leverage
+                    position_size_pct = required_capital / equity
+                
+                # Cap at 20% for scalps (safety)
+                position_size_pct = min(position_size_pct, 0.20)
                 
                 # Check available cash
                 required_cash = equity * position_size_pct
@@ -607,14 +694,24 @@ class ScalpingStrategy:
                 if active_volume_ratio >= 1.5:
                     volume_info += " [STRONG]"  # Changed from emoji for Windows compatibility
                 
+                # Position sizing summary for logging
+                logger.info(
+                    f"Scalp position sizing: Capital={capital_allocation_pct*100:.1f}% (${capital_amount:.2f}), "
+                    f"Leverage={leverage:.1f}x, Notional=${position_notional:.2f}, "
+                    f"Risk=${risk_amount:.2f}, Reward=${reward_amount:.2f}"
+                )
+                
                 return StrategySignal(
                     action="long",
                     size_pct=position_size_pct,
-                    reason=f"Scalp long: {entry_tf} {entry_type}, price ${price:.2f} > VWAP ${vwap_5m:.2f}, {volume_info}. SL: ${stop_loss:.2f}, TP: ${take_profit:.2f}",
-                    confidence=0.7,
+                    reason=f"Scalp long: {entry_tf} {entry_type}, price ${price:.2f} > VWAP ${vwap_5m:.2f}, {volume_info}. Capital: {capital_allocation_pct*100:.0f}%, Leverage: {leverage:.1f}x, Risk: ${risk_amount:.2f}",
+                    confidence=base_confidence,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
-                    position_type="scalp"
+                    position_type="scalp",
+                    leverage=leverage,
+                    risk_amount=risk_amount,
+                    reward_amount=reward_amount
                 )
         
         # === SHORT SCALP ENTRY ===
@@ -649,21 +746,49 @@ class ScalpingStrategy:
             has_momentum_entry = (near_lower_1m or near_lower_5m) and short_momentum_1m
             
             if (has_breakdown or has_momentum_entry) and short_momentum_1m and volume_confirmed:
-                # Calculate position size (smaller for scalping - max 3% of equity)
+                # Calculate position size using TWO-LAYER SYSTEM for scalps
                 stop_distance = price * self.stop_loss_pct
                 
-                # Adaptive risk: Higher risk % for small accounts
-                if equity < 500:
-                    risk_pct = 0.05  # 5% risk for accounts under $500
-                elif equity < 1000:
-                    risk_pct = 0.03  # 3% risk for accounts under $1000
-                else:
-                    risk_pct = 0.01  # 1% risk for larger accounts
+                # Base confidence for scalps (lower than swings)
+                base_confidence = 0.7
                 
-                risk_amount = equity * risk_pct
-                calculated_size = risk_amount / stop_distance / price
-                # Ensure minimum 0.5% position size for small accounts, max 3%
-                position_size_pct = max(min(calculated_size, 0.03), 0.005)
+                # Boost confidence if volume is VERY strong
+                if volume_ratio_5m >= 1.5 or volume_ratio_1m >= 1.5:
+                    base_confidence = 0.8
+                
+                # LAYER 1: Capital Allocation (scalps are smaller than swings)
+                if base_confidence >= 0.8:
+                    capital_allocation_pct = 0.15  # 15% for high-confidence scalps
+                elif base_confidence >= 0.6:
+                    capital_allocation_pct = 0.10  # 10% for medium-confidence scalps
+                else:
+                    capital_allocation_pct = 0.05  # 5% for low-confidence scalps
+                
+                # LAYER 2: Leverage (scalps use less leverage than swings)
+                if base_confidence >= 0.8:
+                    leverage = 2.0  # 2X for high-confidence scalps
+                elif base_confidence >= 0.7:
+                    leverage = 1.5  # 1.5X for medium-confidence scalps
+                else:
+                    leverage = 1.0  # 1X for low-confidence scalps
+                
+                position_size_pct = capital_allocation_pct
+                
+                # Calculate risk and reward
+                capital_amount = equity * capital_allocation_pct
+                position_notional = capital_amount * leverage
+                position_btc = position_notional / price
+                risk_amount = stop_distance * position_btc
+                reward_amount = (price * self.profit_target_pct) * position_btc
+                
+                # Ensure minimum notional
+                min_notional = 15.0
+                if position_notional < min_notional:
+                    required_capital = min_notional / leverage
+                    position_size_pct = required_capital / equity
+                
+                # Cap at 20% for scalps (safety)
+                position_size_pct = min(position_size_pct, 0.20)
                 
                 # Check available cash
                 required_cash = equity * position_size_pct
@@ -694,14 +819,24 @@ class ScalpingStrategy:
                 if active_volume_ratio >= 1.5:
                     volume_info += " [STRONG]"  # Changed from emoji for Windows compatibility
                 
+                # Position sizing summary for logging
+                logger.info(
+                    f"Scalp position sizing: Capital={capital_allocation_pct*100:.1f}% (${capital_amount:.2f}), "
+                    f"Leverage={leverage:.1f}x, Notional=${position_notional:.2f}, "
+                    f"Risk=${risk_amount:.2f}, Reward=${reward_amount:.2f}"
+                )
+                
                 return StrategySignal(
                     action="short",
                     size_pct=position_size_pct,
-                    reason=f"Scalp short: {entry_tf} {entry_type}, price ${price:.2f} < VWAP ${vwap_5m:.2f}, {volume_info}. SL: ${stop_loss:.2f}, TP: ${take_profit:.2f}",
-                    confidence=0.7,
+                    reason=f"Scalp short: {entry_tf} {entry_type}, price ${price:.2f} < VWAP ${vwap_5m:.2f}, {volume_info}. Capital: {capital_allocation_pct*100:.0f}%, Leverage: {leverage:.1f}x, Risk: ${risk_amount:.2f}",
+                    confidence=base_confidence,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
-                    position_type="scalp"
+                    position_type="scalp",
+                    leverage=leverage,
+                    risk_amount=risk_amount,
+                    reward_amount=reward_amount
                 )
         
         # No clear scalp setup
