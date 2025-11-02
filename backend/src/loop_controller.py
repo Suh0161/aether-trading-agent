@@ -77,6 +77,9 @@ class LoopController:
         self.last_message_type = None  # Track last message type sent
         self.last_message_cycle = 0  # Track which cycle last message was sent
         
+        # Track decisions per symbol for status messages
+        self.current_cycle_decisions = {}  # {symbol: decision} for current cycle
+        
         # Track initial real equity for virtual equity calculation
         self.initial_real_equity: Optional[float] = None
         self.virtual_starting_equity = config.virtual_starting_equity
@@ -291,418 +294,46 @@ class LoopController:
                     self._sleep_until_next_cycle(cycle_start_time)
                     continue
                 
-                # Multi-coin strategy: Check all symbols and trade the best opportunity
-                # Priority: 1) Manage existing positions, 2) Find best new entry
+                # Multi-coin strategy: Process ALL symbols independently each cycle
+                # Each symbol: 1) Manage existing positions, 2) Evaluate new opportunities
                 
-                # First, check if we have any open positions that need management
-                trading_symbol = None
+                logger.info("  Processing all symbols for multi-coin trading...")
+                
+                # Reset decisions tracking for this cycle
+                self.current_cycle_decisions = {}
+                
+                # Process each symbol independently
                 for symbol in self.config.symbols:
-                    if positions.get(symbol, 0.0) != 0:
-                        trading_symbol = symbol
-                        logger.info(f"  Managing existing position in {symbol}")
-                        break
-                
-                # If no open positions, evaluate all symbols and pick the best opportunity
-                if trading_symbol is None:
-                    best_symbol = None
-                    best_confidence = 0.0
-                    
-                    logger.info("  Evaluating all symbols for best opportunity...")
+                    try:
+                        self._process_symbol(
+                            symbol=symbol,
+                            snapshots=snapshots,
+                            positions=positions,
+                            equity=equity,
+                            cycle_count=cycle_count
+                        )
+                    except Exception as e:
+                        logger.error(f"  {symbol}: Error processing symbol - {e}")
+                        continue
+                        
+                # After processing all symbols, refresh positions and update frontend
+                try:
+                    # Refresh positions after all processing
+                    balance = self.trade_executor.exchange.fetch_balance()
+                    quote_currency = 'USDT'
                     for symbol in self.config.symbols:
-                        snap = snapshots.get(symbol)
-                        if not snap:
-                            continue
-                        
-                        # Quick confidence check using strategy
-                        try:
-                            temp_decision = self.decision_provider.get_decision(snap, 0.0, equity)
-                            temp_parsed = self.decision_parser.parse(temp_decision)
-                            temp_confidence = getattr(temp_parsed, 'confidence', 0.0)
-                            
-                            logger.info(f"    {symbol}: {temp_parsed.action} (confidence: {temp_confidence:.2f})")
-                            
-                            # Only consider long/short actions with confidence > 0.5
-                            if temp_parsed.action in ['long', 'short'] and temp_confidence > best_confidence and temp_confidence > 0.5:
-                                best_symbol = symbol
-                                best_confidence = temp_confidence
-                        except Exception as e:
-                            logger.warning(f"    {symbol}: Error evaluating - {e}")
-                            continue
+                        base_currency = symbol.split('/')[0]
+                        positions[symbol] = balance['total'].get(base_currency, 0.0)
                     
-                    if best_symbol:
-                        trading_symbol = best_symbol
-                        logger.info(f"  Selected {trading_symbol} (confidence: {best_confidence:.2f})")
-                    else:
-                        # No good opportunities, default to first symbol
-                        trading_symbol = self.config.symbols[0]
-                        logger.info(f"  No strong opportunities, monitoring {trading_symbol}")
-                
-                snapshot = snapshots.get(trading_symbol)
-                position_size = positions.get(trading_symbol, 0.0)
-                
-                if not snapshot:
-                    logger.error(f"No snapshot available for {trading_symbol}")
-                    self._sleep_until_next_cycle(cycle_start_time)
-                    continue
-                
-                # Check for stop loss / take profit BEFORE decision provider
-                # CRITICAL: Check for BOTH long (position_size > 0) AND short (position_size < 0) positions
-                if position_size != 0:
-                    stored_stop_loss = self.position_stop_losses.get(trading_symbol)
-                    stored_take_profit = self.position_take_profits.get(trading_symbol)
-                    current_price = snapshot.price
-                    
-                    # LONG position: SL below entry, TP above entry
-                    if position_size > 0:
-                        if stored_stop_loss and current_price <= stored_stop_loss:
-                            logger.warning(f"[WARNING] {trading_symbol} LONG STOP LOSS HIT! Price ${current_price:.2f} <= Stop Loss ${stored_stop_loss:.2f}")
-                            raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Long stop loss triggered: price ${current_price:.2f} <= ${stored_stop_loss:.2f}"}}'
-                            # Clear stored stop loss/take profit
-                            if trading_symbol in self.position_stop_losses:
-                                del self.position_stop_losses[trading_symbol]
-                            if trading_symbol in self.position_take_profits:
-                                del self.position_take_profits[trading_symbol]
-                        elif stored_take_profit and current_price >= stored_take_profit:
-                            logger.info(f"[OK] {trading_symbol} LONG TAKE PROFIT HIT! Price ${current_price:.2f} >= Take Profit ${stored_take_profit:.2f}")
-                            raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Long take profit triggered: price ${current_price:.2f} >= ${stored_take_profit:.2f}"}}'
-                            # Clear stored stop loss/take profit
-                            if trading_symbol in self.position_stop_losses:
-                                del self.position_stop_losses[trading_symbol]
-                            if trading_symbol in self.position_take_profits:
-                                del self.position_take_profits[trading_symbol]
-                        else:
-                            # No stop/tp hit, proceed with normal decision flow
-                            raw_llm_output = None
-                    
-                    # SHORT position: SL above entry, TP below entry
-                    else:  # position_size < 0
-                        if stored_stop_loss and current_price >= stored_stop_loss:
-                            logger.warning(f"[WARNING] {trading_symbol} SHORT STOP LOSS HIT! Price ${current_price:.2f} >= Stop Loss ${stored_stop_loss:.2f}")
-                            raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Short stop loss triggered: price ${current_price:.2f} >= ${stored_stop_loss:.2f}"}}'
-                            # Clear stored stop loss/take profit
-                            if trading_symbol in self.position_stop_losses:
-                                del self.position_stop_losses[trading_symbol]
-                            if trading_symbol in self.position_take_profits:
-                                del self.position_take_profits[trading_symbol]
-                        elif stored_take_profit and current_price <= stored_take_profit:
-                            logger.info(f"[OK] {trading_symbol} SHORT TAKE PROFIT HIT! Price ${current_price:.2f} <= Take Profit ${stored_take_profit:.2f}")
-                            raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Short take profit triggered: price ${current_price:.2f} <= ${stored_take_profit:.2f}"}}'
-                            # Clear stored stop loss/take profit
-                            if trading_symbol in self.position_stop_losses:
-                                del self.position_stop_losses[trading_symbol]
-                            if trading_symbol in self.position_take_profits:
-                                del self.position_take_profits[trading_symbol]
-                        else:
-                            # No stop/tp hit, proceed with normal decision flow
-                            raw_llm_output = None
-                else:
-                    # No position, proceed with normal decision flow
-                    raw_llm_output = None
-                
-                # Check for emergency close flag (only if stop loss/take profit didn't trigger)
-                if raw_llm_output is None:
-                    emergency_flag = os.path.join(os.path.dirname(os.path.dirname(__file__)), "emergency_close.flag")
-                    if os.path.exists(emergency_flag):
-                        logger.warning("[WARNING] EMERGENCY CLOSE TRIGGERED!")
-                        os.remove(emergency_flag)
-                        if position_size != 0:
-                            logger.info("Forcing immediate position close...")
-                            raw_llm_output = '{"action": "close", "size_pct": 1.0, "reason": "Emergency close triggered by user"}'
-                        else:
-                            logger.info("No position to close")
-                            raw_llm_output = '{"action": "hold", "size_pct": 0.0, "reason": "Emergency close triggered but no position"}'
-                
-                # Step 3: Call decision provider (only if no stop loss/take profit/emergency close)
-                if raw_llm_output is None:
-                    # Step 3: Call decision provider
-                    logger.info("Step 3: Getting decision from LLM...")
-                    try:
-                        raw_llm_output = self.decision_provider.get_decision(
-                            snapshot, position_size, equity
-                        )
-                        logger.info(f"  Raw LLM output: {raw_llm_output[:200]}...")
-                    except Exception as e:
-                        logger.error(f"Decision provider failed: {e}")
-                        raw_llm_output = f"Error: {str(e)}"
-                        logger.info("Forcing action to 'hold' due to LLM failure")
-                
-                # Step 4: Parse decision
-                logger.info("Step 4: Parsing decision...")
-                decision = self.decision_parser.parse(raw_llm_output)
-                logger.info(f"  Action: {decision.action}, Size: {decision.size_pct*100}%, Reason: {decision.reason}")
-                
-                # Step 5: Validate with risk manager
-                logger.info("Step 5: Validating with risk manager...")
-                risk_result = self.risk_manager.validate(
-                    decision, snapshot, position_size, equity
-                )
-                logger.info(f"  Approved: {risk_result.approved}")
-                if not risk_result.approved:
-                    logger.info(f"  Denial reason: {risk_result.reason}")
-                
-                # Step 6: Execute trade if approved
-                execution_result = None
-                if risk_result.approved:
-                    logger.info("Step 6: Executing trade...")
-                    execution_result = self.trade_executor.execute(
-                        decision, snapshot, position_size, equity
+                    # Update frontend with all positions
+                    self._update_frontend_all_positions(
+                        snapshots=snapshots,
+                        positions=positions,
+                        equity=equity,
+                        cycle_count=cycle_count
                     )
-                    logger.info(f"  Executed: {execution_result.executed}")
-                    if execution_result.executed:
-                        logger.info(f"  Order ID: {execution_result.order_id}")
-                        logger.info(f"  Filled: {execution_result.filled_size} @ {execution_result.fill_price}")
-                    elif execution_result.error:
-                        logger.warning(f"  Execution error: {execution_result.error}")
-                else:
-                    logger.info("Step 6: Trade not executed (risk denial)")
-                    # Create a dummy execution result for logging
-                    from src.models import ExecutionResult
-                    execution_result = ExecutionResult(
-                        executed=False,
-                        order_id=None,
-                        filled_size=None,
-                        fill_price=None,
-                        error=None
-                    )
-                
-                # Step 7: Log full cycle data
-                logger.info("Step 7: Logging cycle data...")
-                cycle_log = CycleLog(
-                    timestamp=snapshot.timestamp,
-                    symbol=snapshot.symbol,
-                    market_price=snapshot.price,
-                    position_before=position_size,
-                    llm_raw_output=raw_llm_output,
-                    parsed_action=decision.action,
-                    parsed_size_pct=decision.size_pct,
-                    parsed_reason=decision.reason,
-                    risk_approved=risk_result.approved,
-                    risk_reason=risk_result.reason,
-                    executed=execution_result.executed,
-                    order_id=execution_result.order_id,
-                    filled_size=execution_result.filled_size,
-                    fill_price=execution_result.fill_price,
-                    mode=self.config.run_mode
-                )
-                
-                self.logger.log_cycle(cycle_log)
-                logger.info("  Cycle logged successfully")
-                
-                # Update frontend via API
-                if self.api_client:
-                    try:
-                        # Save original position_size BEFORE closing (needed to determine LONG vs SHORT for trade logging)
-                        original_position_size = position_size
-                        
-                        # Capture entry price BEFORE closing positions (needed for trade logging)
-                        entry_price_for_closed_trade = None
-                        if execution_result.executed and execution_result.filled_size:
-                            if decision.action in ['sell', 'close']:
-                                # Save entry price before deletion for trade logging
-                                entry_price_for_closed_trade = self.position_entry_prices.get(trading_symbol)
-                        
-                        # Track entry price, timestamp, stop loss, take profit, and position type when position is opened
-                        if execution_result.executed and execution_result.filled_size:
-                            if decision.action in ['long', 'short'] and execution_result.fill_price:
-                                self.position_entry_prices[trading_symbol] = execution_result.fill_price
-                                self.position_entry_timestamps[trading_symbol] = int(time.time())
-                                logger.info(f"  Recorded entry price: ${execution_result.fill_price:.2f}")
-                                
-                                # Store position type (swing or scalp)
-                                position_type = getattr(decision, 'position_type', 'swing')
-                                self.position_types[trading_symbol] = position_type
-                                logger.info(f"  Position type: {position_type.upper()}")
-                                
-                                # Store stop loss and take profit if provided
-                                if decision.stop_loss is not None:
-                                    self.position_stop_losses[trading_symbol] = decision.stop_loss
-                                    logger.info(f"  Set stop loss: ${decision.stop_loss:.2f}")
-                                if decision.take_profit is not None:
-                                    self.position_take_profits[trading_symbol] = decision.take_profit
-                                    logger.info(f"  Set take profit: ${decision.take_profit:.2f}")
-                                
-                                # Store leverage, risk amount, and reward amount if provided
-                                leverage = getattr(decision, 'leverage', 1.0)
-                                risk_amount = getattr(decision, 'risk_amount', None)
-                                reward_amount = getattr(decision, 'reward_amount', None)
-                                
-                                self.position_leverages[trading_symbol] = leverage
-                                logger.info(f"  Leverage: {leverage:.1f}x")
-                                
-                                if risk_amount is not None:
-                                    self.position_risk_amounts[trading_symbol] = risk_amount
-                                    logger.info(f"  Risk amount (if SL hits): ${risk_amount:.2f}")
-                                
-                                if reward_amount is not None:
-                                    self.position_reward_amounts[trading_symbol] = reward_amount
-                                    logger.info(f"  Reward amount (if TP hits): ${reward_amount:.2f}")
-                            elif decision.action in ['sell', 'close']:
-                                # Clear entry price, timestamp, stop loss, take profit, position type, leverage, and risk/reward when position is closed
-                                if trading_symbol in self.position_entry_prices:
-                                    del self.position_entry_prices[trading_symbol]
-                                if trading_symbol in self.position_entry_timestamps:
-                                    del self.position_entry_timestamps[trading_symbol]
-                                if trading_symbol in self.position_stop_losses:
-                                    del self.position_stop_losses[trading_symbol]
-                                if trading_symbol in self.position_take_profits:
-                                    del self.position_take_profits[trading_symbol]
-                                if trading_symbol in self.position_types:
-                                    del self.position_types[trading_symbol]
-                                if trading_symbol in self.position_leverages:
-                                    del self.position_leverages[trading_symbol]
-                                if trading_symbol in self.position_risk_amounts:
-                                    del self.position_risk_amounts[trading_symbol]
-                                if trading_symbol in self.position_reward_amounts:
-                                    del self.position_reward_amounts[trading_symbol]
-                        
-                        # Adjust position_size if we just closed the position
-                        # This ensures accurate position tracking in the same cycle
-                        if execution_result.executed and decision.action in ['sell', 'close']:
-                            # Position was closed, so set to 0 for current calculations
-                            position_size = 0.0
-                            logger.info("  Position closed - adjusted position_size to 0 for current cycle")
-                        
-                        # Calculate P&L and available cash
-                        total_unrealized_pnl = 0.0
-                        position_value = 0.0
-                        positions_list = []
-                        
-                        # Build position data if exists (both LONG and SHORT)
-                        if position_size != 0:
-                            base_currency = trading_symbol.split('/')[0]
-                            notional = abs(position_size) * snapshot.price
-                            position_value = notional
-                            
-                            # Calculate unrealized P&L
-                            entry_price = self.position_entry_prices.get(trading_symbol)
-                            if not entry_price:
-                                # For pre-existing positions, use current price as entry
-                                # This starts P&L tracking from $0 at the moment agent starts
-                                self.position_entry_prices[trading_symbol] = snapshot.price
-                                entry_price = snapshot.price
-                                logger.warning(f"  Pre-existing position detected. Using current price ${entry_price:.2f} as entry (P&L will track from now)")
-                            
-                            # Calculate P&L based on position direction
-                            if position_size > 0:  # LONG position
-                                unreal_pnl = (snapshot.price - entry_price) * position_size
-                            else:  # SHORT position (position_size < 0)
-                                unreal_pnl = (entry_price - snapshot.price) * abs(position_size)
-                            
-                            total_unrealized_pnl += unreal_pnl
-                            logger.info(f"  P&L calculation: Entry=${entry_price:.2f}, Current=${snapshot.price:.2f}, Size={position_size:.6f}, P&L=${unreal_pnl:.2f}")
-                            
-                            # Calculate P&L percentage
-                            if position_size > 0:  # LONG
-                                pnl_percentage = ((snapshot.price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
-                            else:  # SHORT
-                                pnl_percentage = ((entry_price - snapshot.price) / entry_price) * 100 if entry_price > 0 else 0
-                            
-                            # Get stop loss and take profit for this position
-                            stop_loss = self.position_stop_losses.get(trading_symbol)
-                            take_profit = self.position_take_profits.get(trading_symbol)
-                            
-                            # Calculate actual leverage used (position value / equity)
-                            actual_leverage = (position_value / equity) if equity > 0 else 0.0
-                            leverage_str = f"{actual_leverage:.2f}X" if actual_leverage > 0 else "0X"
-                            
-                            # Determine position direction (LONG or SHORT)
-                            side_label = 'LONG' if position_size > 0 else 'SHORT'
-                            
-                            positions_list.append({
-                                'side': side_label,
-                                'coin': base_currency,
-                                'leverage': leverage_str,
-                                'notional': notional,
-                                'unrealPnL': unreal_pnl,
-                                'entryPrice': entry_price,
-                                'currentPrice': snapshot.price,
-                                'pnlPercentage': pnl_percentage,
-                                'quantity': position_size,
-                                'stopLoss': stop_loss,
-                                'takeProfit': take_profit,
-                                'invalidCondition': None  # Can be set by strategy in the future
-                            })
-                        
-                        # Sync all positions at once (replaces old data)
-                        self.api_client.sync_positions(positions_list)
-                        
-                        # Available cash is the equity (which already accounts for open positions)
-                        # In virtual equity mode, equity = starting_equity + realized_pnl
-                        # Position value is shown separately in the positions tab
-                        available_cash = equity
-                        
-                        # Update balance with correct cash and P&L
-                        self.api_client.update_balance(available_cash, total_unrealized_pnl)
-                        
-                        # Send smart agent messages (only useful info, no spam)
-                        self._send_smart_agent_message(
-                            decision, snapshot, position_size, equity, 
-                            available_cash, total_unrealized_pnl, cycle_count, snapshots
-                        )
-                        
-                        # If trade was executed AND it's a CLOSE/SELL action, log the completed trade
-                        if execution_result.executed and execution_result.filled_size and decision.action in ['close', 'sell']:
-                            # Determine trade direction (LONG/SHORT) based on original position size
-                            # original_position_size > 0 means LONG position, < 0 means SHORT position
-                            trade_side = 'LONG' if original_position_size > 0 else 'SHORT'
-                            
-                            # Calculate P&L for completed trades
-                            trade_pnl = 0.0
-                            # Use the captured entry price (saved before deletion) for both sell and close actions
-                            entry_price_for_trade = entry_price_for_closed_trade
-                            
-                            # Calculate P&L if we have entry and exit prices
-                            if entry_price_for_trade and execution_result.fill_price:
-                                if original_position_size > 0:  # Closing a LONG position
-                                    trade_pnl = (execution_result.fill_price - entry_price_for_trade) * execution_result.filled_size
-                                elif original_position_size < 0:  # Closing a SHORT position
-                                    trade_pnl = (entry_price_for_trade - execution_result.fill_price) * abs(execution_result.filled_size)
-                            
-                            # Use entry_price_for_trade or fallback to exit_price if not available
-                            final_entry_price = entry_price_for_trade if entry_price_for_trade else execution_result.fill_price
-                            
-                            # Get entry and exit timestamps
-                            entry_timestamp = None
-                            if decision.action in ['sell', 'close']:
-                                entry_timestamp = self.position_entry_timestamps.get(trading_symbol)
-                            exit_timestamp = int(time.time())
-                            
-                            # If we don't have entry timestamp, use current time as fallback
-                            if entry_timestamp is None:
-                                entry_timestamp = exit_timestamp
-                            
-                            # Calculate holding time from timestamps (format: "19H 7M" or "4H 53M")
-                            holding_time = self._calculate_holding_time(entry_timestamp, exit_timestamp)
-                            
-                            # Quantity: use actual filled size (keep precision for small amounts)
-                            quantity_value = abs(execution_result.filled_size)
-                            
-                            self.api_client.add_trade(
-                                coin=trading_symbol.split('/')[0],
-                                side=trade_side,  # Use determined side (LONG/SHORT, not CLOSE)
-                                entry_price=final_entry_price,
-                                exit_price=execution_result.fill_price,
-                                quantity=quantity_value,  # Negative for SHORT, positive for LONG
-                                entry_notional=abs(execution_result.filled_size) * final_entry_price,
-                                exit_notional=abs(execution_result.filled_size) * execution_result.fill_price,
-                                holding_time=holding_time,
-                                pnl=trade_pnl,
-                                entry_timestamp=entry_timestamp,
-                                exit_timestamp=exit_timestamp
-                            )
-                            
-                            # Send execution confirmation using AI's reasoning
-                            base_currency = trading_symbol.split('/')[0]
-                            trade_msg = f"EXECUTED {decision.action.upper()}: {execution_result.filled_size:.6f} {base_currency} @ ${execution_result.fill_price:,.2f}"
-                            if trade_pnl != 0:
-                                trade_msg += f" | P&L: ${trade_pnl:,.2f}"
-                            if decision.reason:
-                                trade_msg += f" | {decision.reason}"
-                            self.api_client.add_agent_message(trade_msg)
-                        
-                        logger.info(f"  Frontend updated: Cash=${available_cash:.2f}, P&L=${total_unrealized_pnl:.2f}")
-                    except Exception as e:
-                        logger.warning(f"Failed to update frontend: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to refresh positions/update frontend: {e}")
                 
                 logger.info(f"{'=' * 60}")
                 logger.info(f"CYCLE {cycle_count} COMPLETE")
@@ -716,6 +347,425 @@ class LoopController:
             self._sleep_until_next_cycle(cycle_start_time)
         
         logger.info("Loop controller stopped")
+    
+    def _process_symbol(
+        self,
+        symbol: str,
+        snapshots: dict,
+        positions: dict,
+        equity: float,
+        cycle_count: int
+    ) -> None:
+        """
+        Process a single symbol: check stop loss/take profit, get decision, execute trade.
+        
+        Args:
+            symbol: Trading symbol to process
+            snapshots: Dict of {symbol: snapshot}
+            positions: Dict of {symbol: position_size}
+            equity: Current account equity
+            cycle_count: Current cycle number
+        """
+        snapshot = snapshots.get(symbol)
+        if not snapshot:
+            logger.warning(f"  {symbol}: No snapshot available, skipping")
+            return
+        
+        position_size = positions.get(symbol, 0.0)
+        
+        # ====================================================================
+        # STEP 1: Check stop loss / take profit for existing positions
+        # ====================================================================
+        raw_llm_output = None
+        import os
+        
+        if position_size != 0:
+            stored_stop_loss = self.position_stop_losses.get(symbol)
+            stored_take_profit = self.position_take_profits.get(symbol)
+            current_price = snapshot.price
+            
+            # LONG position: SL below entry, TP above entry
+            if position_size > 0:
+                if stored_stop_loss and current_price <= stored_stop_loss:
+                    logger.warning(f"[WARNING] {symbol} LONG STOP LOSS HIT! Price ${current_price:.2f} <= Stop Loss ${stored_stop_loss:.2f}")
+                    raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Long stop loss triggered: price ${current_price:.2f} <= ${stored_stop_loss:.2f}"}}'
+                    # Clear stored stop loss/take profit
+                    if symbol in self.position_stop_losses:
+                        del self.position_stop_losses[symbol]
+                    if symbol in self.position_take_profits:
+                        del self.position_take_profits[symbol]
+                elif stored_take_profit and current_price >= stored_take_profit:
+                    logger.info(f"[OK] {symbol} LONG TAKE PROFIT HIT! Price ${current_price:.2f} >= Take Profit ${stored_take_profit:.2f}")
+                    raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Long take profit triggered: price ${current_price:.2f} >= ${stored_take_profit:.2f}"}}'
+                    # Clear stored stop loss/take profit
+                    if symbol in self.position_stop_losses:
+                        del self.position_stop_losses[symbol]
+                    if symbol in self.position_take_profits:
+                        del self.position_take_profits[symbol]
+            
+            # SHORT position: SL above entry, TP below entry
+            else:  # position_size < 0
+                if stored_stop_loss and current_price >= stored_stop_loss:
+                    logger.warning(f"[WARNING] {symbol} SHORT STOP LOSS HIT! Price ${current_price:.2f} >= Stop Loss ${stored_stop_loss:.2f}")
+                    raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Short stop loss triggered: price ${current_price:.2f} >= ${stored_stop_loss:.2f}"}}'
+                    # Clear stored stop loss/take profit
+                    if symbol in self.position_stop_losses:
+                        del self.position_stop_losses[symbol]
+                    if symbol in self.position_take_profits:
+                        del self.position_take_profits[symbol]
+                elif stored_take_profit and current_price <= stored_take_profit:
+                    logger.info(f"[OK] {symbol} SHORT TAKE PROFIT HIT! Price ${current_price:.2f} <= Take Profit ${stored_take_profit:.2f}")
+                    raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Short take profit triggered: price ${current_price:.2f} <= ${stored_take_profit:.2f}"}}'
+                    # Clear stored stop loss/take profit
+                    if symbol in self.position_stop_losses:
+                        del self.position_stop_losses[symbol]
+                    if symbol in self.position_take_profits:
+                        del self.position_take_profits[symbol]
+        
+        # ====================================================================
+        # STEP 2: Check for emergency close flag
+        # ====================================================================
+        if raw_llm_output is None:
+            emergency_flag = os.path.join(os.path.dirname(os.path.dirname(__file__)), "emergency_close.flag")
+            if os.path.exists(emergency_flag):
+                logger.warning(f"[WARNING] {symbol}: EMERGENCY CLOSE TRIGGERED!")
+                if position_size != 0:
+                    logger.info(f"  {symbol}: Forcing immediate position close...")
+                    raw_llm_output = '{"action": "close", "size_pct": 1.0, "reason": "Emergency close triggered by user - closing all positions immediately"}'
+                else:
+                    raw_llm_output = '{"action": "hold", "size_pct": 0.0, "reason": "Emergency close triggered but no position"}'
+                    
+                    # If no position on this symbol, check if all symbols have no positions, then clear flag
+                    # We'll clear the flag in the main loop after processing all symbols
+                
+        # ====================================================================
+        # STEP 3: Get decision from decision provider (if no SL/TP/emergency)
+        # ====================================================================
+        if raw_llm_output is None:
+            try:
+                raw_llm_output = self.decision_provider.get_decision(
+                    snapshot, position_size, equity
+                )
+                if position_size == 0:
+                    # Log decision for new entry evaluation
+                    temp_parsed = self.decision_parser.parse(raw_llm_output)
+                    temp_confidence = getattr(temp_parsed, 'confidence', 0.0)
+                    logger.info(f"    {symbol}: {temp_parsed.action} (confidence: {temp_confidence:.2f})")
+            except Exception as e:
+                logger.error(f"  {symbol}: Decision provider failed: {e}")
+                raw_llm_output = f"Error: {str(e)}"
+                
+        # ====================================================================
+        # STEP 4: Parse decision
+        # ====================================================================
+        decision = self.decision_parser.parse(raw_llm_output)
+        
+        # ====================================================================
+        # STEP 5: Validate with risk manager
+        # ====================================================================
+        risk_result = self.risk_manager.validate(
+            decision, snapshot, position_size, equity
+        )
+        
+        if not risk_result.approved and decision.action in ['long', 'short', 'close', 'sell']:
+            logger.info(f"    {symbol}: Risk manager denied: {risk_result.reason}")
+        
+        # ====================================================================
+        # STEP 6: Execute trade if approved
+        # ====================================================================
+        execution_result = None
+        if risk_result.approved:
+            try:
+                execution_result = self.trade_executor.execute(
+                    decision, snapshot, position_size, equity
+                )
+                if execution_result.executed:
+                    logger.info(f"    {symbol}: EXECUTED - {decision.action} @ ${execution_result.fill_price:.2f}")
+                elif execution_result.error:
+                    logger.warning(f"    {symbol}: Execution error: {execution_result.error}")
+            except Exception as e:
+                logger.error(f"    {symbol}: Execution failed: {e}")
+                from src.models import ExecutionResult
+                execution_result = ExecutionResult(
+                    executed=False, order_id=None, filled_size=None,
+                    fill_price=None, error=str(e)
+                )
+        else:
+            from src.models import ExecutionResult
+            execution_result = ExecutionResult(
+                executed=False, order_id=None, filled_size=None,
+                fill_price=None, error=None
+            )
+        
+        # ====================================================================
+        # STEP 7: Update position tracking
+        # ====================================================================
+        if execution_result and execution_result.executed and execution_result.filled_size:
+            # Handle position opening
+            if decision.action in ['long', 'short'] and execution_result.fill_price:
+                self.position_entry_prices[symbol] = execution_result.fill_price
+                self.position_entry_timestamps[symbol] = int(time.time())
+                
+                position_type = getattr(decision, 'position_type', 'swing')
+                self.position_types[symbol] = position_type
+                
+                if decision.stop_loss is not None:
+                    self.position_stop_losses[symbol] = decision.stop_loss
+                if decision.take_profit is not None:
+                    self.position_take_profits[symbol] = decision.take_profit
+                
+                leverage = getattr(decision, 'leverage', 1.0)
+                self.position_leverages[symbol] = leverage
+                
+                risk_amount = getattr(decision, 'risk_amount', None)
+                reward_amount = getattr(decision, 'reward_amount', None)
+                if risk_amount is not None:
+                    self.position_risk_amounts[symbol] = risk_amount
+                if reward_amount is not None:
+                    self.position_reward_amounts[symbol] = reward_amount
+            
+            # Handle position closing
+            elif decision.action in ['sell', 'close']:
+                # Save entry price before deletion for trade logging
+                entry_price_for_closed_trade = self.position_entry_prices.get(symbol)
+                entry_timestamp = self.position_entry_timestamps.get(symbol)
+                
+                # Calculate P&L if we have entry price
+                if entry_price_for_closed_trade and execution_result.fill_price:
+                    # Determine LONG vs SHORT from original position size
+                    was_long = position_size > 0
+                    if was_long:
+                        pnl_pct = ((execution_result.fill_price - entry_price_for_closed_trade) / entry_price_for_closed_trade) * 100
+                        trade_pnl = (execution_result.fill_price - entry_price_for_closed_trade) * execution_result.filled_size
+                    else:
+                        pnl_pct = ((entry_price_for_closed_trade - execution_result.fill_price) / entry_price_for_closed_trade) * 100
+                        trade_pnl = (entry_price_for_closed_trade - execution_result.fill_price) * abs(execution_result.filled_size)
+                    
+                    # Log trade to frontend
+                    if self.api_client:
+                        base_currency = symbol.split('/')[0]
+                        entry_notional = abs(position_size) * entry_price_for_closed_trade
+                        exit_notional = abs(execution_result.filled_size) * execution_result.fill_price
+                        
+                        # Calculate holding time
+                        holding_time = "N/A"
+                        if entry_timestamp:
+                            holding_time = self._calculate_holding_time(entry_timestamp, int(time.time()))
+                        
+                        self.api_client.add_trade(
+                            coin=base_currency,
+                            side="LONG" if was_long else "SHORT",
+                            entry_price=entry_price_for_closed_trade,
+                            exit_price=execution_result.fill_price,
+                            quantity=abs(execution_result.filled_size),
+                            entry_notional=entry_notional,
+                            exit_notional=exit_notional,
+                            holding_time=holding_time,
+                            pnl=trade_pnl,
+                            entry_timestamp=entry_timestamp,
+                            exit_timestamp=int(time.time())
+                        )
+                
+                # Send agent message for close actions (including emergency close)
+                if self.api_client:
+                    # Get all snapshots from the parameter (passed from parent run method)
+                    all_snapshots_for_msg = snapshots  # Use snapshots dict from _process_symbol parameter
+                    
+                    # Calculate available cash and unrealized P&L (position is closed, so P&L is now 0)
+                    available_cash_for_msg = equity  # Position closed, all equity is available
+                    unrealized_pnl_for_msg = 0.0  # Position closed, no unrealized P&L
+                    
+                    self._send_smart_agent_message(
+                        decision=decision,
+                        snapshot=snapshot,
+                        position_size=0.0,  # Position is closed
+                        equity=equity,
+                        available_cash=available_cash_for_msg,
+                        unrealized_pnl=unrealized_pnl_for_msg,
+                        cycle_count=cycle_count,
+                        all_snapshots=all_snapshots_for_msg
+                    )
+                
+                # Clear all position tracking
+                for tracking_dict in [
+                    self.position_entry_prices,
+                    self.position_entry_timestamps,
+                    self.position_stop_losses,
+                    self.position_take_profits,
+                    self.position_types,
+                    self.position_leverages,
+                    self.position_risk_amounts,
+                    self.position_reward_amounts
+                ]:
+                    if symbol in tracking_dict:
+                        del tracking_dict[symbol]
+        
+        # ====================================================================
+        # STEP 8: Store decision for status message
+        # ====================================================================
+        # Store decision for this symbol to generate comprehensive status message
+        self.current_cycle_decisions[symbol] = {
+            'decision': decision,
+            'snapshot': snapshot,
+            'position_size': position_size,
+            'executed': execution_result.executed if execution_result else False,
+            'risk_approved': risk_result.approved,
+            'risk_reason': risk_result.reason
+        }
+        
+        # ====================================================================
+        # STEP 9: Log cycle data for this symbol
+        # ====================================================================
+        cycle_log = CycleLog(
+            timestamp=snapshot.timestamp,
+            symbol=snapshot.symbol,
+            market_price=snapshot.price,
+            position_before=position_size,
+            llm_raw_output=raw_llm_output,
+            parsed_action=decision.action,
+            parsed_size_pct=decision.size_pct,
+            parsed_reason=decision.reason,
+            risk_approved=risk_result.approved,
+            risk_reason=risk_result.reason,
+            executed=execution_result.executed if execution_result else False,
+            order_id=execution_result.order_id if execution_result else None,
+            filled_size=execution_result.filled_size if execution_result else None,
+            fill_price=execution_result.fill_price if execution_result else None,
+            mode=self.config.run_mode
+        )
+        self.logger.log_cycle(cycle_log)
+    
+    def _update_frontend_all_positions(
+        self,
+        snapshots: dict,
+        positions: dict,
+        equity: float,
+        cycle_count: int
+    ) -> None:
+        """
+        Update frontend with all positions aggregated from all symbols.
+        
+        Args:
+            snapshots: Dict of {symbol: snapshot}
+            positions: Dict of {symbol: position_size}
+            equity: Current account equity
+            cycle_count: Current cycle number
+        """
+        if not self.api_client:
+            return
+        
+        try:
+            total_unrealized_pnl = 0.0
+            positions_list = []
+            
+            # Process all positions
+            for symbol in self.config.symbols:
+                position_size = positions.get(symbol, 0.0)
+                if position_size != 0:
+                    snapshot = snapshots.get(symbol)
+                    if snapshot:
+                        entry_price = self.position_entry_prices.get(symbol, snapshot.price)
+                        
+                        # Calculate unrealized P&L
+                        was_long = position_size > 0
+                        if was_long:
+                            unrealized_pnl = position_size * (snapshot.price - entry_price)
+                            pnl_percentage = ((snapshot.price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                        else:
+                            unrealized_pnl = abs(position_size) * (entry_price - snapshot.price)
+                            pnl_percentage = ((entry_price - snapshot.price) / entry_price) * 100 if entry_price > 0 else 0
+                        
+                        total_unrealized_pnl += unrealized_pnl
+                        
+                        base_currency = symbol.split('/')[0]
+                        stop_loss = self.position_stop_losses.get(symbol)
+                        take_profit = self.position_take_profits.get(symbol)
+                        leverage = self.position_leverages.get(symbol, 1.0)
+                        
+                        positions_list.append({
+                            "side": "LONG" if was_long else "SHORT",
+                            "coin": base_currency,
+                            "leverage": f"{leverage:.1f}X",
+                            "notional": abs(position_size) * snapshot.price,
+                            "unrealPnL": unrealized_pnl,
+                            "entryPrice": entry_price,
+                            "currentPrice": snapshot.price,
+                            "pnlPercent": pnl_percentage,
+                            "stopLoss": stop_loss,
+                            "takeProfit": take_profit
+                        })
+            
+            # Sync all positions
+            self.api_client.sync_positions(positions_list)
+            
+            # Update balance (available cash = equity - total unrealized P&L)
+            available_cash = equity - total_unrealized_pnl
+            self.api_client.update_balance(available_cash, total_unrealized_pnl)
+            
+            logger.info(f"  Frontend updated: Cash=${available_cash:.2f}, P&L=${total_unrealized_pnl:.2f} (positions: {len(positions_list)})")
+            
+            #  Send status message when needed OR smart idle check-ins
+            # Send messages for important events + intelligent periodic check-ins (when meaningful)
+            should_send_status = False
+            is_idle_message = False
+            
+            # Check if there's something meaningful to report
+            if cycle_count == 1:
+                # Always send welcome message on first cycle
+                should_send_status = True
+            elif self.current_cycle_decisions:
+                # Check if any trades were executed or important events occurred
+                for symbol, decision_data in self.current_cycle_decisions.items():
+                    executed = decision_data.get('executed', False)
+                    decision = decision_data.get('decision')
+                    action = decision.action if decision else 'hold'
+                    
+                    # Send if: trades executed, emergency close, stop loss hit, take profit hit
+                    if executed or action in ['close', 'emergency'] or 'stop loss' in str(decision.reason).lower() or 'take profit' in str(decision.reason).lower():
+                        should_send_status = True
+                        break
+            
+            # Smart idle check-in: Only send when it's been a while AND there's something mildly interesting
+            # OR if it's been a very long time (50+ cycles) regardless
+            cycles_since_last_message = cycle_count - self.last_message_cycle
+            
+            if not should_send_status and cycles_since_last_message >= 30:
+                # Check if there's anything mildly interesting (not trade-worthy, but worth mentioning)
+                has_interesting_activity = False
+                if self.current_cycle_decisions:
+                    for symbol, decision_data in self.current_cycle_decisions.items():
+                        decision = decision_data.get('decision')
+                        if decision:
+                            reason = decision.reason.lower()
+                            # Interesting but not trade-worthy: volume spikes, testing levels, reversals forming
+                            interesting_keywords = ['volume', 'testing', 'support', 'resistance', 'reversal', 'breakout', 'breakdown', 'forming']
+                            if any(keyword in reason for keyword in interesting_keywords):
+                                has_interesting_activity = True
+                                break
+                
+                # Send if: been 30+ cycles AND something interesting, OR been 50+ cycles regardless
+                if (has_interesting_activity and cycles_since_last_message >= 30) or cycles_since_last_message >= 50:
+                    should_send_status = True
+                    is_idle_message = True
+            
+            if should_send_status and self.current_cycle_decisions and self.api_client:
+                # Build comprehensive status message based on all symbol decisions
+                self._send_comprehensive_status_message(
+                    cycle_decisions=self.current_cycle_decisions,
+                    snapshots=snapshots,
+                    positions=positions,
+                    equity=equity,
+                    available_cash=available_cash,
+                    unrealized_pnl=total_unrealized_pnl,
+                    cycle_count=cycle_count,
+                    is_idle_message=is_idle_message
+                )
+            
+            # Reset decisions for next cycle
+            self.current_cycle_decisions = {}
+            
+        except Exception as e:
+            logger.warning(f"Failed to update frontend: {e}")
     
     def _sleep_until_next_cycle(self, cycle_start_time: float) -> None:
         """
@@ -855,6 +905,11 @@ DECISION DETAILS:
 {f"- Stop Loss: ${decision.stop_loss:,.2f}" if decision.stop_loss else ""}
 {f"- Take Profit: ${decision.take_profit:,.2f}" if decision.take_profit else ""}
 
+**CRITICAL - CLOSE REASON IDENTIFICATION:**
+{"**EMERGENCY CLOSE** - User manually triggered emergency close via 'CLOSE ALL' button. This is NOT a stop loss or take profit. Explain that you're closing all positions immediately at market price as requested." if 'emergency' in decision.reason.lower() else ""}
+{"**STOP LOSS TRIGGERED** - Price hit stop loss level, closing position to limit losses. Explain this was a risk management exit, not a manual close." if 'stop loss' in decision.reason.lower() and 'emergency' not in decision.reason.lower() else ""}
+{"**TAKE PROFIT TRIGGERED** - Price hit take profit level, closing position to lock in gains. Explain this was a profit target hit." if 'take profit' in decision.reason.lower() and 'emergency' not in decision.reason.lower() else ""}
+
 MARKET CONTEXT ({symbol}):
 - Daily Trend: {indicators.get('trend_1d', 'unknown')}
 - 4H Trend: {indicators.get('trend_4h', 'unknown')}
@@ -900,6 +955,9 @@ SELLING/CLOSING (vary these):
 - "Out at $67.9k with +$665. Price rejected at swing high, smart to exit here."
 - "Stop hit at $66.5k, -$734 loss. Broke below S1 support, capital preservation mode."
 - "Exiting at $67.1k for small +$85 gain. Trend reversed below VWAP, not worth the risk."
+- **EMERGENCY CLOSE ONLY**: "Emergency closing all positions at market price as requested. Closing immediately at current market price ${price:,.2f} to exit all positions."
+- **STOP LOSS ONLY**: "Stop loss triggered at $66.5k, closing position to limit losses. Price broke below S1 support, capital preservation activated."
+- **TAKE PROFIT ONLY**: "Take profit hit at $68.5k, closing position to lock in gains. Hit R1 resistance perfectly, taking the win."
 
 WAITING/NO POSITION (vary these - BE CREATIVE AND DETAILED):
 - "Watching from sidelines right now. Price is testing R1 resistance at $110.5k with weak volume (0.8x average), and the 1-hour trend just flipped bearish. I'm waiting to see if we get a clean breakout above R1 with volume confirmation, or if we reject and head back to support. Daily trend is still bearish, so I'm cautious about longs here. If we break and hold above $110.5k with strong volume, I'll consider a scalp to R2."
@@ -972,6 +1030,206 @@ Write ONLY the message, nothing else:"""
                     available_cash, unrealized_pnl, all_snapshots
                 )
                 self.api_client.add_agent_message(message)
+                self.last_message_type = "hold"
+                self.last_message_cycle = cycle_count
+    
+    def _send_comprehensive_status_message(
+        self, cycle_decisions: dict, snapshots: dict, positions: dict,
+        equity: float, available_cash: float, unrealized_pnl: float, cycle_count: int,
+        is_idle_message: bool = False
+    ) -> None:
+        """
+        Send comprehensive status message based on all symbol decisions made in this cycle.
+        Tells user what the agent is actually doing: checking coins, waiting, monitoring, etc.
+        
+        Args:
+            cycle_decisions: Dict of {symbol: {decision, snapshot, position_size, executed, risk_approved, risk_reason}}
+            snapshots: Dict of {symbol: snapshot} for all coins
+            positions: Dict of {symbol: position_size}
+            equity: Current account equity
+            available_cash: Available cash
+            unrealized_pnl: Total unrealized P&L
+            cycle_count: Current cycle number
+        """
+        if not self.api_client or not self.openai_client:
+            return
+        
+        try:
+            # Build detailed status summary for all symbols
+            symbol_statuses = []
+            has_active_position = False
+            has_executed_trade = False
+            
+            for symbol in self.config.symbols:
+                if symbol in cycle_decisions:
+                    decision_data = cycle_decisions[symbol]
+                    decision = decision_data['decision']
+                    snapshot = decision_data['snapshot']
+                    position_size = decision_data['position_size']
+                    executed = decision_data.get('executed', False)
+                    risk_approved = decision_data.get('risk_approved', True)
+                    risk_reason = decision_data.get('risk_reason', '')
+                    
+                    if position_size != 0:
+                        has_active_position = True
+                    if executed:
+                        has_executed_trade = True
+                    
+                    # Build status for this symbol
+                    coin_name = symbol.split('/')[0]
+                    price = snapshot.price
+                    indicators = snapshot.indicators
+                    
+                    # Get decision details
+                    action = decision.action
+                    reason = decision.reason
+                    confidence = getattr(decision, 'confidence', 0.0)
+                    
+                    # Format status
+                    if action == 'hold':
+                        status_text = f"{coin_name} ({symbol}): Waiting - {reason}"
+                    elif action in ['long', 'short']:
+                        if executed:
+                            status_text = f"{coin_name} ({symbol}):  EXECUTED {action.upper()} at ${price:,.2f}"
+                        elif not risk_approved:
+                            status_text = f"{coin_name} ({symbol}):  {action.upper()} signal denied ({risk_reason})"
+                        else:
+                            status_text = f"{coin_name} ({symbol}): {action.upper()} signal ({confidence:.0%} confidence) - {reason}"
+                    elif action in ['close', 'sell']:
+                        if executed:
+                            status_text = f"{coin_name} ({symbol}): ✅ CLOSED position at ${price:,.2f}"
+                        else:
+                            status_text = f"{coin_name} ({symbol}): Closing - {reason}"
+                    else:
+                        status_text = f"{coin_name} ({symbol}): {action.upper()} - {reason}"
+                    
+                    symbol_statuses.append(status_text)
+            
+            # Build comprehensive prompt for AI
+            active_positions_summary = ""
+            if has_active_position:
+                pos_summary = []
+                for symbol, pos_size in positions.items():
+                    if pos_size != 0:
+                        coin = symbol.split('/')[0]
+                        pos_type = "LONG" if pos_size > 0 else "SHORT"
+                        pos_summary.append(f"{coin} {pos_type}")
+                active_positions_summary = f"\nCurrent Positions: {', '.join(pos_summary)}" if pos_summary else ""
+            
+            status_summary = "\n".join(symbol_statuses) if symbol_statuses else "No decisions made this cycle"
+            
+            # Determine message type based on what happened
+            has_executed_trades = any(d.get('executed', False) for d in cycle_decisions.values())
+            has_emergency_close = any('emergency' in str(d.get('decision', {}).reason).lower() for d in cycle_decisions.values())
+            
+            if cycle_count == 1:
+                prompt_type = "FIRST_CYCLE_WELCOME"
+                prompt_context = "This is the first cycle. Give a brief welcome message explaining you're starting up and monitoring all 6 coins."
+            elif has_executed_trades:
+                prompt_type = "TRADE_EXECUTED"
+                prompt_context = "You just executed trades. Summarize what you did and why."
+            elif has_emergency_close:
+                prompt_type = "EMERGENCY_CLOSE"
+                prompt_context = "Emergency close was triggered. Explain that you're closing all positions immediately."
+            elif is_idle_message:
+                prompt_type = "IDLE_CHECK_IN"
+                prompt_context = "This is a periodic check-in message. Write a natural, human-like update as if you're a real person watching the market. Be conversational and brief."
+            else:
+                prompt_type = "STATUS_UPDATE"
+                prompt_context = "Send a brief summary of current market status. Keep it concise - only mention notable observations."
+            
+            if is_idle_message:
+                # Idle check-in message - natural, human-like, brief
+                prompt = f"""You are a professional crypto trading agent giving a natural, periodic check-in to your client.
+
+CURRENT MARKET STATUS:
+- Monitoring {len(snapshots)} coins: {', '.join([s.split('/')[0] for s in snapshots.keys()])}
+{active_positions_summary if active_positions_summary else ""}
+- Available Cash: ${available_cash:,.2f}
+- Unrealized P&L: ${unrealized_pnl:,.2f}
+
+YOUR TASK:
+Write a NATURAL, CONVERSATIONAL message (2-3 sentences) as if you're a real person checking in. It should feel human, not robotic.
+
+Examples:
+- "Just checking in - I'm actively watching the market across all 6 coins, scanning for the best setup. Nothing compelling yet, staying patient and waiting for a clean signal with good volume confirmation."
+- "Hi there - currently monitoring the markets and watching for opportunities. All coins are showing mixed signals right now, so I'm being selective and waiting for a clear setup before entering any trades."
+- "Checking in: I'm watching all coins closely and scanning for setups. Market is consolidating at the moment, so I'm staying patient and waiting for a strong signal to appear."
+- "Still here, actively watching the market for the best opportunities. Nothing exciting yet - staying disciplined and waiting for a clean entry with proper volume confirmation."
+
+IMPORTANT:
+- Keep it SHORT (2-3 sentences max)
+- Use natural, conversational language (like a real person)
+- Mention you're watching/monitoring the market
+- Be brief - don't list every detail
+- Use first person ("I'm watching", "I'm waiting", "I'm checking")
+
+Write ONLY the message, nothing else:"""
+            else:
+                # Important event message (trades, emergency, etc.)
+                prompt = f"""You are a professional crypto trading agent updating your client with a BRIEF, CONCISE summary.
+
+CURRENT STATUS ({len(snapshots)} coins monitored):
+{status_summary}
+{active_positions_summary}
+
+ACCOUNT STATUS:
+- Equity: ${equity:,.2f}
+- Available Cash: ${available_cash:,.2f}
+- Unrealized P&L: ${unrealized_pnl:,.2f}
+
+CONTEXT: {prompt_context}
+
+YOUR TASK:
+Write a BRIEF, NATURAL message (2-3 sentences MAX) summarizing what happened:
+- If trades executed: Say what you did and why
+- If emergency close: Explain you're closing all positions immediately
+- If first cycle: Brief welcome message
+- Otherwise: Brief status update (only mention notable observations, not every coin)
+
+IMPORTANT:
+- Keep it SHORT and CONCISE (2-3 sentences max)
+- Only mention IMPORTANT events or notable observations
+- Don't list every coin if nothing special happened
+- Use first person ("I executed", "I'm waiting", "I found")
+
+Examples:
+- Trade executed: "Just opened a LONG position in SOL at $185.12. Strong bearish alignment across timeframes, clean breakdown signal. Monitoring for stop loss at $184.43."
+- Emergency close: "Emergency closing all positions immediately at market price as requested. Closing all positions now."
+- First cycle: "Starting up and monitoring all 6 coins: BTC, ETH, SOL, DOGE, BNB, XRP. Checking for trading opportunities..."
+- Status update (only if something notable): "ETH is testing support at $3,862 with decent volume - watching closely. Other coins showing weak signals, staying patient."
+
+Write ONLY the message, nothing else (2-3 sentences max):"""
+            
+            # Call AI to generate natural status message
+            response = self.openai_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=300,
+                temperature=0.7,
+                timeout=5.0
+            )
+            
+            message = response.choices[0].message.content.strip()
+            
+            # Remove quotes if AI added them
+            if message.startswith('"') and message.endswith('"'):
+                message = message[1:-1]
+            if message.startswith("'") and message.endswith("'"):
+                message = message[1:-1]
+            
+            # Send message
+            self.api_client.add_agent_message(message)
+            self.last_message_type = "hold"
+            self.last_message_cycle = cycle_count
+            
+        except Exception as e:
+            logger.warning(f"Failed to generate comprehensive status message: {e}")
+            # Fallback to simple message
+            if snapshots:
+                coins_list = ', '.join([s.split('/')[0] for s in snapshots.keys()])
+                fallback_msg = f"Monitoring {len(snapshots)} coins: {coins_list}. Checking for trading opportunities..."
+                self.api_client.add_agent_message(fallback_msg)
                 self.last_message_type = "hold"
                 self.last_message_cycle = cycle_count
     

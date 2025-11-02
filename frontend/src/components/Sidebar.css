@@ -20,11 +20,12 @@
   background: none;
   border: none;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 400;
   color: #6b7280;
   cursor: pointer;
   transition: all 0.2s ease;
-  border-bottom: 2px solid transparent;
+  border: 2px solid transparent;
+  border-radius: 0;
 }
 
 .tab:hover {
@@ -34,8 +35,10 @@
 
 .tab.active {
   color: #111827;
-  border-bottom-color: #111827;
+  font-weight: 700;
   background: #ffffff;
+  border: 2px solid #111827;
+  border-top: none;
 }
 
 .sidebar-content {

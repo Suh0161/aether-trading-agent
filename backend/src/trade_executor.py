@@ -91,7 +91,9 @@ class TradeExecutor:
         try:
             # Handle close action
             if action == "close":
-                return self._execute_close(snapshot.symbol, position_size)
+                # Check if this is an emergency close
+                is_emergency = 'emergency' in decision.reason.lower()
+                return self._execute_close(snapshot.symbol, position_size, snapshot.price, is_emergency=is_emergency)
             
             # Calculate order size for long/short actions (with leverage)
             leverage = getattr(decision, 'leverage', 1.0)  # Default to 1.0 if not provided
@@ -225,13 +227,15 @@ class TradeExecutor:
                 error=str(e)
             )
     
-    def _execute_close(self, symbol: str, position_size: float) -> ExecutionResult:
+    def _execute_close(self, symbol: str, position_size: float, current_price: float, is_emergency: bool = False) -> ExecutionResult:
         """
         Execute a close order to flatten the current position.
         
         Args:
             symbol: Trading symbol
             position_size: Current position size (positive for long, negative for short)
+            current_price: Current market price from snapshot (for validation)
+            is_emergency: Whether this is an emergency close (user-triggered)
             
         Returns:
             ExecutionResult with order details
@@ -259,7 +263,35 @@ class TradeExecutor:
                 logger.info(f"Executing CLOSE: market buy {close_size} {symbol} (closing short)")
                 order = self.exchange.create_market_buy_order(symbol, close_size)
             
-            return self._parse_order_response(order)
+            result = self._parse_order_response(order)
+            
+            # BUG FIX 1: Validate fill_price - if exchange returns suspicious price, use current price
+            if result.executed and result.fill_price:
+                # Check if fill_price differs from current price
+                price_diff_pct = abs(result.fill_price - current_price) / current_price if current_price > 0 else 1.0
+                
+                # Stricter threshold for emergency closes (1.5%) vs regular closes (3%)
+                # Emergency closes must be accurate - user expects current market price
+                threshold_pct = 0.015 if is_emergency else 0.03
+                warning_threshold_pct = 0.01  # Log warning for >1% difference
+                
+                if price_diff_pct > threshold_pct:
+                    # More than threshold difference is suspicious - use current price
+                    logger.warning(
+                        f"Exchange fill_price ${result.fill_price:.2f} differs significantly from "
+                        f"current price ${current_price:.2f} ({price_diff_pct*100:.1f}% diff). "
+                        f"{'Emergency close - ' if is_emergency else ''}Using current price as fill_price to avoid misleading info."
+                    )
+                    result.fill_price = current_price
+                elif price_diff_pct > warning_threshold_pct:
+                    # More than 1% difference - log warning but don't override (normal slippage)
+                    logger.warning(
+                        f"Exchange fill_price ${result.fill_price:.2f} differs from "
+                        f"current price ${current_price:.2f} ({price_diff_pct*100:.1f}% diff). "
+                        f"This might indicate exchange latency or slippage."
+                    )
+            
+            return result
         
         except Exception as e:
             logger.error(f"Close execution failed: {str(e)}")

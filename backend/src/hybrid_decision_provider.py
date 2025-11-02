@@ -191,15 +191,21 @@ class HybridDecisionProvider:
             first_word = ai_response_lower.split()[0] if ai_response_lower else ""
             
             if first_word in ["veto", "reject", "no"]:
-                logger.info(f"AI VETOED: {ai_response[:200]}")
+                # Fix Unicode encoding issue: replace ≥ with >= for Windows console
+                safe_response = ai_response[:200].replace('\u2265', '>=').replace('\u2264', '<=').replace('\u2192', '->')
+                logger.info(f"AI VETOED: {safe_response}")
                 return False
             elif first_word == "approve":
-                logger.info(f"AI APPROVED: {ai_response[:200]}")
+                # Fix Unicode encoding issue: replace ≥ with >= for Windows console
+                safe_response = ai_response[:200].replace('\u2265', '>=').replace('\u2264', '<=').replace('\u2192', '->')
+                logger.info(f"AI APPROVED: {safe_response}")
                 return True
             else:
                 # Fallback: check if veto/reject appears early in response
                 if "veto" in ai_response_lower[:50] or "reject" in ai_response_lower[:50]:
-                    logger.info(f"AI VETOED (fallback): {ai_response[:200]}")
+                    # Fix Unicode encoding issue: replace ≥ with >= for Windows console
+                    safe_response = ai_response[:200].replace('\u2265', '>=').replace('\u2264', '<=').replace('\u2192', '->')
+                    logger.info(f"AI VETOED (fallback): {safe_response}")
                     return False
                 # Default to approve if unclear
                 logger.warning(f"AI response unclear, defaulting to APPROVE: {ai_response[:100]}")

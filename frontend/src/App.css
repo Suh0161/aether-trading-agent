@@ -10,4 +10,5 @@
   flex: 1;
   display: flex;
   overflow: hidden;
+  border-top: 2px solid #1c1917;
 }

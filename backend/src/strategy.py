@@ -177,10 +177,64 @@ class ATRBreakoutStrategy:
             )
         
         # No position - look for LONG or SHORT entry
-        # Priority: Check for strong directional bias first
+        # Priority: Check S/R levels FIRST (Support=Buy, Resistance=Sell)
         
+        # Get S/R levels first
+        s1 = indicators.get("support_1", 0)
+        s2 = indicators.get("support_2", 0)
+        swing_low = indicators.get("swing_low", 0)
+        r1 = indicators.get("resistance_1", 0)
+        r2 = indicators.get("resistance_2", 0)
+        swing_high = indicators.get("swing_high", 0)
+        
+        # Check if price is at support/resistance (within 0.5%)
+        near_support = (s1 > 0 and abs(price - s1) / s1 < 0.005) or \
+                      (s2 > 0 and abs(price - s2) / s2 < 0.005) or \
+                      (swing_low > 0 and abs(price - swing_low) / swing_low < 0.005)
+        near_resistance = (r1 > 0 and abs(price - r1) / r1 < 0.005) or \
+                         (r2 > 0 and abs(price - r2) / r2 < 0.005) or \
+                         (swing_high > 0 and abs(price - swing_high) / swing_high < 0.005)
+        
+        # PRIORITY 1: S/R Logic (Support=Buy, Resistance=Sell)
+        # If at support AND uptrend → LONG (expect bounce up)
+        # If at support AND downtrend → Still LONG (support bounce) unless breaking through
+        if near_support:
+            # Check if breaking through support with volume (breakdown)
+            volume_ratio_1h = indicators.get("volume_ratio_1h", 1.0)
+            obv_trend_1h = indicators.get("obv_trend_1h", "neutral")
+            is_breaking_support = volume_ratio_1h >= 1.8 and obv_trend_1h == "bearish" and price < min(s1 if s1 > 0 else price, s2 if s2 > 0 else price, swing_low if swing_low > 0 else price)
+            
+            if not is_breaking_support and in_uptrend:
+                # At support + uptrend = LONG opportunity (bounce expected)
+                return self._handle_long_at_support(snapshot, indicators, price, atr_14, equity, available_cash, s1, s2, swing_low)
+        
+        # If at resistance AND downtrend → SHORT (expect rejection down)
+        # If at resistance AND uptrend → Still SHORT (resistance rejection) unless breaking through
+        if near_resistance:
+            # Check if breaking through resistance with volume (breakout)
+            volume_ratio_1h = indicators.get("volume_ratio_1h", 1.0)
+            obv_trend_1h = indicators.get("obv_trend_1h", "neutral")
+            is_breaking_resistance = volume_ratio_1h >= 1.8 and obv_trend_1h == "bullish" and price > max(r1 if r1 > 0 else price, r2 if r2 > 0 else price, swing_high if swing_high > 0 else price)
+            
+            if not is_breaking_resistance and in_downtrend:
+                # At resistance + downtrend = SHORT opportunity (rejection expected)
+                return self._handle_short_at_resistance(snapshot, indicators, price, atr_14, equity, available_cash, r1, r2, swing_high)
+        
+        # PRIORITY 2: Keltner Band Logic (breakout/breakdown)
         # === LONG ENTRY LOGIC ===
         if in_uptrend:
+            # SKIP if price is at resistance (handled by S/R priority logic above)
+            # Resistance = sell zone, not buy zone
+            if near_resistance:
+                return StrategySignal(
+                    action="hold",
+                    size_pct=0.0,
+                    reason=f"At resistance ${max(r1 if r1 > 0 else price, r2 if r2 > 0 else price, swing_high if swing_high > 0 else price):.2f} - expecting rejection, not long",
+                    confidence=0.0,
+                    symbol=snapshot.symbol,
+                    position_type="swing"
+                )
+            
             # Extract volume indicators for confirmation
             volume_ratio_1h = indicators.get("volume_ratio_1h", 1.0)
             volume_trend_1h = indicators.get("volume_trend_1h", "stable")
@@ -218,15 +272,10 @@ class ATRBreakoutStrategy:
             # OBV bonus (money flow confirmation)
             obv_bonus = 0.05 if obv_bullish else 0.0
             
-            # Perfect setup bonus (S/R bounce + multi-TF alignment)
-            s1 = indicators.get("support_1", 0)
-            s2 = indicators.get("support_2", 0)
-            swing_low = indicators.get("swing_low", 0)
-            near_support = (s1 > 0 and abs(price - s1) / s1 < 0.005) or \
-                          (s2 > 0 and abs(price - s2) / s2 < 0.005) or \
-                          (swing_low > 0 and abs(price - swing_low) / swing_low < 0.005)
+            # Perfect setup bonus (breakout with multi-TF alignment)
+            # Note: S/R logic handled separately above (Priority 1)
             strong_alignment = trend_1d == "bullish" and trend_4h == "bullish"
-            perfect_setup_bonus = 0.05 if (near_support and strong_alignment) else 0.0
+            perfect_setup_bonus = 0.05 if strong_alignment else 0.0
             
             # Final confidence (clamped to 0.3-0.95)
             base_confidence = max(0.3, min(0.95, base_confidence + volume_confidence_boost + obv_bonus + perfect_setup_bonus))
@@ -269,6 +318,18 @@ class ATRBreakoutStrategy:
         
         # === SHORT ENTRY LOGIC ===
         elif in_downtrend:
+            # SKIP if price is at support (handled by S/R priority logic above)
+            # Support = buy zone, not short zone
+            if near_support:
+                return StrategySignal(
+                    action="hold",
+                    size_pct=0.0,
+                    reason=f"At support ${min(s1 if s1 > 0 else price, s2 if s2 > 0 else price, swing_low if swing_low > 0 else price):.2f} - expecting bounce, not short",
+                    confidence=0.0,
+                    symbol=snapshot.symbol,
+                    position_type="swing"
+                )
+            
             # Extract volume indicators for confirmation
             volume_ratio_1h = indicators.get("volume_ratio_1h", 1.0)
             volume_trend_1h = indicators.get("volume_trend_1h", "stable")
@@ -306,15 +367,10 @@ class ATRBreakoutStrategy:
             # OBV bonus (money flow confirmation)
             obv_bonus = 0.05 if obv_bearish else 0.0
             
-            # Perfect setup bonus (S/R rejection + multi-TF alignment)
-            r1 = indicators.get("resistance_1", 0)
-            r2 = indicators.get("resistance_2", 0)
-            swing_high = indicators.get("swing_high", 0)
-            near_resistance = (r1 > 0 and abs(price - r1) / r1 < 0.005) or \
-                             (r2 > 0 and abs(price - r2) / r2 < 0.005) or \
-                             (swing_high > 0 and abs(price - swing_high) / swing_high < 0.005)
+            # Perfect setup bonus (breakdown with multi-TF alignment)
+            # Note: S/R logic handled separately above (Priority 1)
             strong_alignment = trend_1d == "bearish" and trend_4h == "bearish"
-            perfect_setup_bonus = 0.05 if (near_resistance and strong_alignment) else 0.0
+            perfect_setup_bonus = 0.05 if strong_alignment else 0.0
             
             # Final confidence (clamped to 0.3-0.95)
             base_confidence = max(0.3, min(0.95, base_confidence + volume_confidence_boost + obv_bonus + perfect_setup_bonus))
@@ -363,6 +419,104 @@ class ATRBreakoutStrategy:
             confidence=0.0,
             symbol=snapshot.symbol,
             position_type="swing"
+        )
+    
+    def _handle_long_at_support(self, snapshot: Any, indicators: dict, price: float, atr_14: float, equity: float, available_cash: float, s1: float, s2: float, swing_low: float) -> StrategySignal:
+        """Handle LONG entry at support level (expecting bounce up)."""
+        volume_ratio_1h = indicators.get("volume_ratio_1h", 1.0)
+        obv_trend_1h = indicators.get("obv_trend_1h", "neutral")
+        trend_1d = indicators.get("trend_1d", "neutral")
+        trend_4h = indicators.get("trend_4h", "neutral")
+        
+        # Base confidence for support bounce
+        base_confidence = 0.85  # High confidence at support
+        
+        # Volume boost
+        if volume_ratio_1h >= 1.5:
+            volume_confidence_boost = 0.10
+        elif volume_ratio_1h >= 1.2:
+            volume_confidence_boost = 0.05
+        else:
+            volume_confidence_boost = 0.0
+        
+        # OBV bonus
+        obv_bonus = 0.05 if obv_trend_1h == "bullish" else 0.0
+        
+        # Multi-TF alignment bonus
+        alignment_bonus = 0.05 if (trend_1d == "bullish" and trend_4h == "bullish") else 0.0
+        
+        base_confidence = max(0.3, min(0.95, base_confidence + volume_confidence_boost + obv_bonus + alignment_bonus))
+        
+        logger.info(f"[SWING LONG at SUPPORT] Volume: {volume_ratio_1h:.2f}x, OBV: {obv_trend_1h}, Confidence: {base_confidence:.2f}")
+        
+        # Use nearest support level as entry reference
+        support_level = min([s for s in [s1, s2, swing_low] if s > 0], default=price)
+        entry_keltner = support_level  # Use support as entry level
+        
+        return self._build_entry_signal(
+            snapshot=snapshot,
+            action="long",
+            price=price,
+            atr_14=atr_14,
+            equity=equity,
+            available_cash=available_cash,
+            entry_timeframe="support",
+            entry_keltner=entry_keltner,
+            trend_1d=trend_1d,
+            trend_4h=trend_4h,
+            position_type="swing",
+            volume_ratio=volume_ratio_1h,
+            obv_trend=obv_trend_1h,
+            base_confidence=base_confidence
+        )
+    
+    def _handle_short_at_resistance(self, snapshot: Any, indicators: dict, price: float, atr_14: float, equity: float, available_cash: float, r1: float, r2: float, swing_high: float) -> StrategySignal:
+        """Handle SHORT entry at resistance level (expecting rejection down)."""
+        volume_ratio_1h = indicators.get("volume_ratio_1h", 1.0)
+        obv_trend_1h = indicators.get("obv_trend_1h", "neutral")
+        trend_1d = indicators.get("trend_1d", "neutral")
+        trend_4h = indicators.get("trend_4h", "neutral")
+        
+        # Base confidence for resistance rejection
+        base_confidence = 0.85  # High confidence at resistance
+        
+        # Volume boost
+        if volume_ratio_1h >= 1.5:
+            volume_confidence_boost = 0.10
+        elif volume_ratio_1h >= 1.2:
+            volume_confidence_boost = 0.05
+        else:
+            volume_confidence_boost = 0.0
+        
+        # OBV bonus
+        obv_bonus = 0.05 if obv_trend_1h == "bearish" else 0.0
+        
+        # Multi-TF alignment bonus
+        alignment_bonus = 0.05 if (trend_1d == "bearish" and trend_4h == "bearish") else 0.0
+        
+        base_confidence = max(0.3, min(0.95, base_confidence + volume_confidence_boost + obv_bonus + alignment_bonus))
+        
+        logger.info(f"[SWING SHORT at RESISTANCE] Volume: {volume_ratio_1h:.2f}x, OBV: {obv_trend_1h}, Confidence: {base_confidence:.2f}")
+        
+        # Use nearest resistance level as entry reference
+        resistance_level = max([r for r in [r1, r2, swing_high] if r > 0], default=price)
+        entry_keltner = resistance_level  # Use resistance as entry level
+        
+        return self._build_entry_signal(
+            snapshot=snapshot,
+            action="short",
+            price=price,
+            atr_14=atr_14,
+            equity=equity,
+            available_cash=available_cash,
+            entry_timeframe="resistance",
+            entry_keltner=entry_keltner,
+            trend_1d=trend_1d,
+            trend_4h=trend_4h,
+            position_type="swing",
+            volume_ratio=volume_ratio_1h,
+            obv_trend=obv_trend_1h,
+            base_confidence=base_confidence
         )
     
     def _build_entry_signal(self, snapshot: Any, action: str, price: float, atr_14: float, equity: float, 
@@ -649,7 +803,38 @@ class ScalpingStrategy:
             )
         
         # No position - look for LONG or SHORT scalping entry
+        # Priority: Check S/R levels FIRST (Support=Buy, Resistance=Sell) - same as swing
         
+        # Get S/R levels first
+        s1 = indicators.get("support_1", 0)
+        s2 = indicators.get("support_2", 0)
+        swing_low = indicators.get("swing_low", 0)
+        r1 = indicators.get("resistance_1", 0)
+        r2 = indicators.get("resistance_2", 0)
+        swing_high = indicators.get("swing_high", 0)
+        
+        # Check if price is at support/resistance (within 0.5%)
+        near_support = (s1 > 0 and abs(price - s1) / s1 < 0.005) or \
+                      (s2 > 0 and abs(price - s2) / s2 < 0.005) or \
+                      (swing_low > 0 and abs(price - swing_low) / swing_low < 0.005)
+        near_resistance = (r1 > 0 and abs(price - r1) / r1 < 0.005) or \
+                         (r2 > 0 and abs(price - r2) / r2 < 0.005) or \
+                         (swing_high > 0 and abs(price - swing_high) / swing_high < 0.005)
+        
+        # PRIORITY 1: S/R Logic for Scalping (Support=Buy, Resistance=Sell)
+        # If at support AND bullish 5m trend + above VWAP → LONG scalp (expect bounce)
+        # If at resistance AND bearish 5m trend + below VWAP → SHORT scalp (expect rejection)
+        vwap_5m = indicators.get("vwap_5m", price)
+        
+        if near_support and trend_5m == "bullish" and price > vwap_5m:
+            # At support + bullish 5m + above VWAP = LONG scalp opportunity (bounce expected)
+            return self._handle_scalp_long_at_support(snapshot, indicators, price, equity, s1, s2, swing_low)
+        
+        if near_resistance and trend_5m == "bearish" and price < vwap_5m:
+            # At resistance + bearish 5m + below VWAP = SHORT scalp opportunity (rejection expected)
+            return self._handle_scalp_short_at_resistance(snapshot, indicators, price, equity, r1, r2, swing_high)
+        
+        # PRIORITY 2: Keltner Band Logic for Scalping (breakout/breakdown on 1m/5m)
         # === LONG SCALP ENTRY ===
         # VWAP Filter: Only long if price is above VWAP (confirms bullish intraday bias)
         if trend_5m == "bullish" and price > vwap_5m:
@@ -683,13 +868,10 @@ class ScalpingStrategy:
             # OBV bonus for scalps
             obv_bonus = 0.03 if obv_trend_5m == "bullish" else 0.0
             
-            # Perfect setup bonus (S/R bounce + VWAP alignment)
-            s1 = indicators.get("support_1", 0)
-            swing_low = indicators.get("swing_low", 0)
-            near_support = (s1 > 0 and abs(price - s1) / s1 < 0.005) or \
-                          (swing_low > 0 and abs(price - swing_low) / swing_low < 0.005)
+            # Perfect setup bonus (breakout with VWAP alignment)
+            # Note: S/R logic handled separately above (Priority 1)
             above_vwap = price > vwap_5m
-            perfect_setup_bonus = 0.03 if (near_support and above_vwap) else 0.0
+            perfect_setup_bonus = 0.03 if above_vwap else 0.0
             
             # Final confidence for scalps (clamped to 0.4-0.85)
             base_confidence = max(0.4, min(0.85, base_confidence + volume_confidence_boost + obv_bonus + perfect_setup_bonus))
@@ -706,6 +888,18 @@ class ScalpingStrategy:
             # Near upper band = within 0.5% of upper band
             near_upper_1m = keltner_upper_1m > 0 and price > (keltner_upper_1m * 0.995)
             near_upper_5m = keltner_upper_5m > 0 and price > (keltner_upper_5m * 0.995)
+            
+            # SKIP if price is at resistance (handled by S/R priority logic above)
+            # Resistance = sell zone, not buy zone
+            if near_resistance:
+                return StrategySignal(
+                    action="hold",
+                    size_pct=0.0,
+                    reason=f"Scalp: At resistance ${max(r1 if r1 > 0 else price, r2 if r2 > 0 else price, swing_high if swing_high > 0 else price):.2f} - expecting rejection, not long",
+                    confidence=0.0,
+                    symbol=snapshot.symbol,
+                    position_type="scalp"
+                )
             
             # Entry: 5m bullish trend + price above VWAP + (breakout OR near band with momentum)
             # Always allow entry if setup found (confidence determines position size)
@@ -813,6 +1007,17 @@ class ScalpingStrategy:
         # === SHORT SCALP ENTRY ===
         # VWAP Filter: Only short if price is below VWAP (confirms bearish intraday bias)
         elif trend_5m == "bearish" and price < vwap_5m:
+            # SKIP if price is at support (handled by S/R priority logic above)
+            # Support = buy zone, not short zone
+            if near_support:
+                return StrategySignal(
+                    action="hold",
+                    size_pct=0.0,
+                    reason=f"Scalp: At support ${min(s1 if s1 > 0 else price, s2 if s2 > 0 else price, swing_low if swing_low > 0 else price):.2f} - expecting bounce, not short",
+                    confidence=0.0,
+                    symbol=snapshot.symbol,
+                    position_type="scalp"
+                )
             # Extract volume indicators for scalping confirmation
             volume_ratio_5m = indicators.get("volume_ratio_5m", 1.0)
             volume_ratio_1m = indicators.get("volume_ratio_1m", 1.0)
@@ -843,13 +1048,10 @@ class ScalpingStrategy:
             # OBV bonus for scalps
             obv_bonus = 0.03 if obv_trend_5m == "bearish" else 0.0
             
-            # Perfect setup bonus (S/R rejection + VWAP alignment)
-            r1 = indicators.get("resistance_1", 0)
-            swing_high = indicators.get("swing_high", 0)
-            near_resistance = (r1 > 0 and abs(price - r1) / r1 < 0.005) or \
-                             (swing_high > 0 and abs(price - swing_high) / swing_high < 0.005)
+            # Perfect setup bonus (breakdown with VWAP alignment)
+            # Note: S/R logic handled separately above (Priority 1)
             below_vwap = price < vwap_5m
-            perfect_setup_bonus = 0.03 if (near_resistance and below_vwap) else 0.0
+            perfect_setup_bonus = 0.03 if below_vwap else 0.0
             
             # Final confidence for scalps (clamped to 0.4-0.85)
             base_confidence = max(0.4, min(0.85, base_confidence + volume_confidence_boost + obv_bonus + perfect_setup_bonus))
@@ -979,6 +1181,146 @@ class ScalpingStrategy:
             position_type="scalp"
         ,
         symbol=snapshot.symbol
+        )
+    
+    def _handle_scalp_long_at_support(self, snapshot: Any, indicators: dict, price: float, equity: float, s1: float, s2: float, swing_low: float) -> StrategySignal:
+        """Handle LONG scalp entry at support level (expecting quick bounce up)."""
+        volume_ratio_5m = indicators.get("volume_ratio_5m", 1.0)
+        volume_ratio_1m = indicators.get("volume_ratio_1m", 1.0)
+        obv_trend_5m = indicators.get("obv_trend_5m", "neutral")
+        vwap_5m = indicators.get("vwap_5m", price)
+        
+        # Base confidence for scalp at support
+        base_confidence = 0.75  # Good confidence at support for scalps
+        
+        # Volume boost
+        active_volume_ratio = max(volume_ratio_5m, volume_ratio_1m)
+        if active_volume_ratio >= 1.5:
+            volume_confidence_boost = 0.10
+        elif active_volume_ratio >= 1.3:
+            volume_confidence_boost = 0.08
+        elif active_volume_ratio >= 1.1:
+            volume_confidence_boost = 0.05
+        else:
+            volume_confidence_boost = 0.0
+        
+        # OBV bonus
+        obv_bonus = 0.03 if obv_trend_5m == "bullish" else 0.0
+        
+        # VWAP alignment bonus
+        vwap_bonus = 0.03 if price > vwap_5m else 0.0
+        
+        base_confidence = max(0.4, min(0.85, base_confidence + volume_confidence_boost + obv_bonus + vwap_bonus))
+        
+        logger.info(f"[SCALP LONG at SUPPORT] Volume: {active_volume_ratio:.2f}x, OBV: {obv_trend_5m}, Confidence: {base_confidence:.2f}")
+        
+        # Use support level as entry reference
+        support_level = min([s for s in [s1, s2, swing_low] if s > 0], default=price)
+        
+        # Calculate position size (scalps are smaller)
+        if base_confidence >= 0.8:
+            capital_allocation_pct = 0.15  # 15% for high-confidence scalp
+            leverage = 2.0
+        elif base_confidence >= 0.7:
+            capital_allocation_pct = 0.10  # 10% for medium-confidence scalp
+            leverage = 1.5
+        else:
+            capital_allocation_pct = 0.05  # 5% for low-confidence scalp
+            leverage = 1.0
+        
+        # Calculate risk/reward (scalps have tight stops)
+        stop_distance = price * self.stop_loss_pct
+        capital_amount = equity * capital_allocation_pct
+        position_notional = capital_amount * leverage
+        position_btc = position_notional / price
+        risk_amount = stop_distance * position_btc
+        reward_amount = (price * self.profit_target_pct) * position_btc
+        
+        stop_loss = price - stop_distance
+        take_profit = price + (price * self.profit_target_pct)
+        
+        return StrategySignal(
+            action="long",
+            size_pct=capital_allocation_pct,
+            reason=f"Scalp long: At support ${support_level:.2f}, bounce expected, Vol: {active_volume_ratio:.2f}x, Capital: {capital_allocation_pct*100:.0f}%, Leverage: {leverage:.1f}x",
+            confidence=base_confidence,
+            symbol=snapshot.symbol,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            position_type="scalp",
+            leverage=leverage,
+            risk_amount=risk_amount,
+            reward_amount=reward_amount
+        )
+    
+    def _handle_scalp_short_at_resistance(self, snapshot: Any, indicators: dict, price: float, equity: float, r1: float, r2: float, swing_high: float) -> StrategySignal:
+        """Handle SHORT scalp entry at resistance level (expecting quick rejection down)."""
+        volume_ratio_5m = indicators.get("volume_ratio_5m", 1.0)
+        volume_ratio_1m = indicators.get("volume_ratio_1m", 1.0)
+        obv_trend_5m = indicators.get("obv_trend_5m", "neutral")
+        vwap_5m = indicators.get("vwap_5m", price)
+        
+        # Base confidence for scalp at resistance
+        base_confidence = 0.75  # Good confidence at resistance for scalps
+        
+        # Volume boost
+        active_volume_ratio = max(volume_ratio_5m, volume_ratio_1m)
+        if active_volume_ratio >= 1.5:
+            volume_confidence_boost = 0.10
+        elif active_volume_ratio >= 1.3:
+            volume_confidence_boost = 0.08
+        elif active_volume_ratio >= 1.1:
+            volume_confidence_boost = 0.05
+        else:
+            volume_confidence_boost = 0.0
+        
+        # OBV bonus
+        obv_bonus = 0.03 if obv_trend_5m == "bearish" else 0.0
+        
+        # VWAP alignment bonus
+        vwap_bonus = 0.03 if price < vwap_5m else 0.0
+        
+        base_confidence = max(0.4, min(0.85, base_confidence + volume_confidence_boost + obv_bonus + vwap_bonus))
+        
+        logger.info(f"[SCALP SHORT at RESISTANCE] Volume: {active_volume_ratio:.2f}x, OBV: {obv_trend_5m}, Confidence: {base_confidence:.2f}")
+        
+        # Use resistance level as entry reference
+        resistance_level = max([r for r in [r1, r2, swing_high] if r > 0], default=price)
+        
+        # Calculate position size (scalps are smaller)
+        if base_confidence >= 0.8:
+            capital_allocation_pct = 0.15  # 15% for high-confidence scalp
+            leverage = 2.0
+        elif base_confidence >= 0.7:
+            capital_allocation_pct = 0.10  # 10% for medium-confidence scalp
+            leverage = 1.5
+        else:
+            capital_allocation_pct = 0.05  # 5% for low-confidence scalp
+            leverage = 1.0
+        
+        # Calculate risk/reward (scalps have tight stops)
+        stop_distance = price * self.stop_loss_pct
+        capital_amount = equity * capital_allocation_pct
+        position_notional = capital_amount * leverage
+        position_btc = position_notional / price
+        risk_amount = stop_distance * position_btc
+        reward_amount = (price * self.profit_target_pct) * position_btc
+        
+        stop_loss = price + stop_distance
+        take_profit = price - (price * self.profit_target_pct)
+        
+        return StrategySignal(
+            action="short",
+            size_pct=capital_allocation_pct,
+            reason=f"Scalp short: At resistance ${resistance_level:.2f}, rejection expected, Vol: {active_volume_ratio:.2f}x, Capital: {capital_allocation_pct*100:.0f}%, Leverage: {leverage:.1f}x",
+            confidence=base_confidence,
+            symbol=snapshot.symbol,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            position_type="scalp",
+            leverage=leverage,
+            risk_amount=risk_amount,
+            reward_amount=reward_amount
         )
 
 
