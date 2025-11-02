@@ -116,15 +116,19 @@ class ATRBreakoutStrategy:
             )
         
         # Multi-timeframe trend confirmation for BOTH longs and shorts
-        # LONG setup: Higher timeframes bullish
+        # LONG setup: Higher timeframes bullish (prefer full alignment, but allow with 4h bullish)
         higher_tf_bullish = trend_1d == "bullish" and trend_4h == "bullish"
+        higher_tf_bullish_partial = trend_4h == "bullish"  # Allow longs if 4h bullish even if 1d neutral
         primary_uptrend = price > ema_50
         in_uptrend = higher_tf_bullish and primary_uptrend
+        in_uptrend_partial = higher_tf_bullish_partial and primary_uptrend  # Partial alignment for more opportunities
         
-        # SHORT setup: Higher timeframes bearish
+        # SHORT setup: Allow shorts with 4h bearish OR at resistance (counter-trend shorts)
         higher_tf_bearish = trend_1d == "bearish" and trend_4h == "bearish"
+        higher_tf_bearish_partial = trend_4h == "bearish"  # Allow shorts if 4h bearish even if 1d bullish/neutral
         primary_downtrend = price < ema_50
         in_downtrend = higher_tf_bearish and primary_downtrend
+        in_downtrend_partial = higher_tf_bearish_partial and primary_downtrend  # Partial alignment for more opportunities
         
         # If we have a LONG position, check exit conditions
         if position_size > 0:
@@ -222,7 +226,8 @@ class ATRBreakoutStrategy:
         
         # PRIORITY 2: Keltner Band Logic (breakout/breakdown)
         # === LONG ENTRY LOGIC ===
-        if in_uptrend:
+        # Allow longs with full alignment OR partial alignment (4h bullish)
+        if in_uptrend or in_uptrend_partial:
             # SKIP if price is at resistance (handled by S/R priority logic above)
             # Resistance = sell zone, not buy zone
             if near_resistance:
@@ -240,15 +245,30 @@ class ATRBreakoutStrategy:
             volume_trend_1h = indicators.get("volume_trend_1h", "stable")
             obv_trend_1h = indicators.get("obv_trend_1h", "neutral")
             
-            # Check entry on 15m timeframe (precise timing)
-            # More reasonable conditions: breakout OR near upper band with momentum
+            # Multi-timeframe analysis for longs (1d, 4h, 1h, 15m) - comprehensive check
+            # Check ALL timeframes like shorts now do
+            
+            # 1D timeframe check
+            ema_50_1d = indicators.get("ema_50_1d", 0)
+            trend_1d_bullish = trend_1d == "bullish" or (ema_50_1d > 0 and price > ema_50_1d)
+            
+            # 4H timeframe check
+            ema_50_4h = indicators.get("ema_50_4h", 0)
+            trend_4h_bullish = trend_4h == "bullish" or (ema_50_4h > 0 and price > ema_50_4h)
+            
+            # 1H timeframe check (primary)
+            long_primary_breakout = keltner_upper > 0 and price > keltner_upper
+            long_near_upper_1h = keltner_upper > 0 and price > (keltner_upper * 0.995)
+            primary_bullish = price > ema_50
+            
+            # 15M timeframe check (precise entry timing)
             long_breakout_15m = keltner_upper_15m > 0 and price > keltner_upper_15m
             long_near_upper_15m = keltner_upper_15m > 0 and price > (keltner_upper_15m * 0.995)
             long_trend_15m = trend_15m == "bullish"
             
-            # Also check primary timeframe
-            long_primary_breakout = keltner_upper > 0 and price > keltner_upper
-            long_near_upper_1h = keltner_upper > 0 and price > (keltner_upper * 0.995)
+            # Multi-timeframe alignment check (like shorts do)
+            # Allow longs if: 4h bullish OR (1h bullish AND 15m bullish) OR breakout signal
+            multi_tf_bullish = trend_4h_bullish or (primary_bullish and long_trend_15m) or long_primary_breakout or long_breakout_15m
             
             # PROGRESSIVE CONFIDENCE SYSTEM (Option 3)
             # Never block trades - adjust confidence based on volume quality
@@ -274,25 +294,38 @@ class ATRBreakoutStrategy:
             
             # Perfect setup bonus (breakout with multi-TF alignment)
             # Note: S/R logic handled separately above (Priority 1)
+            # Full alignment: 1d + 4h bullish
             strong_alignment = trend_1d == "bullish" and trend_4h == "bullish"
-            perfect_setup_bonus = 0.05 if strong_alignment else 0.0
+            # Partial alignment: 4h bullish OR (1h bullish AND 15m bullish)
+            partial_alignment_long = trend_4h_bullish or (primary_bullish and long_trend_15m)
+            # Multi-TF alignment bonus (same comprehensive logic as shorts)
+            alignment_bonus_long = 0.05 if strong_alignment else (0.03 if partial_alignment_long else 0.0)
+            perfect_setup_bonus = alignment_bonus_long
             
             # Final confidence (clamped to 0.3-0.95)
             base_confidence = max(0.3, min(0.95, base_confidence + volume_confidence_boost + obv_bonus + perfect_setup_bonus))
             
-            # Entry condition: Higher TF bullish + (breakout OR near band)
+            # Entry condition: Multi-timeframe bullish + (breakout OR near band)
+            # Use same comprehensive logic as shorts - check ALL timeframes
             # Always allow entry if setup found (confidence determines position size)
             entry_timeframe = None
             entry_keltner = 0
             
+            # Priority 1: 15m breakout (precise entry timing) - preferred
             if (long_breakout_15m or long_near_upper_15m) and long_trend_15m:
                 # Use 15m for precise entry timing (preferred method)
                 entry_keltner = keltner_upper_15m
                 entry_timeframe = "15m"
+            # Priority 2: 1h breakout (primary timeframe)
             elif long_primary_breakout or long_near_upper_1h:
                 # Fallback to primary timeframe
                 entry_keltner = keltner_upper
                 entry_timeframe = "1h"
+            # Priority 3: Multi-timeframe bullish alignment (even without breakout)
+            elif multi_tf_bullish:
+                # Strong bullish alignment across timeframes - use 1h as default
+                entry_keltner = keltner_upper if keltner_upper > 0 else price * 1.005
+                entry_timeframe = "1h_mtf"
             
             if entry_timeframe:
                 # LONG entry confirmed - proceed with trade setup
@@ -317,7 +350,8 @@ class ATRBreakoutStrategy:
                 )
         
         # === SHORT ENTRY LOGIC ===
-        elif in_downtrend:
+        # Allow shorts with full alignment OR partial alignment (4h bearish) OR at resistance
+        elif in_downtrend or in_downtrend_partial or near_resistance:
             # SKIP if price is at support (handled by S/R priority logic above)
             # Support = buy zone, not short zone
             if near_support:
@@ -335,15 +369,30 @@ class ATRBreakoutStrategy:
             volume_trend_1h = indicators.get("volume_trend_1h", "stable")
             obv_trend_1h = indicators.get("obv_trend_1h", "neutral")
             
-            # Check entry on 15m timeframe (precise timing for shorts)
-            # More reasonable conditions: breakdown OR near lower band with momentum
+            # Multi-timeframe analysis for shorts (1d, 4h, 1h, 15m) - same as longs
+            # Check ALL timeframes comprehensively like longs do
+            
+            # 1D timeframe check
+            ema_50_1d = indicators.get("ema_50_1d", 0)
+            trend_1d_bearish = trend_1d == "bearish" or (ema_50_1d > 0 and price < ema_50_1d)
+            
+            # 4H timeframe check
+            ema_50_4h = indicators.get("ema_50_4h", 0)
+            trend_4h_bearish = trend_4h == "bearish" or (ema_50_4h > 0 and price < ema_50_4h)
+            
+            # 1H timeframe check (primary)
+            short_primary_breakdown = keltner_lower > 0 and price < keltner_lower
+            short_near_lower_1h = keltner_lower > 0 and price < (keltner_lower * 1.005)
+            primary_bearish = price < ema_50
+            
+            # 15M timeframe check (precise entry timing)
             short_breakdown_15m = keltner_lower_15m > 0 and price < keltner_lower_15m
             short_near_lower_15m = keltner_lower_15m > 0 and price < (keltner_lower_15m * 1.005)
             short_trend_15m = trend_15m == "bearish"
             
-            # Also check primary timeframe
-            short_primary_breakdown = keltner_lower > 0 and price < keltner_lower
-            short_near_lower_1h = keltner_lower > 0 and price < (keltner_lower * 1.005)
+            # Multi-timeframe alignment check (like longs do)
+            # Allow shorts if: 4h bearish OR (1h bearish AND 15m bearish) OR breakdown signal
+            multi_tf_bearish = trend_4h_bearish or (primary_bearish and short_trend_15m) or short_primary_breakdown or short_breakdown_15m
             
             # PROGRESSIVE CONFIDENCE SYSTEM (Option 3)
             # Never block trades - adjust confidence based on volume quality
@@ -369,25 +418,40 @@ class ATRBreakoutStrategy:
             
             # Perfect setup bonus (breakdown with multi-TF alignment)
             # Note: S/R logic handled separately above (Priority 1)
+            # Full alignment: 1d + 4h bearish
             strong_alignment = trend_1d == "bearish" and trend_4h == "bearish"
-            perfect_setup_bonus = 0.05 if strong_alignment else 0.0
+            # Partial alignment: 4h bearish OR (1h bearish AND 15m bearish)
+            partial_alignment = trend_4h_bearish or (primary_bearish and short_trend_15m)
+            # Bonus for resistance shorts (counter-trend opportunities)
+            resistance_short_bonus = 0.05 if near_resistance else 0.0
+            # Bonus for multi-TF alignment (same logic as longs)
+            alignment_bonus = 0.05 if strong_alignment else (0.03 if partial_alignment else 0.0)
+            perfect_setup_bonus = max(alignment_bonus, resistance_short_bonus)
             
             # Final confidence (clamped to 0.3-0.95)
             base_confidence = max(0.3, min(0.95, base_confidence + volume_confidence_boost + obv_bonus + perfect_setup_bonus))
             
-            # Entry condition: Higher TF bearish + (breakdown OR near band)
+            # Entry condition: Multi-timeframe bearish + (breakdown OR near band)
+            # Use same comprehensive logic as longs - check ALL timeframes
             # Always allow entry if setup found (confidence determines position size)
             entry_timeframe = None
             entry_keltner = 0
             
+            # Priority 1: 15m breakdown (precise entry timing) - preferred
             if (short_breakdown_15m or short_near_lower_15m) and short_trend_15m:
                 # Use 15m for precise entry timing (preferred method)
                 entry_keltner = keltner_lower_15m
                 entry_timeframe = "15m"
+            # Priority 2: 1h breakdown (primary timeframe)
             elif short_primary_breakdown or short_near_lower_1h:
                 # Fallback to primary timeframe
                 entry_keltner = keltner_lower
                 entry_timeframe = "1h"
+            # Priority 3: Multi-timeframe bearish alignment (even without breakdown)
+            elif multi_tf_bearish:
+                # Strong bearish alignment across timeframes - use 1h as default
+                entry_keltner = keltner_lower if keltner_lower > 0 else price * 0.995
+                entry_timeframe = "1h_mtf"
             
             if entry_timeframe:
                 # SHORT entry confirmed - proceed with trade setup
@@ -412,6 +476,26 @@ class ATRBreakoutStrategy:
                 )
         
         # No clear trend or no entry signal yet
+        # BUT: Check for counter-trend short at resistance (even if higher TFs are bullish)
+        if not near_support and near_resistance and price > ema_50:
+            # Counter-trend short at resistance (rejection opportunity)
+            # Allow shorts when price tests resistance with weak volume
+            volume_ratio_1h = indicators.get("volume_ratio_1h", 1.0)
+            obv_trend_1h = indicators.get("obv_trend_1h", "neutral")
+            
+            # Get resistance levels
+            r1 = indicators.get("resistance_1", 0)
+            r2 = indicators.get("resistance_2", 0)
+            swing_high = indicators.get("swing_high", 0)
+            
+            # Counter-trend short at resistance with weak volume = likely rejection
+            if volume_ratio_1h < 1.2 or obv_trend_1h == "bearish":
+                return self._handle_short_at_resistance(
+                    snapshot, indicators, price, atr_14, equity, available_cash, 
+                    r1 if r1 > 0 else 0, r2 if r2 > 0 else 0, 
+                    swing_high if swing_high > 0 else 0
+                )
+        
         return StrategySignal(
             action="hold",
             size_pct=0.0,
@@ -728,23 +812,35 @@ class ScalpingStrategy:
         price = snapshot.price
         indicators = snapshot.indicators
         
-        # Extract scalping timeframes
+        # Professional scalping multi-timeframe approach:
+        # 15m: Check bias (direction)
+        # 5m: Check entry/setup
+        # 1m: Entry timing
+        
+        # 15M: Bias check (direction filter for scalps)
+        trend_15m = indicators.get("trend_15m", "bearish")
+        ema_50_15m = indicators.get("ema_50_15m", 0)
+        rsi_15m = indicators.get("rsi_14_15m", 50)
+        vwap_15m = indicators.get("vwap_15m", price)
+        bias_15m_bullish = trend_15m == "bullish" or (ema_50_15m > 0 and price > ema_50_15m)
+        bias_15m_bearish = trend_15m == "bearish" or (ema_50_15m > 0 and price < ema_50_15m)
+        
+        # 5M: Entry setup check
         ema_20_5m = indicators.get("ema_20_5m", 0)
         ema_50_5m = indicators.get("ema_50_5m", 0)
         rsi_5m = indicators.get("rsi_14_5m", 50)
         trend_5m = indicators.get("trend_5m", "bearish")
         keltner_upper_5m = indicators.get("keltner_upper_5m", 0)
         keltner_lower_5m = indicators.get("keltner_lower_5m", 0)
+        vwap_5m = indicators.get("vwap_5m", price)
         
+        # 1M: Entry timing (precise entry)
         ema_20_1m = indicators.get("ema_20_1m", 0)
         ema_50_1m = indicators.get("ema_50_1m", 0)
         rsi_1m = indicators.get("rsi_14_1m", 50)
         trend_1m = indicators.get("trend_1m", "bearish")
         keltner_upper_1m = indicators.get("keltner_upper_1m", 0)
         keltner_lower_1m = indicators.get("keltner_lower_1m", 0)
-        
-        # VWAP for intraday scalping (primary filter for direction)
-        vwap_5m = indicators.get("vwap_5m", price)
         vwap_1m = indicators.get("vwap_1m", price)
         
         # DEBUG: Log VWAP values to diagnose issue
@@ -822,22 +918,25 @@ class ScalpingStrategy:
                          (swing_high > 0 and abs(price - swing_high) / swing_high < 0.005)
         
         # PRIORITY 1: S/R Logic for Scalping (Support=Buy, Resistance=Sell)
-        # If at support AND bullish 5m trend + above VWAP → LONG scalp (expect bounce)
-        # If at resistance AND bearish 5m trend + below VWAP → SHORT scalp (expect rejection)
-        vwap_5m = indicators.get("vwap_5m", price)
+        # Multi-timeframe scalping: 15m bias + 5m setup + 1m entry
+        # If at support AND bullish 15m bias + bullish 5m + above VWAP → LONG scalp
+        # If at resistance AND bearish 15m bias + bearish 5m + below VWAP → SHORT scalp
         
-        if near_support and trend_5m == "bullish" and price > vwap_5m:
-            # At support + bullish 5m + above VWAP = LONG scalp opportunity (bounce expected)
+        if near_support and bias_15m_bullish and trend_5m == "bullish" and price > vwap_15m:
+            # At support + bullish 15m bias + bullish 5m + above VWAP = LONG scalp opportunity
             return self._handle_scalp_long_at_support(snapshot, indicators, price, equity, s1, s2, swing_low)
         
-        if near_resistance and trend_5m == "bearish" and price < vwap_5m:
-            # At resistance + bearish 5m + below VWAP = SHORT scalp opportunity (rejection expected)
+        if near_resistance and bias_15m_bearish and trend_5m == "bearish" and price < vwap_15m:
+            # At resistance + bearish 15m bias + bearish 5m + below VWAP = SHORT scalp opportunity
             return self._handle_scalp_short_at_resistance(snapshot, indicators, price, equity, r1, r2, swing_high)
         
-        # PRIORITY 2: Keltner Band Logic for Scalping (breakout/breakdown on 1m/5m)
+        # PRIORITY 2: Keltner Band Logic for Scalping (breakout/breakdown on 15m→5m→1m)
         # === LONG SCALP ENTRY ===
-        # VWAP Filter: Only long if price is above VWAP (confirms bullish intraday bias)
-        if trend_5m == "bullish" and price > vwap_5m:
+        # Multi-timeframe scalping: 15m bias → 5m setup → 1m entry
+        # 15m: Check bias (direction filter)
+        # 5m: Check entry setup (trend + VWAP)
+        # 1m: Entry timing (precise entry)
+        if bias_15m_bullish and trend_5m == "bullish" and price > vwap_5m:
             # Extract volume indicators for scalping confirmation
             volume_ratio_5m = indicators.get("volume_ratio_5m", 1.0)
             volume_ratio_1m = indicators.get("volume_ratio_1m", 1.0)
@@ -876,17 +975,21 @@ class ScalpingStrategy:
             # Final confidence for scalps (clamped to 0.4-0.85)
             base_confidence = max(0.4, min(0.85, base_confidence + volume_confidence_boost + obv_bonus + perfect_setup_bonus))
             
-            # Check 1m momentum for longs
+            # 15m bias check (already passed: bias_15m_bullish)
+            # 5m setup check (already passed: trend_5m == "bullish" and price > vwap_5m)
+            # 1m entry timing (precise entry)
             long_momentum_1m = price > ema_20_1m and rsi_1m < 75  # Not overbought
             
-            # More reasonable entry conditions:
-            # 1. Strong breakout: price > Keltner upper (original aggressive condition)
-            # 2. Momentum entry: price near upper band (within 0.5%) with strong momentum
+            # Entry conditions (1m for precise entry):
+            # 1. Strong breakout: price > Keltner upper on 1m
+            # 2. Momentum entry: price near upper band on 1m (within 0.5%) with strong momentum
             long_breakout_1m = keltner_upper_1m > 0 and price > keltner_upper_1m
-            long_breakout_5m = keltner_upper_5m > 0 and price > keltner_upper_5m
             
             # Near upper band = within 0.5% of upper band
             near_upper_1m = keltner_upper_1m > 0 and price > (keltner_upper_1m * 0.995)
+            
+            # Also check 5m breakout for confirmation
+            long_breakout_5m = keltner_upper_5m > 0 and price > keltner_upper_5m
             near_upper_5m = keltner_upper_5m > 0 and price > (keltner_upper_5m * 0.995)
             
             # SKIP if price is at resistance (handled by S/R priority logic above)
@@ -901,10 +1004,11 @@ class ScalpingStrategy:
                     position_type="scalp"
                 )
             
-            # Entry: 5m bullish trend + price above VWAP + (breakout OR near band with momentum)
+            # Entry: 15m bias + 5m setup + 1m entry timing
+            # Multi-timeframe scalping flow: 15m → 5m → 1m
             # Always allow entry if setup found (confidence determines position size)
-            has_breakout = long_breakout_1m or long_breakout_5m
-            has_momentum_entry = (near_upper_1m or near_upper_5m) and long_momentum_1m
+            has_breakout = long_breakout_1m or (long_breakout_5m and long_breakout_1m)  # 1m breakout or both 5m+1m
+            has_momentum_entry = near_upper_1m and long_momentum_1m  # 1m momentum entry
             
             if (has_breakout or has_momentum_entry) and long_momentum_1m:
                 # Calculate position size using TWO-LAYER SYSTEM for scalps
@@ -1005,8 +1109,11 @@ class ScalpingStrategy:
                 )
         
         # === SHORT SCALP ENTRY ===
-        # VWAP Filter: Only short if price is below VWAP (confirms bearish intraday bias)
-        elif trend_5m == "bearish" and price < vwap_5m:
+        # Multi-timeframe scalping: 15m bias → 5m setup → 1m entry
+        # 15m: Check bias (direction filter)
+        # 5m: Check entry setup (trend + VWAP)
+        # 1m: Entry timing (precise entry)
+        elif bias_15m_bearish and trend_5m == "bearish" and price < vwap_5m:
             # SKIP if price is at support (handled by S/R priority logic above)
             # Support = buy zone, not short zone
             if near_support:
@@ -1056,23 +1163,28 @@ class ScalpingStrategy:
             # Final confidence for scalps (clamped to 0.4-0.85)
             base_confidence = max(0.4, min(0.85, base_confidence + volume_confidence_boost + obv_bonus + perfect_setup_bonus))
             
-            # Check 1m momentum for shorts
+            # 15m bias check (already passed: bias_15m_bearish)
+            # 5m setup check (already passed: trend_5m == "bearish" and price < vwap_5m)
+            # 1m entry timing (precise entry)
             short_momentum_1m = price < ema_20_1m and rsi_1m > 25  # Not oversold
             
-            # More reasonable entry conditions:
-            # 1. Strong breakdown: price < Keltner lower (original aggressive condition)
-            # 2. Momentum entry: price near lower band (within 0.5%) with strong momentum
+            # Entry conditions (1m for precise entry):
+            # 1. Strong breakdown: price < Keltner lower on 1m
+            # 2. Momentum entry: price near lower band on 1m (within 0.5%) with strong momentum
             short_breakdown_1m = keltner_lower_1m > 0 and price < keltner_lower_1m
-            short_breakdown_5m = keltner_lower_5m > 0 and price < keltner_lower_5m
             
             # Near lower band = within 0.5% of lower band
             near_lower_1m = keltner_lower_1m > 0 and price < (keltner_lower_1m * 1.005)
+            
+            # Also check 5m breakdown for confirmation
+            short_breakdown_5m = keltner_lower_5m > 0 and price < keltner_lower_5m
             near_lower_5m = keltner_lower_5m > 0 and price < (keltner_lower_5m * 1.005)
             
-            # Entry: 5m bearish trend + price below VWAP + (breakdown OR near band with momentum)
+            # Entry: 15m bias + 5m setup + 1m entry timing
+            # Multi-timeframe scalping flow: 15m → 5m → 1m
             # Always allow entry if setup found (confidence determines position size)
-            has_breakdown = short_breakdown_1m or short_breakdown_5m
-            has_momentum_entry = (near_lower_1m or near_lower_5m) and short_momentum_1m
+            has_breakdown = short_breakdown_1m or (short_breakdown_5m and short_breakdown_1m)  # 1m breakdown or both 5m+1m
+            has_momentum_entry = near_lower_1m and short_momentum_1m  # 1m momentum entry
             
             if (has_breakdown or has_momentum_entry) and short_momentum_1m:
                 # Calculate position size using TWO-LAYER SYSTEM for scalps

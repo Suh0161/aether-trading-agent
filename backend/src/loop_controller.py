@@ -80,6 +80,9 @@ class LoopController:
         # Track decisions per symbol for status messages
         self.current_cycle_decisions = {}  # {symbol: decision} for current cycle
         
+        # Track last LLM call per symbol for cost optimization
+        self.last_llm_call = {}  # {symbol: {'price': float, 'cycle': int, 'timestamp': int}}
+        
         # Track initial real equity for virtual equity calculation
         self.initial_real_equity: Optional[float] = None
         self.virtual_starting_equity = config.virtual_starting_equity
@@ -302,6 +305,8 @@ class LoopController:
                 # Reset decisions tracking for this cycle
                 self.current_cycle_decisions = {}
                 
+                # Note: We keep last_llm_call tracking across cycles for cost optimization
+                
                 # Process each symbol independently
                 for symbol in self.config.symbols:
                     try:
@@ -442,18 +447,36 @@ class LoopController:
         # STEP 3: Get decision from decision provider (if no SL/TP/emergency)
         # ====================================================================
         if raw_llm_output is None:
-            try:
-                raw_llm_output = self.decision_provider.get_decision(
-                    snapshot, position_size, equity
-                )
-                if position_size == 0:
-                    # Log decision for new entry evaluation
-                    temp_parsed = self.decision_parser.parse(raw_llm_output)
-                    temp_confidence = getattr(temp_parsed, 'confidence', 0.0)
-                    logger.info(f"    {symbol}: {temp_parsed.action} (confidence: {temp_confidence:.2f})")
-            except Exception as e:
-                logger.error(f"  {symbol}: Decision provider failed: {e}")
-                raw_llm_output = f"Error: {str(e)}"
+            # COST OPTIMIZATION: Skip LLM call if market hasn't changed significantly
+            should_skip_llm = self._should_skip_llm_call(symbol, snapshot, position_size, cycle_count)
+            
+            if should_skip_llm:
+                # Use cached "hold" decision from last call
+                logger.info(f"    {symbol}: Skipping LLM call - market unchanged (price change < 0.5%, no volume spike)")
+                raw_llm_output = '{"action": "hold", "size_pct": 0.0, "reason": "Market unchanged - waiting for significant movement"}'
+            else:
+                try:
+                    raw_llm_output = self.decision_provider.get_decision(
+                        snapshot, position_size, equity
+                    )
+                    
+                    # Track this LLM call for future cost optimization
+                    self.last_llm_call[symbol] = {
+                        'price': snapshot.price,
+                        'cycle': cycle_count,
+                        'timestamp': snapshot.timestamp,
+                        'volume_1h': snapshot.indicators.get('volume_ratio_1h', 1.0),
+                        'volume_5m': snapshot.indicators.get('volume_ratio_5m', 1.0)
+                    }
+                    
+                    if position_size == 0:
+                        # Log decision for new entry evaluation
+                        temp_parsed = self.decision_parser.parse(raw_llm_output)
+                        temp_confidence = getattr(temp_parsed, 'confidence', 0.0)
+                        logger.info(f"    {symbol}: {temp_parsed.action} (confidence: {temp_confidence:.2f})")
+                except Exception as e:
+                    logger.error(f"  {symbol}: Decision provider failed: {e}")
+                    raw_llm_output = f"Error: {str(e)}"
                 
         # ====================================================================
         # STEP 4: Parse decision
@@ -1232,6 +1255,94 @@ Write ONLY the message, nothing else (2-3 sentences max):"""
                 self.api_client.add_agent_message(fallback_msg)
                 self.last_message_type = "hold"
                 self.last_message_cycle = cycle_count
+    
+    def _should_skip_llm_call(self, symbol: str, snapshot, position_size: float, cycle_count: int) -> bool:
+        """
+        Determine if we should skip LLM call to save costs.
+        
+        Safety Rules (NEVER skip if):
+        1. We have a position (need to manage it)
+        2. Price moved > 0.5% (significant movement)
+        3. Volume spike > 1.3x (important signal)
+        4. No previous LLM call (first time)
+        5. Too long since last call (> 5 cycles = > 2.5 minutes)
+        
+        Can skip ONLY if:
+        - No position
+        - Price change < 0.5%
+        - No volume spike
+        - Recently called (< 5 cycles ago)
+        
+        Args:
+            symbol: Trading symbol
+            snapshot: Current market snapshot
+            position_size: Current position size
+            cycle_count: Current cycle number
+            
+        Returns:
+            True if should skip LLM call, False if should call
+        """
+        # SAFETY RULE 1: Never skip if we have a position
+        if position_size != 0:
+            return False  # Always call to manage position
+        
+        # SAFETY RULE 2: Never skip if we haven't called before (first time)
+        if symbol not in self.last_llm_call:
+            return False  # First call, need to establish baseline
+        
+        last_call = self.last_llm_call[symbol]
+        last_price = last_call.get('price', snapshot.price)
+        last_cycle = last_call.get('cycle', 0)
+        last_volume_1h = last_call.get('volume_1h', 1.0)
+        last_volume_5m = last_call.get('volume_5m', 1.0)
+        
+        # SAFETY RULE 3: Never skip if too long since last call (> 5 cycles = > 2.5 minutes)
+        cycles_since_last = cycle_count - last_cycle
+        if cycles_since_last > 5:
+            return False  # Too long, need fresh analysis
+        
+        # Calculate price change
+        current_price = snapshot.price
+        price_change_pct = abs(current_price - last_price) / last_price if last_price > 0 else 1.0
+        
+        # SAFETY RULE 4: Never skip if price moved > 0.5% (significant movement)
+        if price_change_pct > 0.005:  # 0.5%
+            return False  # Significant price movement detected
+        
+        # Get current volume
+        current_volume_1h = snapshot.indicators.get('volume_ratio_1h', 1.0)
+        current_volume_5m = snapshot.indicators.get('volume_ratio_5m', 1.0)
+        
+        # SAFETY RULE 5: Never skip if volume spike detected (> 1.3x)
+        if current_volume_1h > 1.3 or current_volume_5m > 1.3:
+            return False  # Volume spike detected
+        
+        # SAFETY RULE 6: Never skip if volume increased significantly since last call
+        volume_increase_1h = current_volume_1h / last_volume_1h if last_volume_1h > 0 else 1.0
+        volume_increase_5m = current_volume_5m / last_volume_5m if last_volume_5m > 0 else 1.0
+        
+        if volume_increase_1h > 1.2 or volume_increase_5m > 1.2:  # 20% volume increase
+            return False  # Volume increased significantly
+        
+        # Check for indicator changes (RSI, EMA, etc.)
+        indicators = snapshot.indicators
+        
+        # SAFETY RULE 7: Never skip if near critical levels (within 1% of S/R)
+        pivot = indicators.get('pivot', 0)
+        r1 = indicators.get('resistance_1', 0)
+        s1 = indicators.get('support_1', 0)
+        
+        if pivot > 0:
+            # Check if price is near support/resistance
+            near_r1 = abs(current_price - r1) / current_price < 0.01 if r1 > 0 else False  # Within 1%
+            near_s1 = abs(current_price - s1) / current_price < 0.01 if s1 > 0 else False  # Within 1%
+            
+            if near_r1 or near_s1:
+                return False  # Near critical level, need fresh analysis
+        
+        # All safety checks passed - safe to skip
+        # Only skip if: no position, small price change, no volume spike, recently called, stable conditions
+        return True
     
     def _calculate_holding_time(self, entry_timestamp: int, exit_timestamp: int) -> str:
         """
