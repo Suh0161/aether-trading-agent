@@ -1,8 +1,22 @@
 """Decision provider interface and implementations for the Autonomous Trading Agent."""
 
+import os
 from abc import ABC, abstractmethod
 from openai import OpenAI
+from dotenv import load_dotenv
 from src.models import MarketSnapshot
+
+# Load .env file
+load_dotenv()
+
+
+def get_max_equity_usage():
+    """
+    Get MAX_EQUITY_USAGE_PCT from environment, default to 0.30 (30%).
+    
+    This allows easy configuration via .env file without code changes.
+    """
+    return float(os.getenv("MAX_EQUITY_USAGE_PCT", "0.30"))
 
 
 class DecisionProvider(ABC):
@@ -109,6 +123,9 @@ class DeepSeekDecisionProvider(DecisionProvider):
         else:
             smart_max_leverage = 3.0
         
+        # Get max equity usage from .env
+        max_equity_pct = get_max_equity_usage()
+        
         prompt = f"""You are an automated trading agent for {snapshot.symbol} with FULL multi-timeframe analysis.
 
 CURRENT MARKET:
@@ -176,7 +193,7 @@ TRADING STRATEGIES YOU CAN USE:
 MONEY MANAGEMENT RULES:
 1. ONLY trade with AVAILABLE CASH - don't exceed what you can afford
 2. If available_cash < $100: You CANNOT open new positions
-3. Max position size per trade: 10% of equity (${equity * 0.10:,.2f})
+3. Max position size per trade: {max_equity_pct*100:.0f}% of equity (${equity * max_equity_pct:,.2f})
 4. Respect smart max leverage: {smart_max_leverage:.1f}x (adaptive based on account size)
 5. Smaller accounts = more conservative leverage
 6. For swing trades: Use 3-10% position size

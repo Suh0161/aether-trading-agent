@@ -1,10 +1,24 @@
 """Trading strategies for the Autonomous Trading Agent."""
 
 import logging
+import os
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
+from dotenv import load_dotenv
+
+# Load .env file
+load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+def get_max_equity_usage():
+    """
+    Get MAX_EQUITY_USAGE_PCT from environment, default to 0.30 (30%).
+    
+    This allows easy configuration via .env file without code changes.
+    """
+    return float(os.getenv("MAX_EQUITY_USAGE_PCT", "0.30"))
 
 
 @dataclass
@@ -658,16 +672,19 @@ class ATRBreakoutStrategy:
         # === TWO-LAYER POSITION SIZING SYSTEM ===
         
         # LAYER 1: Capital Allocation (how much $ to use from account)
-        # Based on confidence level
+        # Scale percentages based on MAX_EQUITY_USAGE_PCT from .env
+        # If MAX_EQUITY_USAGE_PCT=0.30 (30%), then high=25%, med=12%, low=6%
+        # If MAX_EQUITY_USAGE_PCT=0.50 (50%), then high=42%, med=20%, low=10%
+        max_equity_pct = get_max_equity_usage()
         if base_confidence >= 0.8:
-            # High confidence: allocate 20-30% of equity
-            capital_allocation_pct = 0.25  # 25% of equity
+            # High confidence: use ~83% of max (25% of 30% max = 0.833)
+            capital_allocation_pct = max_equity_pct * 0.833
         elif base_confidence >= 0.6:
-            # Medium confidence: allocate 10-15% of equity
-            capital_allocation_pct = 0.12  # 12% of equity
+            # Medium confidence: use ~40% of max (12% of 30% max = 0.40)
+            capital_allocation_pct = max_equity_pct * 0.40
         else:
-            # Low confidence: allocate 5-8% of equity
-            capital_allocation_pct = 0.06  # 6% of equity
+            # Low confidence: use ~20% of max (6% of 30% max = 0.20)
+            capital_allocation_pct = max_equity_pct * 0.20
         
         # LAYER 2: Leverage Multiplier (how much to amplify with leverage)
         # Based on confidence + setup quality
@@ -711,8 +728,9 @@ class ATRBreakoutStrategy:
             position_size_pct = required_capital / equity
             logger.info(f"Adjusted position size to meet minimum notional: {position_size_pct*100:.2f}% capital")
         
-        # Cap maximum position size at 30% of equity (safety limit)
-        position_size_pct = min(position_size_pct, 0.30)
+        # Cap maximum position size at MAX_EQUITY_USAGE_PCT from .env
+        max_equity_pct = get_max_equity_usage()
+        position_size_pct = min(position_size_pct, max_equity_pct)
         
         # Money management: Check if we have enough available cash
         required_cash = equity * position_size_pct
@@ -1018,12 +1036,18 @@ class ScalpingStrategy:
                 logger.info(f"[SCALP LONG] Volume: {active_volume_ratio:.2f}x -> {volume_confidence_boost:+.2f}, OBV: {obv_trend_5m}, Confidence: {base_confidence:.2f}")
                 
                 # LAYER 1: Capital Allocation (scalps are smaller than swings)
+                # Scale percentages based on MAX_EQUITY_USAGE_PCT from .env
+                # Scalps use 50% of swing percentages (15% of 30% max = 0.50 of max)
+                max_equity_pct = get_max_equity_usage()
                 if base_confidence >= 0.8:
-                    capital_allocation_pct = 0.15  # 15% for high-confidence scalps
+                    # High confidence: use ~50% of max (15% of 30% max = 0.50)
+                    capital_allocation_pct = max_equity_pct * 0.50
                 elif base_confidence >= 0.6:
-                    capital_allocation_pct = 0.10  # 10% for medium-confidence scalps
+                    # Medium confidence: use ~33% of max (10% of 30% max = 0.333)
+                    capital_allocation_pct = max_equity_pct * 0.333
                 else:
-                    capital_allocation_pct = 0.05  # 5% for low-confidence scalps
+                    # Low confidence: use ~17% of max (5% of 30% max = 0.167)
+                    capital_allocation_pct = max_equity_pct * 0.167
                 
                 # LAYER 2: Leverage (scalps use less leverage than swings)
                 if base_confidence >= 0.8:
@@ -1048,8 +1072,8 @@ class ScalpingStrategy:
                     required_capital = min_notional / leverage
                     position_size_pct = required_capital / equity
                 
-                # Cap at 20% for scalps (safety)
-                position_size_pct = min(position_size_pct, 0.20)
+                # Cap at MAX_EQUITY_USAGE_PCT for scalps (safety)
+                position_size_pct = min(position_size_pct, max_equity_pct)
                 
                 # Check available cash
                 required_cash = equity * position_size_pct
@@ -1224,8 +1248,9 @@ class ScalpingStrategy:
                     required_capital = min_notional / leverage
                     position_size_pct = required_capital / equity
                 
-                # Cap at 20% for scalps (safety)
-                position_size_pct = min(position_size_pct, 0.20)
+                # Cap at MAX_EQUITY_USAGE_PCT for scalps (safety limit from .env)
+                max_equity_pct = get_max_equity_usage()
+                position_size_pct = min(position_size_pct, max_equity_pct)
                 
                 # Check available cash
                 required_cash = equity * position_size_pct
@@ -1330,14 +1355,19 @@ class ScalpingStrategy:
         support_level = min([s for s in [s1, s2, swing_low] if s > 0], default=price)
         
         # Calculate position size (scalps are smaller)
+        # Scale percentages based on MAX_EQUITY_USAGE_PCT from .env
+        max_equity_pct = get_max_equity_usage()
         if base_confidence >= 0.8:
-            capital_allocation_pct = 0.15  # 15% for high-confidence scalp
+            # High confidence: use ~50% of max (15% of 30% max = 0.50)
+            capital_allocation_pct = max_equity_pct * 0.50
             leverage = 2.0
         elif base_confidence >= 0.7:
-            capital_allocation_pct = 0.10  # 10% for medium-confidence scalp
+            # Medium confidence: use ~33% of max (10% of 30% max = 0.333)
+            capital_allocation_pct = max_equity_pct * 0.333
             leverage = 1.5
         else:
-            capital_allocation_pct = 0.05  # 5% for low-confidence scalp
+            # Low confidence: use ~17% of max (5% of 30% max = 0.167)
+            capital_allocation_pct = max_equity_pct * 0.167
             leverage = 1.0
         
         # Calculate risk/reward (scalps have tight stops)
@@ -1400,14 +1430,19 @@ class ScalpingStrategy:
         resistance_level = max([r for r in [r1, r2, swing_high] if r > 0], default=price)
         
         # Calculate position size (scalps are smaller)
+        # Scale percentages based on MAX_EQUITY_USAGE_PCT from .env
+        max_equity_pct = get_max_equity_usage()
         if base_confidence >= 0.8:
-            capital_allocation_pct = 0.15  # 15% for high-confidence scalp
+            # High confidence: use ~50% of max (15% of 30% max = 0.50)
+            capital_allocation_pct = max_equity_pct * 0.50
             leverage = 2.0
         elif base_confidence >= 0.7:
-            capital_allocation_pct = 0.10  # 10% for medium-confidence scalp
+            # Medium confidence: use ~33% of max (10% of 30% max = 0.333)
+            capital_allocation_pct = max_equity_pct * 0.333
             leverage = 1.5
         else:
-            capital_allocation_pct = 0.05  # 5% for low-confidence scalp
+            # Low confidence: use ~17% of max (5% of 30% max = 0.167)
+            capital_allocation_pct = max_equity_pct * 0.167
             leverage = 1.0
         
         # Calculate risk/reward (scalps have tight stops)
