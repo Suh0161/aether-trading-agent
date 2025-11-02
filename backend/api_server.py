@@ -222,10 +222,16 @@ async def agent_chat(request: ChatRequest):
         }
         agent_messages_data.append(user_msg)
         
-        # Get current market snapshot if available
+        # Get current market snapshots (all 6 coins) if available
         snapshot = None
+        all_snapshots = {}
         if loop_controller_instance:
             logger.info(f"[DEBUG] loop_controller_instance exists: {loop_controller_instance is not None}")
+            # Get ALL snapshots for multi-coin context
+            if hasattr(loop_controller_instance, 'all_snapshots'):
+                all_snapshots = loop_controller_instance.all_snapshots or {}
+                logger.info(f"[DEBUG] all_snapshots exists: {len(all_snapshots)} coins")
+            # Get first snapshot for backward compatibility (BTC)
             if hasattr(loop_controller_instance, 'last_snapshot'):
                 snapshot = loop_controller_instance.last_snapshot
                 logger.info(f"[DEBUG] last_snapshot exists: {snapshot is not None}")
@@ -236,8 +242,11 @@ async def agent_chat(request: ChatRequest):
         else:
             logger.error("[DEBUG] loop_controller_instance is None! API server not connected to trading loop.")
         
-        # Build COMPREHENSIVE context for AI
-        if snapshot:
+        # Build COMPREHENSIVE context for AI (with ALL 6 COINS data)
+        if snapshot or all_snapshots:
+            # Use first snapshot if available, otherwise use first from all_snapshots
+            if not snapshot and all_snapshots:
+                snapshot = list(all_snapshots.values())[0]
             price = snapshot.price
             indicators = snapshot.indicators
             
@@ -394,6 +403,79 @@ AGENT CAPABILITIES:
 - Strategy Mode: {strategy_mode}
 - Decision Cycle: Every 30 seconds
 - Features: Multi-timeframe analysis, VWAP filtering, volume confirmation, support/resistance detection, swing/scalp adaptive strategy, automatic stop-loss/take-profit"""
+            
+            # Build ALL 6 COINS market overview (COMPREHENSIVE - ALL INDICATORS)
+            all_coins_context = ""
+            if all_snapshots:
+                all_coins_context = "\n\nALL 6 COINS MARKET OVERVIEW (COMPLETE DATA):\n"
+                for coin_symbol, coin_snap in all_snapshots.items():
+                    coin_name = coin_symbol.split('/')[0]
+                    coin_price = coin_snap.price
+                    coin_ind = coin_snap.indicators
+                    
+                    # Multi-timeframe trends
+                    coin_trend_1d = coin_ind.get('trend_1d', 'unknown')
+                    coin_trend_4h = coin_ind.get('trend_4h', 'unknown')
+                    coin_trend_1h = 'bullish' if coin_price > coin_ind.get('ema_50', 0) else 'bearish'
+                    coin_trend_15m = coin_ind.get('trend_15m', 'unknown')
+                    coin_trend_5m = coin_ind.get('trend_5m', 'unknown')
+                    coin_trend_1m = coin_ind.get('trend_1m', 'unknown')
+                    
+                    # Key indicators
+                    coin_ema_50 = coin_ind.get('ema_50', 0)
+                    coin_rsi = coin_ind.get('rsi_14', 50)
+                    coin_atr = coin_ind.get('atr_14', 0)
+                    coin_vwap_1h = coin_ind.get('vwap_1h', coin_price)
+                    coin_vwap_5m = coin_ind.get('vwap_5m', coin_price)
+                    vwap_pos_1h = 'above' if coin_price > coin_vwap_1h else 'below'
+                    vwap_pos_5m = 'above' if coin_price > coin_vwap_5m else 'below'
+                    
+                    # Keltner Channels
+                    coin_keltner_upper_1h = coin_ind.get('keltner_upper', 0)
+                    coin_keltner_lower_1h = coin_ind.get('keltner_lower', 0)
+                    coin_keltner_upper_5m = coin_ind.get('keltner_upper_5m', 0)
+                    coin_keltner_lower_5m = coin_ind.get('keltner_lower_5m', 0)
+                    
+                    # Support/Resistance
+                    coin_r1 = coin_ind.get('resistance_1', 0)
+                    coin_r2 = coin_ind.get('resistance_2', 0)
+                    coin_r3 = coin_ind.get('resistance_3', 0)
+                    coin_s1 = coin_ind.get('support_1', 0)
+                    coin_s2 = coin_ind.get('support_2', 0)
+                    coin_s3 = coin_ind.get('support_3', 0)
+                    coin_swing_high = coin_ind.get('swing_high', 0)
+                    coin_swing_low = coin_ind.get('swing_low', 0)
+                    
+                    # Volume analysis
+                    coin_vol_1h = coin_ind.get('volume_ratio_1h', 1.0)
+                    coin_vol_5m = coin_ind.get('volume_ratio_5m', 1.0)
+                    coin_obv_1h = coin_ind.get('obv_trend_1h', 'neutral')
+                    coin_obv_5m = coin_ind.get('obv_trend_5m', 'neutral')
+                    vol_str_1h = 'STRONG' if coin_vol_1h >= 1.5 else 'MODERATE' if coin_vol_1h >= 1.2 else 'WEAK'
+                    vol_str_5m = 'STRONG' if coin_vol_5m >= 1.5 else 'MODERATE' if coin_vol_5m >= 1.2 else 'WEAK'
+                    
+                    # Format price based on magnitude
+                    if coin_price >= 1000:
+                        price_str = f"${coin_price:,.2f}"
+                    elif coin_price >= 1:
+                        price_str = f"${coin_price:,.2f}"
+                    else:
+                        price_str = f"${coin_price:.4f}"
+                    
+                    all_coins_context += f"""
+{coin_name}/{coin_symbol.split('/')[1]}:
+  Price: {price_str}
+  Trends: 1D={coin_trend_1d}, 4H={coin_trend_4h}, 1H={coin_trend_1h}, 15m={coin_trend_15m}, 5m={coin_trend_5m}, 1m={coin_trend_1m}
+  Indicators: EMA50=${coin_ema_50:,.2f}, RSI={coin_rsi:.1f}, ATR=${coin_atr:.2f}
+  VWAP: 1h=${coin_vwap_1h:,.2f} ({vwap_pos_1h}), 5m=${coin_vwap_5m:,.2f} ({vwap_pos_5m})
+  Keltner 1h: Upper=${coin_keltner_upper_1h:,.2f}, Lower=${coin_keltner_lower_1h:,.2f}
+  Keltner 5m: Upper=${coin_keltner_upper_5m:,.2f}, Lower=${coin_keltner_lower_5m:,.2f}
+  S/R: R1=${coin_r1:,.2f}, R2=${coin_r2:,.2f}, R3=${coin_r3:,.2f} | S1=${coin_s1:,.2f}, S2=${coin_s2:,.2f}, S3=${coin_s3:,.2f}
+  Swing: High=${coin_swing_high:,.2f}, Low=${coin_swing_low:,.2f}
+  Volume: 1h={coin_vol_1h:.2f}x ({vol_str_1h}, OBV={coin_obv_1h}), 5m={coin_vol_5m:.2f}x ({vol_str_5m}, OBV={coin_obv_5m})
+"""
+                
+                context += all_coins_context
         else:
             context = "Market data is currently unavailable."
         
@@ -425,10 +507,12 @@ CRITICAL INSTRUCTIONS - FOLLOW EXACTLY:
 7. **CRITICAL**: If "NO OPEN POSITION" is shown, DO NOT mention any position, entry price, P&L, or gains/losses
 8. **CRITICAL**: If "CURRENT POSITION" shows 0.0 {base_currency}, DO NOT calculate or mention any profit/loss
 9. **CRITICAL**: You are a MULTI-COIN agent. You evaluate BTC, ETH, SOL, DOGE, BNB, and XRP every cycle and trade the best opportunity. DO NOT say you're "BTC-only" or "BTC-focused".
+10. **CRITICAL**: When asked about specific coins (e.g., "what is price for XRP?"), ALWAYS provide the exact price from the "ALL 6 COINS MARKET OVERVIEW" section. For example, if XRP shows "$2.50" in the overview, say "XRP is at $2.50" - DO NOT say "no pricing data is shown".
+11. **CRITICAL**: You have access to ALL 6 coins data in the "ALL 6 COINS MARKET OVERVIEW" section. When users ask about other coins, reference that section and provide the exact prices, trends, and volumes shown there.
 
 User Question: {user_question}
 
-Answer using ONLY the data from the context above. Quote the exact numbers provided. If there's no open position, do NOT mention position details, P&L, or gains. Be conversational but factually accurate. If asked about trading other coins, explain that you evaluate all 6 coins every cycle and trade the one with the best setup. Under 150 words."""
+Answer using ONLY the data from the context above. Quote the exact numbers provided. If asked about specific coins (XRP, DOGE, ETH, etc.), use the exact prices from the "ALL 6 COINS MARKET OVERVIEW" section. If there's no open position, do NOT mention position details, P&L, or gains. Be conversational but factually accurate. If asked about trading other coins, explain that you evaluate all 6 coins every cycle and trade the one with the best setup, and mention what those other coins are doing (from the overview). Under 150 words."""
             
             response = client.chat.completions.create(
                 model="deepseek-chat",
@@ -448,20 +532,41 @@ Answer using ONLY the data from the context above. Quote the exact numbers provi
         except Exception as e:
             logger.error(f"Error calling DeepSeek API: {e}")
             # Provide agent-aware fallback responses
-            if snapshot:
-                price = snapshot.price
-                indicators = snapshot.indicators
-                rsi_1h = indicators.get('rsi_14', 50)
-                r1 = indicators.get('resistance_1', 0)
-                s1 = indicators.get('support_1', 0)
-                volume_ratio_1h = indicators.get('volume_ratio_1h', 1.0)
-                
-                if "when" in user_question.lower() and "trade" in user_question.lower():
-                    ai_response = f"I'm actively monitoring BTC/USDT at ${price:,.2f}. Currently waiting for a clear breakout above ${r1:,.2f} resistance or a bounce off ${s1:,.2f} support with strong volume (need >1.2x avg, currently {volume_ratio_1h:.2f}x). Check my automatic updates above for real-time reasoning."
-                elif "why" in user_question.lower() and ("not" in user_question.lower() or "no" in user_question.lower()):
-                    ai_response = f"Right now at ${price:,.2f}, I'm seeing mixed signals - RSI at {rsi_1h:.1f}, volume at {volume_ratio_1h:.2f}x average. I need clearer confirmation before entering. I'm watching for breakouts, strong volume, and multi-timeframe alignment. Stay tuned!"
-                else:
-                    ai_response = f"I'm your autonomous trading agent, actively monitoring BTC/USDT 24/7. Current price: ${price:,.2f}. I analyze multi-timeframe trends, volume, VWAP, and support/resistance to find high-probability setups. Check my automatic updates above for my latest analysis!"
+            if all_snapshots or snapshot:
+                # If we have all snapshots, build multi-coin response
+                if all_snapshots:
+                    coins_info = []
+                    for coin_symbol, coin_snap in all_snapshots.items():
+                        coin_name = coin_symbol.split('/')[0]
+                        coins_info.append(f"{coin_name} at ${coin_snap.price:,.2f}")
+                    coins_str = ", ".join(coins_info)
+                    
+                    # Check if user asked about specific coins
+                    user_lower = user_question.lower()
+                    if "xrp" in user_lower:
+                        xrp_snap = all_snapshots.get("XRP/USDT")
+                        if xrp_snap:
+                            ai_response = f"XRP is currently at ${xrp_snap.price:,.2f}. I'm monitoring all 6 coins (BTC, ETH, SOL, DOGE, BNB, XRP) every cycle and will trade whichever shows the strongest setup. Right now, I'm waiting for clearer signals across all coins."
+                    elif "doge" in user_lower:
+                        doge_snap = all_snapshots.get("DOGE/USDT")
+                        if doge_snap:
+                            ai_response = f"DOGE is currently at ${doge_snap.price:,.4f}. I'm monitoring all 6 coins (BTC, ETH, SOL, DOGE, BNB, XRP) every cycle and will trade whichever shows the strongest setup. Right now, I'm waiting for clearer signals across all coins."
+                    else:
+                        ai_response = f"I'm monitoring all 6 coins: {coins_str}. I evaluate all of them every 30 seconds and trade the one with the best setup. Currently waiting for clearer signals across all coins. Check my automatic updates above for real-time reasoning."
+                elif snapshot:
+                    price = snapshot.price
+                    indicators = snapshot.indicators
+                    rsi_1h = indicators.get('rsi_14', 50)
+                    r1 = indicators.get('resistance_1', 0)
+                    s1 = indicators.get('support_1', 0)
+                    volume_ratio_1h = indicators.get('volume_ratio_1h', 1.0)
+                    
+                    if "when" in user_question.lower() and "trade" in user_question.lower():
+                        ai_response = f"I'm actively monitoring BTC/USDT at ${price:,.2f}. Currently waiting for a clear breakout above ${r1:,.2f} resistance or a bounce off ${s1:,.2f} support with strong volume (need >1.2x avg, currently {volume_ratio_1h:.2f}x). Check my automatic updates above for real-time reasoning."
+                    elif "why" in user_question.lower() and ("not" in user_question.lower() or "no" in user_question.lower()):
+                        ai_response = f"Right now at ${price:,.2f}, I'm seeing mixed signals - RSI at {rsi_1h:.1f}, volume at {volume_ratio_1h:.2f}x average. I need clearer confirmation before entering. I'm watching for breakouts, strong volume, and multi-timeframe alignment. Stay tuned!"
+                    else:
+                        ai_response = f"I'm your autonomous trading agent, actively monitoring BTC/USDT 24/7. Current price: ${price:,.2f}. I analyze multi-timeframe trends, volume, VWAP, and support/resistance to find high-probability setups. Check my automatic updates above for my latest analysis!"
             else:
                 ai_response = "I'm having trouble accessing market data right now. Please try again in a moment or check my automatic updates above."
         

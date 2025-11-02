@@ -81,8 +81,9 @@ class LoopController:
         self.initial_real_equity: Optional[float] = None
         self.virtual_starting_equity = config.virtual_starting_equity
         
-        # Store last snapshot for interactive chat
-        self.last_snapshot = None
+        # Store snapshots for interactive chat (multi-coin support)
+        self.all_snapshots = {}  # {symbol: snapshot} - all 6 coins
+        self.last_snapshot = None  # Backward compatibility (first symbol)
         
         # Track current position size for interactive chat
         self.current_position_size = 0.0
@@ -216,6 +217,8 @@ class LoopController:
                 logger.info("Step 1: Fetching market snapshots for all symbols...")
                 try:
                     snapshots = self.data_acquisition.fetch_multi_symbol_snapshots(self.config.symbols)
+                    # Store all snapshots for interactive chat (multi-coin support)
+                    self.all_snapshots = snapshots
                     # Store first snapshot for interactive chat (backward compatibility)
                     self.last_snapshot = list(snapshots.values())[0] if snapshots else None
                     logger.info(f"  Fetched {len(snapshots)} symbols:")
@@ -763,24 +766,76 @@ class LoopController:
             symbol = snapshot.symbol
             base_currency = symbol.split('/')[0]
             
-            # Build ALL COINS market overview
+            # Build ALL COINS market overview (COMPREHENSIVE - ALL INDICATORS)
             all_coins_context = ""
             if all_snapshots:
-                all_coins_context = "\n\nALL 6 COINS MARKET OVERVIEW:\n"
+                all_coins_context = "\n\nALL 6 COINS MARKET OVERVIEW (COMPLETE DATA):\n"
                 for coin_symbol, coin_snap in all_snapshots.items():
                     coin_name = coin_symbol.split('/')[0]
                     coin_price = coin_snap.price
                     coin_ind = coin_snap.indicators
-                    coin_trend_1d = coin_ind.get('trend_1d', 'unknown')
-                    coin_trend_1h = 'bullish' if coin_price > coin_ind.get('ema_50', 0) else 'bearish'
-                    coin_vwap_5m = coin_ind.get('vwap_5m', coin_price)
-                    vwap_pos = 'above' if coin_price > coin_vwap_5m else 'below'
-                    coin_vol = coin_ind.get('volume_ratio_1h', 1.0)
-                    vol_str = 'STRONG' if coin_vol >= 1.5 else 'MODERATE' if coin_vol >= 1.2 else 'WEAK'
-                    coin_r1 = coin_ind.get('resistance_1', 0)
-                    coin_s1 = coin_ind.get('support_1', 0)
                     
-                    all_coins_context += f"- {coin_name}: ${coin_price:,.2f} | 1D={coin_trend_1d}, 1H={coin_trend_1h} | {vwap_pos} VWAP | Vol: {coin_vol:.2f}x ({vol_str}) | R1=${coin_r1:,.0f}, S1=${coin_s1:,.0f}\n"
+                    # Multi-timeframe trends
+                    coin_trend_1d = coin_ind.get('trend_1d', 'unknown')
+                    coin_trend_4h = coin_ind.get('trend_4h', 'unknown')
+                    coin_trend_1h = 'bullish' if coin_price > coin_ind.get('ema_50', 0) else 'bearish'
+                    coin_trend_15m = coin_ind.get('trend_15m', 'unknown')
+                    coin_trend_5m = coin_ind.get('trend_5m', 'unknown')
+                    coin_trend_1m = coin_ind.get('trend_1m', 'unknown')
+                    
+                    # Key indicators
+                    coin_ema_50 = coin_ind.get('ema_50', 0)
+                    coin_rsi = coin_ind.get('rsi_14', 50)
+                    coin_atr = coin_ind.get('atr_14', 0)
+                    coin_vwap_1h = coin_ind.get('vwap_1h', coin_price)
+                    coin_vwap_5m = coin_ind.get('vwap_5m', coin_price)
+                    vwap_pos_1h = 'above' if coin_price > coin_vwap_1h else 'below'
+                    vwap_pos_5m = 'above' if coin_price > coin_vwap_5m else 'below'
+                    
+                    # Keltner Channels
+                    coin_keltner_upper_1h = coin_ind.get('keltner_upper', 0)
+                    coin_keltner_lower_1h = coin_ind.get('keltner_lower', 0)
+                    coin_keltner_upper_5m = coin_ind.get('keltner_upper_5m', 0)
+                    coin_keltner_lower_5m = coin_ind.get('keltner_lower_5m', 0)
+                    
+                    # Support/Resistance
+                    coin_r1 = coin_ind.get('resistance_1', 0)
+                    coin_r2 = coin_ind.get('resistance_2', 0)
+                    coin_r3 = coin_ind.get('resistance_3', 0)
+                    coin_s1 = coin_ind.get('support_1', 0)
+                    coin_s2 = coin_ind.get('support_2', 0)
+                    coin_s3 = coin_ind.get('support_3', 0)
+                    coin_swing_high = coin_ind.get('swing_high', 0)
+                    coin_swing_low = coin_ind.get('swing_low', 0)
+                    
+                    # Volume analysis
+                    coin_vol_1h = coin_ind.get('volume_ratio_1h', 1.0)
+                    coin_vol_5m = coin_ind.get('volume_ratio_5m', 1.0)
+                    coin_obv_1h = coin_ind.get('obv_trend_1h', 'neutral')
+                    coin_obv_5m = coin_ind.get('obv_trend_5m', 'neutral')
+                    vol_str_1h = 'STRONG' if coin_vol_1h >= 1.5 else 'MODERATE' if coin_vol_1h >= 1.2 else 'WEAK'
+                    vol_str_5m = 'STRONG' if coin_vol_5m >= 1.5 else 'MODERATE' if coin_vol_5m >= 1.2 else 'WEAK'
+                    
+                    # Format price based on magnitude
+                    if coin_price >= 1000:
+                        price_str = f"${coin_price:,.2f}"
+                    elif coin_price >= 1:
+                        price_str = f"${coin_price:,.2f}"
+                    else:
+                        price_str = f"${coin_price:.4f}"
+                    
+                    all_coins_context += f"""
+{coin_name}/{coin_symbol.split('/')[1]}:
+  Price: {price_str}
+  Trends: 1D={coin_trend_1d}, 4H={coin_trend_4h}, 1H={coin_trend_1h}, 15m={coin_trend_15m}, 5m={coin_trend_5m}, 1m={coin_trend_1m}
+  Indicators: EMA50=${coin_ema_50:,.2f}, RSI={coin_rsi:.1f}, ATR=${coin_atr:.2f}
+  VWAP: 1h=${coin_vwap_1h:,.2f} ({vwap_pos_1h}), 5m=${coin_vwap_5m:,.2f} ({vwap_pos_5m})
+  Keltner 1h: Upper=${coin_keltner_upper_1h:,.2f}, Lower=${coin_keltner_lower_1h:,.2f}
+  Keltner 5m: Upper=${coin_keltner_upper_5m:,.2f}, Lower=${coin_keltner_lower_5m:,.2f}
+  S/R: R1=${coin_r1:,.2f}, R2=${coin_r2:,.2f}, R3=${coin_r3:,.2f} | S1=${coin_s1:,.2f}, S2=${coin_s2:,.2f}, S3=${coin_s3:,.2f}
+  Swing: High=${coin_swing_high:,.2f}, Low=${coin_swing_low:,.2f}
+  Volume: 1h={coin_vol_1h:.2f}x ({vol_str_1h}, OBV={coin_obv_1h}), 5m={coin_vol_5m:.2f}x ({vol_str_5m}, OBV={coin_obv_5m})
+"""
             
             # Build prompt for AI message generation
             prompt = f"""You are a professional crypto trader explaining your decision to your client in a casual, conversational way.
