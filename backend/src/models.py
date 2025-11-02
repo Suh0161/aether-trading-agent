@@ -24,6 +24,7 @@ class DecisionObject:
     action: str  # "long" | "short" | "close" | "hold"
     size_pct: float  # 0.0 to 1.0
     reason: str
+    symbol: str = "BTC/USDT"  # Trading symbol for this decision
     stop_loss: Optional[float] = None  # Stop loss price for position monitoring
     take_profit: Optional[float] = None  # Take profit price for position monitoring
     position_type: str = "swing"  # "swing" | "scalp" - indicates trade duration style

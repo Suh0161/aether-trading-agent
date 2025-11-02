@@ -488,3 +488,34 @@ class DataAcquisition:
             
             # If no cache available, re-raise the exception
             raise
+    
+    def fetch_multi_symbol_snapshots(self, symbols: List[str]) -> Dict[str, MarketSnapshot]:
+        """
+        Fetch market snapshots for multiple symbols in parallel.
+        
+        Args:
+            symbols: List of trading pair symbols (e.g., ["BTC/USDT", "ETH/USDT"])
+            
+        Returns:
+            Dictionary mapping symbol to MarketSnapshot
+        """
+        snapshots = {}
+        errors = []
+        
+        for symbol in symbols:
+            try:
+                snapshot = self.fetch_market_snapshot(symbol)
+                snapshots[symbol] = snapshot
+                logger.debug(f"Fetched snapshot for {symbol}: price={snapshot.price}")
+            except Exception as e:
+                logger.error(f"Failed to fetch snapshot for {symbol}: {e}")
+                errors.append(symbol)
+        
+        if errors:
+            logger.warning(f"Failed to fetch {len(errors)} symbol(s): {', '.join(errors)}")
+        
+        if not snapshots:
+            raise Exception("Failed to fetch any market snapshots")
+        
+        logger.info(f"Fetched {len(snapshots)} symbol snapshots successfully")
+        return snapshots

@@ -11,6 +11,18 @@ function Chart({ symbol, trades = [] }) {
     const [chartType, setChartType] = useState('candlestick') // 'candlestick' or 'area'
     const [timeframe, setTimeframe] = useState('1h') // Selected candle interval
     const [isUpdating, setIsUpdating] = useState(false)
+    const [selectedCoin, setSelectedCoin] = useState('BTC/USDT')
+    const [showCoinDropdown, setShowCoinDropdown] = useState(false)
+    
+    // Available coins
+    const availableCoins = [
+        { symbol: 'BTC/USDT', name: 'Bitcoin', icon: '/image/Bitcoin.svg.webp' },
+        { symbol: 'ETH/USDT', name: 'Ethereum', icon: '/image/eth.svg' },
+        { symbol: 'SOL/USDT', name: 'Solana', icon: '/image/sol.svg' },
+        { symbol: 'DOGE/USDT', name: 'Dogecoin', icon: '/image/dogecoin.svg' },
+        { symbol: 'BNB/USDT', name: 'BNB', icon: '/image/bnb.svg' },
+        { symbol: 'XRP/USDT', name: 'Ripple', icon: '/image/ripple-xrp-crypto.svg' },
+    ]
 
     // Create chart once
     useEffect(() => {
@@ -77,7 +89,7 @@ function Chart({ symbol, trades = [] }) {
         // Fetch real data from Binance
         const fetchChartData = async () => {
             try {
-                const symbolFormatted = symbol.replace('/', '')
+                const symbolFormatted = selectedCoin.replace('/', '')
                 const { interval, limit } = getInterval()
                 const response = await fetch(
                     `https://api.binance.com/api/v3/klines?symbol=${symbolFormatted}&interval=${interval}&limit=${limit}`
@@ -134,7 +146,7 @@ function Chart({ symbol, trades = [] }) {
             const chartEndTime = chartData[chartData.length - 1]?.[0] / 1000 || 0
 
             trades
-                .filter(trade => trade.coin === symbol.split('/')[0])
+                .filter(trade => trade.coin === selectedCoin.split('/')[0])
                 .forEach((trade) => {
                     // Use actual timestamps if available, otherwise fallback to estimated positions
                     let entryTime, exitTime
@@ -222,7 +234,7 @@ function Chart({ symbol, trades = [] }) {
         // Fetch real data from Binance
         const fetchChartData = async () => {
             try {
-                const symbolFormatted = symbol.replace('/', '')
+                const symbolFormatted = selectedCoin.replace('/', '')
                 const { interval, limit } = getInterval()
                 const response = await fetch(
                     `https://api.binance.com/api/v3/klines?symbol=${symbolFormatted}&interval=${interval}&limit=${limit}`
@@ -279,7 +291,7 @@ function Chart({ symbol, trades = [] }) {
             const chartEndTime = chartData[chartData.length - 1]?.[0] / 1000 || 0
 
             trades
-                .filter(trade => trade.coin === symbol.split('/')[0])
+                .filter(trade => trade.coin === selectedCoin.split('/')[0])
                 .forEach((trade) => {
                     // Use actual timestamps if available, otherwise fallback to estimated positions
                     let entryTime, exitTime
@@ -332,14 +344,89 @@ function Chart({ symbol, trades = [] }) {
         return () => {
             clearInterval(interval)
         }
-    }, [symbol, trades, chartType, timeframe])
+    }, [selectedCoin, trades, chartType, timeframe])
 
     const timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
 
     return (
         <div className="chart-container">
             <div className="chart-header">
-                <h2 className="chart-title">{symbol}</h2>
+                <div className="coin-selector-wrapper">
+                    <h2 
+                        className="chart-title clickable" 
+                        onClick={() => setShowCoinDropdown(!showCoinDropdown)}
+                    >
+                        <img 
+                            src={availableCoins.find(c => c.symbol === selectedCoin)?.icon} 
+                            alt={selectedCoin}
+                            className="chart-title-icon"
+                        />
+                        {selectedCoin}
+                        <svg 
+                            className={`dropdown-arrow ${showCoinDropdown ? 'open' : ''}`}
+                            width="16" 
+                            height="16" 
+                            viewBox="0 0 16 16" 
+                            fill="none"
+                        >
+                            <path 
+                                d="M4 6L8 10L12 6" 
+                                stroke="currentColor" 
+                                strokeWidth="2" 
+                                strokeLinecap="round" 
+                                strokeLinejoin="round"
+                            />
+                        </svg>
+                    </h2>
+                    {showCoinDropdown && (
+                        <div className="coin-dropdown">
+                            {availableCoins.map(coin => (
+                                <div
+                                    key={coin.symbol}
+                                    className={`coin-option ${selectedCoin === coin.symbol ? 'active' : ''}`}
+                                    onClick={() => {
+                                        setSelectedCoin(coin.symbol)
+                                        setShowCoinDropdown(false)
+                                    }}
+                                >
+                                    <img 
+                                        src={coin.icon} 
+                                        alt={coin.name}
+                                        className="coin-icon"
+                                    />
+                                    <div className="coin-info">
+                                        <span className="coin-symbol">{coin.symbol}</span>
+                                        <span className="coin-name">{coin.name}</span>
+                                    </div>
+                                    {selectedCoin === coin.symbol && (
+                                        <svg 
+                                            width="18" 
+                                            height="18" 
+                                            viewBox="0 0 20 20" 
+                                            fill="none"
+                                            className="coin-checkmark"
+                                        >
+                                            <circle 
+                                                cx="10" 
+                                                cy="10" 
+                                                r="9" 
+                                                fill="#16a34a"
+                                                opacity="0.15"
+                                            />
+                                            <path 
+                                                d="M6 10L8.5 12.5L14 7" 
+                                                stroke="#16a34a" 
+                                                strokeWidth="2.5" 
+                                                strokeLinecap="round" 
+                                                strokeLinejoin="round"
+                                            />
+                                        </svg>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
                 <div className="chart-controls">
                     <div className="chart-type-toggle">
                         <button

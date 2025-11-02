@@ -14,6 +14,7 @@ class StrategySignal:
     size_pct: float  # 0.0 to 1.0 (percentage of equity to allocate as capital)
     reason: str
     confidence: float  # 0.0 to 1.0
+    symbol: str = "BTC/USDT"  # Trading symbol for this signal
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     position_type: str = "swing"  # "swing" | "scalp" - indicates trade duration style
@@ -110,6 +111,7 @@ class ATRBreakoutStrategy:
                 size_pct=0.0,
                 reason="Missing required indicators (EMA50, ATR14)",
                 confidence=0.0,
+                symbol=snapshot.symbol,
                 position_type="swing"
             )
         
@@ -134,6 +136,8 @@ class ATRBreakoutStrategy:
                     reason=f"Long exit: Trend reversal (price ${price:.2f}, EMA50 ${ema_50:.2f}, 1D={trend_1d}, 4H={trend_4h})",
                     confidence=0.9,
                     position_type="swing"
+                ,
+                symbol=snapshot.symbol
                 )
             
             # Otherwise hold long
@@ -143,6 +147,8 @@ class ATRBreakoutStrategy:
                 reason=f"In long position, trend intact (price ${price:.2f} > EMA50 ${ema_50:.2f})",
                 confidence=0.7,
                 position_type="swing"
+            ,
+            symbol=snapshot.symbol
             )
         
         # If we have a SHORT position (position_size < 0), check exit conditions
@@ -155,6 +161,8 @@ class ATRBreakoutStrategy:
                     reason=f"Short exit: Trend reversal (price ${price:.2f}, EMA50 ${ema_50:.2f}, 1D={trend_1d}, 4H={trend_4h})",
                     confidence=0.9,
                     position_type="swing"
+                ,
+                symbol=snapshot.symbol
                 )
             
             # Otherwise hold short
@@ -164,6 +172,8 @@ class ATRBreakoutStrategy:
                 reason=f"In short position, downtrend intact (price ${price:.2f} < EMA50 ${ema_50:.2f})",
                 confidence=0.7,
                 position_type="swing"
+            ,
+            symbol=snapshot.symbol
             )
         
         # No position - look for LONG or SHORT entry
@@ -207,7 +217,7 @@ class ATRBreakoutStrategy:
                     entry_keltner = keltner_upper_15m
                     entry_timeframe = "15m"
                 else:
-                    logger.info(f"15m long setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need ≥1.2) - waiting for confirmation")
+                    logger.info(f"15m long setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need >=1.2) - waiting for confirmation")
             elif long_primary_breakout or long_near_upper_1h:
                 # Check volume confirmation for 1h entries
                 if volume_confirmed:
@@ -215,7 +225,7 @@ class ATRBreakoutStrategy:
                     entry_keltner = keltner_upper
                     entry_timeframe = "1h"
                 else:
-                    logger.info(f"1h long setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need ≥1.2) - waiting for confirmation")
+                    logger.info(f"1h long setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need >=1.2) - waiting for confirmation")
             
             if entry_timeframe:
                 # LONG entry confirmed with VOLUME - proceed with trade setup
@@ -226,6 +236,7 @@ class ATRBreakoutStrategy:
                     logger.info(f"[STRONG VOLUME] Confirmation: ratio={volume_ratio_1h:.2f}, OBV={obv_trend_1h}")
                 
                 return self._build_entry_signal(
+                    snapshot=snapshot,
                     action="long",
                     price=price,
                     atr_14=atr_14,
@@ -276,7 +287,7 @@ class ATRBreakoutStrategy:
                     entry_keltner = keltner_lower_15m
                     entry_timeframe = "15m"
                 else:
-                    logger.info(f"15m short setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need ≥1.2) - waiting for confirmation")
+                    logger.info(f"15m short setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need >=1.2) - waiting for confirmation")
             elif short_primary_breakdown or short_near_lower_1h:
                 # Check volume confirmation for 1h entries
                 if volume_confirmed:
@@ -284,7 +295,7 @@ class ATRBreakoutStrategy:
                     entry_keltner = keltner_lower
                     entry_timeframe = "1h"
                 else:
-                    logger.info(f"1h short setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need ≥1.2) - waiting for confirmation")
+                    logger.info(f"1h short setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need >=1.2) - waiting for confirmation")
             
             if entry_timeframe:
                 # SHORT entry confirmed with VOLUME - proceed with trade setup
@@ -295,6 +306,7 @@ class ATRBreakoutStrategy:
                     logger.info(f"[STRONG VOLUME] Confirmation: ratio={volume_ratio_1h:.2f}, OBV={obv_trend_1h}")
                 
                 return self._build_entry_signal(
+                    snapshot=snapshot,
                     action="short",
                     price=price,
                     atr_14=atr_14,
@@ -316,10 +328,11 @@ class ATRBreakoutStrategy:
             size_pct=0.0,
             reason=f"Waiting for entry: 1D={trend_1d}, 4H={trend_4h}, 1H={'up' if primary_uptrend else 'down' if primary_downtrend else 'neutral'}",
             confidence=0.0,
+            symbol=snapshot.symbol,
             position_type="swing"
         )
     
-    def _build_entry_signal(self, action: str, price: float, atr_14: float, equity: float, 
+    def _build_entry_signal(self, snapshot: Any, action: str, price: float, atr_14: float, equity: float, 
                            available_cash: float, entry_timeframe: str, entry_keltner: float,
                            trend_1d: str, trend_4h: str, position_type: str,
                            volume_ratio: float = 1.0, obv_trend: str = "neutral",
@@ -328,6 +341,7 @@ class ATRBreakoutStrategy:
         Build entry signal for long or short trades.
         
         Args:
+            snapshot: Market snapshot (for symbol access)
             action: "long" or "short"
             price: Current price
             atr_14: ATR value
@@ -352,6 +366,7 @@ class ATRBreakoutStrategy:
                 size_pct=0.0,
                 reason="Too close to last signal, avoiding chop",
                 confidence=0.3,
+                symbol=snapshot.symbol,
                 position_type=position_type
             )
             
@@ -436,6 +451,7 @@ class ATRBreakoutStrategy:
                 size_pct=0.0,
                 reason=f"Insufficient cash: need ${required_cash:,.2f}, have ${available_cash:,.2f}",
                 confidence=0.0,
+                symbol=snapshot.symbol,
                 position_type=position_type
             )
         
@@ -447,6 +463,8 @@ class ATRBreakoutStrategy:
                 reason=f"Available cash too low: ${available_cash:,.2f} (need at least $100 buffer)",
                 confidence=0.0,
                 position_type=position_type
+            ,
+            symbol=snapshot.symbol
             )
         
         self.last_signal_price = price
@@ -473,7 +491,8 @@ class ATRBreakoutStrategy:
             action=action,
             size_pct=position_size_pct,
             reason=f"Multi-TF {direction_desc}: price ${price:.2f} {keltner_comparison} {entry_timeframe} Keltner ${entry_keltner:.2f}. {timeframe_info}. {volume_info}, {obv_info}. Capital: {capital_allocation_pct*100:.0f}%, Leverage: {leverage:.1f}x, Risk: ${risk_amount:.2f}, Reward: ${reward_amount:.2f}",
-            confidence=base_confidence,  # Use volume-adjusted confidence
+            confidence=base_confidence,  # Use volume-adjusted confidence,
+            symbol=snapshot.symbol,
             stop_loss=stop_loss,
             take_profit=take_profit,
             position_type=position_type,
@@ -541,6 +560,9 @@ class ScalpingStrategy:
         vwap_5m = indicators.get("vwap_5m", price)
         vwap_1m = indicators.get("vwap_1m", price)
         
+        # DEBUG: Log VWAP values to diagnose issue
+        logger.debug(f"[{snapshot.symbol}] VWAP Debug: price=${price:.2f}, vwap_5m=${vwap_5m:.2f}, vwap_1m=${vwap_1m:.2f}")
+        
         # Calculate available cash
         position_value = position_size * price if position_size > 0 else 0.0
         available_cash = equity - position_value
@@ -556,6 +578,8 @@ class ScalpingStrategy:
                     reason=f"Scalp long exit: Momentum lost (5m={trend_5m}, 1m={trend_1m}, price ${price:.2f} vs VWAP ${vwap_5m:.2f})",
                     confidence=0.8,
                     position_type="scalp"
+                ,
+                symbol=snapshot.symbol
                 )
             
             return StrategySignal(
@@ -563,6 +587,7 @@ class ScalpingStrategy:
                 size_pct=0.0,
                 reason=f"In scalp long, trend intact",
                 confidence=0.6,
+                symbol=snapshot.symbol,
                 position_type="scalp"
             )
         
@@ -577,6 +602,8 @@ class ScalpingStrategy:
                     reason=f"Scalp short exit: Momentum lost (5m={trend_5m}, 1m={trend_1m}, price ${price:.2f} vs VWAP ${vwap_5m:.2f})",
                     confidence=0.8,
                     position_type="scalp"
+                ,
+                symbol=snapshot.symbol
                 )
             
             return StrategySignal(
@@ -584,6 +611,7 @@ class ScalpingStrategy:
                 size_pct=0.0,
                 reason=f"In scalp short, downtrend intact",
                 confidence=0.6,
+                symbol=snapshot.symbol,
                 position_type="scalp"
             )
         
@@ -674,6 +702,8 @@ class ScalpingStrategy:
                         reason=f"Scalp long: Insufficient cash (need ${required_cash:,.2f}, have ${available_cash:,.2f})",
                         confidence=0.0,
                         position_type="scalp"
+                    ,
+                    symbol=snapshot.symbol
                     )
                 
                 # Calculate stop loss and take profit for long
@@ -706,6 +736,7 @@ class ScalpingStrategy:
                     size_pct=position_size_pct,
                     reason=f"Scalp long: {entry_tf} {entry_type}, price ${price:.2f} > VWAP ${vwap_5m:.2f}, {volume_info}. Capital: {capital_allocation_pct*100:.0f}%, Leverage: {leverage:.1f}x, Risk: ${risk_amount:.2f}",
                     confidence=base_confidence,
+                    symbol=snapshot.symbol,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
                     position_type="scalp",
@@ -799,6 +830,8 @@ class ScalpingStrategy:
                         reason=f"Scalp short: Insufficient cash (need ${required_cash:,.2f}, have ${available_cash:,.2f})",
                         confidence=0.0,
                         position_type="scalp"
+                    ,
+                    symbol=snapshot.symbol
                     )
                 
                 # Calculate stop loss and take profit for short
@@ -831,6 +864,7 @@ class ScalpingStrategy:
                     size_pct=position_size_pct,
                     reason=f"Scalp short: {entry_tf} {entry_type}, price ${price:.2f} < VWAP ${vwap_5m:.2f}, {volume_info}. Capital: {capital_allocation_pct*100:.0f}%, Leverage: {leverage:.1f}x, Risk: ${risk_amount:.2f}",
                     confidence=base_confidence,
+                    symbol=snapshot.symbol,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
                     position_type="scalp",
@@ -846,6 +880,8 @@ class ScalpingStrategy:
             reason=f"Scalp: Waiting for entry (5m trend={trend_5m}, no breakout yet)",
             confidence=0.0,
             position_type="scalp"
+        ,
+        symbol=snapshot.symbol
         )
 
 
@@ -887,14 +923,16 @@ class SimpleEMAStrategy:
                     action="close",
                     size_pct=1.0,
                     reason=f"Long exit: EMA20 ${ema_20:.2f} vs EMA50 ${ema_50:.2f}, RSI {rsi_14:.1f}",
-                    confidence=0.8
+                    confidence=0.8,
+                symbol=snapshot.symbol,
                 )
             
             return StrategySignal(
                 action="hold",
                 size_pct=0.0,
                 reason="In long position, trend intact",
-                confidence=0.6
+                confidence=0.6,
+            symbol=snapshot.symbol,
             )
         
         # If we have a SHORT position, check exit
@@ -905,14 +943,16 @@ class SimpleEMAStrategy:
                     action="close",
                     size_pct=1.0,
                     reason=f"Short exit: EMA20 ${ema_20:.2f} vs EMA50 ${ema_50:.2f}, RSI {rsi_14:.1f}",
-                    confidence=0.8
+                    confidence=0.8,
+                symbol=snapshot.symbol,
                 )
             
             return StrategySignal(
                 action="hold",
                 size_pct=0.0,
                 reason="In short position, downtrend intact",
-                confidence=0.6
+                confidence=0.6,
+            symbol=snapshot.symbol,
             )
         
         # No position - look for LONG or SHORT entry
@@ -928,7 +968,8 @@ class SimpleEMAStrategy:
                 action="long",
                 size_pct=size_pct,
                 reason=f"Bullish: EMA20 ${ema_20:.2f} > EMA50 ${ema_50:.2f}, RSI {rsi_14:.1f}",
-                confidence=0.7
+                confidence=0.7,
+            symbol=snapshot.symbol,
             )
         
         # SHORT entry: EMA20 < EMA50 and RSI not oversold
@@ -942,7 +983,8 @@ class SimpleEMAStrategy:
                 action="short",
                 size_pct=size_pct,
                 reason=f"Bearish: EMA20 ${ema_20:.2f} < EMA50 ${ema_50:.2f}, RSI {rsi_14:.1f}",
-                confidence=0.7
+                confidence=0.7,
+            symbol=snapshot.symbol,
             )
         
         return StrategySignal(
@@ -950,4 +992,6 @@ class SimpleEMAStrategy:
             size_pct=0.0,
             reason=f"No entry signal (EMA20 ${ema_20:.2f}, EMA50 ${ema_50:.2f}, RSI {rsi_14:.1f})",
             confidence=0.0
+        ,
+        symbol=snapshot.symbol
         )

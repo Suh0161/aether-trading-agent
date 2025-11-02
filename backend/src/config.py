@@ -2,7 +2,7 @@
 
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 from dotenv import load_dotenv
 
 
@@ -12,7 +12,7 @@ class Config:
     
     # Exchange
     exchange_type: str
-    symbol: str
+    symbols: List[str]  # Changed from single symbol to list of symbols
     
     # Credentials
     exchange_api_key: str
@@ -54,7 +54,7 @@ class Config:
         
         # Load required fields
         exchange_type = os.getenv("EXCHANGE_TYPE")
-        symbol = os.getenv("SYMBOL")
+        symbols_str = os.getenv("SYMBOLS", "BTC/USDT")  # Default to BTC if not set
         exchange_api_key = os.getenv("EXCHANGE_API_KEY")
         exchange_api_secret = os.getenv("EXCHANGE_API_SECRET")
         deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -62,10 +62,15 @@ class Config:
         decision_provider = os.getenv("DECISION_PROVIDER", "deepseek")
         strategy_mode = os.getenv("STRATEGY_MODE", "hybrid_atr")  # hybrid_atr, hybrid_ema, ai_only
         
+        # Parse symbols (comma-separated)
+        symbols = [s.strip() for s in symbols_str.split(",") if s.strip()]
+        if not symbols:
+            raise ValueError("SYMBOLS must contain at least one valid symbol")
+        
         # Validate required fields
         required_fields = {
             "EXCHANGE_TYPE": exchange_type,
-            "SYMBOL": symbol,
+            "SYMBOLS": symbols_str,
             "EXCHANGE_API_KEY": exchange_api_key,
             "EXCHANGE_API_SECRET": exchange_api_secret,
             "DEEPSEEK_API_KEY": deepseek_api_key,
@@ -142,7 +147,7 @@ class Config:
         
         return cls(
             exchange_type=exchange_type,
-            symbol=symbol,
+            symbols=symbols,
             exchange_api_key=exchange_api_key,
             exchange_api_secret=exchange_api_secret,
             deepseek_api_key=deepseek_api_key,

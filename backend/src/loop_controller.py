@@ -129,7 +129,7 @@ class LoopController:
         logger.info("STARTING AUTONOMOUS TRADING AGENT")
         logger.info("=" * 60)
         logger.info(f"Mode: {self.config.run_mode.upper()}")
-        logger.info(f"Symbol: {self.config.symbol}")
+        logger.info(f"Symbols: {', '.join(self.config.symbols)}")
         logger.info(f"Exchange: {self.config.exchange_type}")
         logger.info(f"Decision Provider: {self.config.decision_provider}")
         logger.info(f"Loop Interval: {self.config.loop_interval_seconds}s")
@@ -154,11 +154,11 @@ class LoopController:
         # Test 2: DeepSeek API connectivity
         logger.info("Testing DeepSeek API connectivity...")
         try:
-            # Create a minimal test snapshot
+            # Create a minimal test snapshot (use first symbol for test)
             from src.models import MarketSnapshot
             test_snapshot = MarketSnapshot(
                 timestamp=int(datetime.now(timezone.utc).timestamp() * 1000),
-                symbol=self.config.symbol,
+                symbol=self.config.symbols[0],
                 price=50000.0,
                 bid=49999.0,
                 ask=50001.0,
@@ -212,43 +212,53 @@ class LoopController:
                     self._sleep_until_next_cycle(cycle_start_time)
                     continue
                 
-                # Step 1: Fetch market snapshot
-                logger.info("Step 1: Fetching market snapshot...")
+                # Step 1: Fetch market snapshots for all symbols
+                logger.info("Step 1: Fetching market snapshots for all symbols...")
                 try:
-                    snapshot = self.data_acquisition.fetch_market_snapshot(self.config.symbol)
-                    self.last_snapshot = snapshot  # Store for interactive chat
-                    logger.info(f"  Price: {snapshot.price}, Bid: {snapshot.bid}, Ask: {snapshot.ask}")
+                    snapshots = self.data_acquisition.fetch_multi_symbol_snapshots(self.config.symbols)
+                    # Store first snapshot for interactive chat (backward compatibility)
+                    self.last_snapshot = list(snapshots.values())[0] if snapshots else None
+                    logger.info(f"  Fetched {len(snapshots)} symbols:")
+                    for sym, snap in snapshots.items():
+                        logger.info(f"    {sym}: ${snap.price:,.2f}")
                 except Exception as e:
-                    logger.error(f"Failed to fetch market snapshot: {e}")
+                    logger.error(f"Failed to fetch market snapshots: {e}")
                     logger.info("Skipping this cycle due to data acquisition failure")
                     self._sleep_until_next_cycle(cycle_start_time)
                     continue
                 
-                # Step 2: Fetch current position and equity
-                logger.info("Step 2: Fetching position and equity...")
+                # Step 2: Fetch current positions and equity for all symbols
+                logger.info("Step 2: Fetching positions and equity...")
                 try:
                     balance = self.trade_executor.exchange.fetch_balance()
                     
-                    # Get equity (total USDT or quote currency)
-                    quote_currency = self.config.symbol.split('/')[1]
+                    # Get equity (total USDT or quote currency) - assume all pairs use USDT
+                    quote_currency = 'USDT'
                     real_equity = balance['total'].get(quote_currency, 0.0)
                     
-                    # Get position size (base currency) - needed for initial equity calculation
-                    base_currency = self.config.symbol.split('/')[0]
-                    position_size = balance['total'].get(base_currency, 0.0)
+                    # Get position sizes for all symbols
+                    positions = {}  # {symbol: position_size}
+                    total_position_value = 0.0
+                    for symbol in self.config.symbols:
+                        base_currency = symbol.split('/')[0]
+                        pos_size = balance['total'].get(base_currency, 0.0)
+                        positions[symbol] = pos_size
+                        if pos_size != 0 and symbol in snapshots:
+                            total_position_value += abs(pos_size) * snapshots[symbol].price
+                    
+                    # For backward compatibility, use first symbol's position as "position_size"
+                    position_size = positions.get(self.config.symbols[0], 0.0)
                     
                     # Track initial real equity on first fetch (for virtual equity calculation)
                     if self.initial_real_equity is None:
-                        # If there's a pre-existing position, we need to wait until it's closed
-                        # before we can accurately track virtual equity changes
-                        if position_size != 0 and self.virtual_starting_equity:
-                            position_value = abs(position_size) * snapshot.price
-                            logger.warning(f"  Pre-existing position detected: {position_size} {base_currency} (${position_value:,.2f})")
-                            logger.warning(f"  Virtual equity tracking will start AFTER this position is closed")
-                            logger.warning(f"  Reason: We don't know the entry price of pre-existing positions")
-                            # Don't set initial_real_equity yet - wait for position to close
+                        # If there are pre-existing positions, wait until they're all closed
+                        has_preexisting = any(pos != 0 for pos in positions.values())
+                        if has_preexisting and self.virtual_starting_equity:
+                            logger.warning(f"  Pre-existing positions detected (total value: ${total_position_value:,.2f})")
+                            logger.warning(f"  Virtual equity tracking will start AFTER all positions are closed")
+                            logger.warning(f"  Reason: We don't know the entry prices of pre-existing positions")
                         else:
-                            # No pre-existing position, safe to start tracking
+                            # No pre-existing positions, safe to start tracking
                             self.initial_real_equity = real_equity
                             if self.virtual_starting_equity:
                                 logger.info(f"  Initial real equity: ${real_equity:,.2f}")
@@ -265,10 +275,12 @@ class LoopController:
                         equity = real_equity
                     
                     logger.info(f"  Equity (used for calculations): {equity} {quote_currency}")
-                    logger.info(f"  Position: {position_size} {base_currency}")
+                    # Log all positions
+                    position_strs = [f"{s.split('/')[0]}={positions[s]:.8f}" for s in positions if positions[s] != 0]
+                    logger.info(f"  Positions: {', '.join(position_strs) if position_strs else 'None'}")
                     
-                    # Store for interactive chat
-                    self.current_position_size = position_size
+                    # Store total position size for interactive chat (backward compatibility)
+                    self.current_position_size = sum(abs(p) for p in positions.values())
                     
                 except Exception as e:
                     logger.error(f"Failed to fetch position/equity: {e}")
@@ -276,31 +288,110 @@ class LoopController:
                     self._sleep_until_next_cycle(cycle_start_time)
                     continue
                 
+                # Multi-coin strategy: Check all symbols and trade the best opportunity
+                # Priority: 1) Manage existing positions, 2) Find best new entry
+                
+                # First, check if we have any open positions that need management
+                trading_symbol = None
+                for symbol in self.config.symbols:
+                    if positions.get(symbol, 0.0) != 0:
+                        trading_symbol = symbol
+                        logger.info(f"  Managing existing position in {symbol}")
+                        break
+                
+                # If no open positions, evaluate all symbols and pick the best opportunity
+                if trading_symbol is None:
+                    best_symbol = None
+                    best_confidence = 0.0
+                    
+                    logger.info("  Evaluating all symbols for best opportunity...")
+                    for symbol in self.config.symbols:
+                        snap = snapshots.get(symbol)
+                        if not snap:
+                            continue
+                        
+                        # Quick confidence check using strategy
+                        try:
+                            temp_decision = self.decision_provider.get_decision(snap, 0.0, equity)
+                            temp_parsed = self.decision_parser.parse(temp_decision)
+                            temp_confidence = getattr(temp_parsed, 'confidence', 0.0)
+                            
+                            logger.info(f"    {symbol}: {temp_parsed.action} (confidence: {temp_confidence:.2f})")
+                            
+                            # Only consider long/short actions with confidence > 0.5
+                            if temp_parsed.action in ['long', 'short'] and temp_confidence > best_confidence and temp_confidence > 0.5:
+                                best_symbol = symbol
+                                best_confidence = temp_confidence
+                        except Exception as e:
+                            logger.warning(f"    {symbol}: Error evaluating - {e}")
+                            continue
+                    
+                    if best_symbol:
+                        trading_symbol = best_symbol
+                        logger.info(f"  Selected {trading_symbol} (confidence: {best_confidence:.2f})")
+                    else:
+                        # No good opportunities, default to first symbol
+                        trading_symbol = self.config.symbols[0]
+                        logger.info(f"  No strong opportunities, monitoring {trading_symbol}")
+                
+                snapshot = snapshots.get(trading_symbol)
+                position_size = positions.get(trading_symbol, 0.0)
+                
+                if not snapshot:
+                    logger.error(f"No snapshot available for {trading_symbol}")
+                    self._sleep_until_next_cycle(cycle_start_time)
+                    continue
+                
                 # Check for stop loss / take profit BEFORE decision provider
-                if position_size > 0:
-                    stored_stop_loss = self.position_stop_losses.get(self.config.symbol)
-                    stored_take_profit = self.position_take_profits.get(self.config.symbol)
+                # CRITICAL: Check for BOTH long (position_size > 0) AND short (position_size < 0) positions
+                if position_size != 0:
+                    stored_stop_loss = self.position_stop_losses.get(trading_symbol)
+                    stored_take_profit = self.position_take_profits.get(trading_symbol)
                     current_price = snapshot.price
                     
-                    if stored_stop_loss and current_price <= stored_stop_loss:
-                        logger.warning(f"[WARNING] STOP LOSS HIT! Price ${current_price:.2f} <= Stop Loss ${stored_stop_loss:.2f}")
-                        raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Stop loss triggered: price ${current_price:.2f} <= ${stored_stop_loss:.2f}"}}'
-                        # Clear stored stop loss/take profit
-                        if self.config.symbol in self.position_stop_losses:
-                            del self.position_stop_losses[self.config.symbol]
-                        if self.config.symbol in self.position_take_profits:
-                            del self.position_take_profits[self.config.symbol]
-                    elif stored_take_profit and current_price >= stored_take_profit:
-                        logger.info(f"✅ TAKE PROFIT HIT! Price ${current_price:.2f} >= Take Profit ${stored_take_profit:.2f}")
-                        raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Take profit triggered: price ${current_price:.2f} >= ${stored_take_profit:.2f}"}}'
-                        # Clear stored stop loss/take profit
-                        if self.config.symbol in self.position_stop_losses:
-                            del self.position_stop_losses[self.config.symbol]
-                        if self.config.symbol in self.position_take_profits:
-                            del self.position_take_profits[self.config.symbol]
-                    else:
-                        # No stop/tp hit, proceed with normal decision flow
-                        raw_llm_output = None
+                    # LONG position: SL below entry, TP above entry
+                    if position_size > 0:
+                        if stored_stop_loss and current_price <= stored_stop_loss:
+                            logger.warning(f"[WARNING] {trading_symbol} LONG STOP LOSS HIT! Price ${current_price:.2f} <= Stop Loss ${stored_stop_loss:.2f}")
+                            raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Long stop loss triggered: price ${current_price:.2f} <= ${stored_stop_loss:.2f}"}}'
+                            # Clear stored stop loss/take profit
+                            if trading_symbol in self.position_stop_losses:
+                                del self.position_stop_losses[trading_symbol]
+                            if trading_symbol in self.position_take_profits:
+                                del self.position_take_profits[trading_symbol]
+                        elif stored_take_profit and current_price >= stored_take_profit:
+                            logger.info(f"[OK] {trading_symbol} LONG TAKE PROFIT HIT! Price ${current_price:.2f} >= Take Profit ${stored_take_profit:.2f}")
+                            raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Long take profit triggered: price ${current_price:.2f} >= ${stored_take_profit:.2f}"}}'
+                            # Clear stored stop loss/take profit
+                            if trading_symbol in self.position_stop_losses:
+                                del self.position_stop_losses[trading_symbol]
+                            if trading_symbol in self.position_take_profits:
+                                del self.position_take_profits[trading_symbol]
+                        else:
+                            # No stop/tp hit, proceed with normal decision flow
+                            raw_llm_output = None
+                    
+                    # SHORT position: SL above entry, TP below entry
+                    else:  # position_size < 0
+                        if stored_stop_loss and current_price >= stored_stop_loss:
+                            logger.warning(f"[WARNING] {trading_symbol} SHORT STOP LOSS HIT! Price ${current_price:.2f} >= Stop Loss ${stored_stop_loss:.2f}")
+                            raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Short stop loss triggered: price ${current_price:.2f} >= ${stored_stop_loss:.2f}"}}'
+                            # Clear stored stop loss/take profit
+                            if trading_symbol in self.position_stop_losses:
+                                del self.position_stop_losses[trading_symbol]
+                            if trading_symbol in self.position_take_profits:
+                                del self.position_take_profits[trading_symbol]
+                        elif stored_take_profit and current_price <= stored_take_profit:
+                            logger.info(f"[OK] {trading_symbol} SHORT TAKE PROFIT HIT! Price ${current_price:.2f} <= Take Profit ${stored_take_profit:.2f}")
+                            raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Short take profit triggered: price ${current_price:.2f} <= ${stored_take_profit:.2f}"}}'
+                            # Clear stored stop loss/take profit
+                            if trading_symbol in self.position_stop_losses:
+                                del self.position_stop_losses[trading_symbol]
+                            if trading_symbol in self.position_take_profits:
+                                del self.position_take_profits[trading_symbol]
+                        else:
+                            # No stop/tp hit, proceed with normal decision flow
+                            raw_llm_output = None
                 else:
                     # No position, proceed with normal decision flow
                     raw_llm_output = None
@@ -405,26 +496,26 @@ class LoopController:
                         if execution_result.executed and execution_result.filled_size:
                             if decision.action in ['sell', 'close']:
                                 # Save entry price before deletion for trade logging
-                                entry_price_for_closed_trade = self.position_entry_prices.get(self.config.symbol)
+                                entry_price_for_closed_trade = self.position_entry_prices.get(trading_symbol)
                         
                         # Track entry price, timestamp, stop loss, take profit, and position type when position is opened
                         if execution_result.executed and execution_result.filled_size:
                             if decision.action in ['long', 'short'] and execution_result.fill_price:
-                                self.position_entry_prices[self.config.symbol] = execution_result.fill_price
-                                self.position_entry_timestamps[self.config.symbol] = int(time.time())
+                                self.position_entry_prices[trading_symbol] = execution_result.fill_price
+                                self.position_entry_timestamps[trading_symbol] = int(time.time())
                                 logger.info(f"  Recorded entry price: ${execution_result.fill_price:.2f}")
                                 
                                 # Store position type (swing or scalp)
                                 position_type = getattr(decision, 'position_type', 'swing')
-                                self.position_types[self.config.symbol] = position_type
+                                self.position_types[trading_symbol] = position_type
                                 logger.info(f"  Position type: {position_type.upper()}")
                                 
                                 # Store stop loss and take profit if provided
                                 if decision.stop_loss is not None:
-                                    self.position_stop_losses[self.config.symbol] = decision.stop_loss
+                                    self.position_stop_losses[trading_symbol] = decision.stop_loss
                                     logger.info(f"  Set stop loss: ${decision.stop_loss:.2f}")
                                 if decision.take_profit is not None:
-                                    self.position_take_profits[self.config.symbol] = decision.take_profit
+                                    self.position_take_profits[trading_symbol] = decision.take_profit
                                     logger.info(f"  Set take profit: ${decision.take_profit:.2f}")
                                 
                                 # Store leverage, risk amount, and reward amount if provided
@@ -432,34 +523,34 @@ class LoopController:
                                 risk_amount = getattr(decision, 'risk_amount', None)
                                 reward_amount = getattr(decision, 'reward_amount', None)
                                 
-                                self.position_leverages[self.config.symbol] = leverage
+                                self.position_leverages[trading_symbol] = leverage
                                 logger.info(f"  Leverage: {leverage:.1f}x")
                                 
                                 if risk_amount is not None:
-                                    self.position_risk_amounts[self.config.symbol] = risk_amount
+                                    self.position_risk_amounts[trading_symbol] = risk_amount
                                     logger.info(f"  Risk amount (if SL hits): ${risk_amount:.2f}")
                                 
                                 if reward_amount is not None:
-                                    self.position_reward_amounts[self.config.symbol] = reward_amount
+                                    self.position_reward_amounts[trading_symbol] = reward_amount
                                     logger.info(f"  Reward amount (if TP hits): ${reward_amount:.2f}")
                             elif decision.action in ['sell', 'close']:
                                 # Clear entry price, timestamp, stop loss, take profit, position type, leverage, and risk/reward when position is closed
-                                if self.config.symbol in self.position_entry_prices:
-                                    del self.position_entry_prices[self.config.symbol]
-                                if self.config.symbol in self.position_entry_timestamps:
-                                    del self.position_entry_timestamps[self.config.symbol]
-                                if self.config.symbol in self.position_stop_losses:
-                                    del self.position_stop_losses[self.config.symbol]
-                                if self.config.symbol in self.position_take_profits:
-                                    del self.position_take_profits[self.config.symbol]
-                                if self.config.symbol in self.position_types:
-                                    del self.position_types[self.config.symbol]
-                                if self.config.symbol in self.position_leverages:
-                                    del self.position_leverages[self.config.symbol]
-                                if self.config.symbol in self.position_risk_amounts:
-                                    del self.position_risk_amounts[self.config.symbol]
-                                if self.config.symbol in self.position_reward_amounts:
-                                    del self.position_reward_amounts[self.config.symbol]
+                                if trading_symbol in self.position_entry_prices:
+                                    del self.position_entry_prices[trading_symbol]
+                                if trading_symbol in self.position_entry_timestamps:
+                                    del self.position_entry_timestamps[trading_symbol]
+                                if trading_symbol in self.position_stop_losses:
+                                    del self.position_stop_losses[trading_symbol]
+                                if trading_symbol in self.position_take_profits:
+                                    del self.position_take_profits[trading_symbol]
+                                if trading_symbol in self.position_types:
+                                    del self.position_types[trading_symbol]
+                                if trading_symbol in self.position_leverages:
+                                    del self.position_leverages[trading_symbol]
+                                if trading_symbol in self.position_risk_amounts:
+                                    del self.position_risk_amounts[trading_symbol]
+                                if trading_symbol in self.position_reward_amounts:
+                                    del self.position_reward_amounts[trading_symbol]
                         
                         # Adjust position_size if we just closed the position
                         # This ensures accurate position tracking in the same cycle
@@ -475,16 +566,16 @@ class LoopController:
                         
                         # Build position data if exists (both LONG and SHORT)
                         if position_size != 0:
-                            base_currency = self.config.symbol.split('/')[0]
+                            base_currency = trading_symbol.split('/')[0]
                             notional = abs(position_size) * snapshot.price
                             position_value = notional
                             
                             # Calculate unrealized P&L
-                            entry_price = self.position_entry_prices.get(self.config.symbol)
+                            entry_price = self.position_entry_prices.get(trading_symbol)
                             if not entry_price:
                                 # For pre-existing positions, use current price as entry
                                 # This starts P&L tracking from $0 at the moment agent starts
-                                self.position_entry_prices[self.config.symbol] = snapshot.price
+                                self.position_entry_prices[trading_symbol] = snapshot.price
                                 entry_price = snapshot.price
                                 logger.warning(f"  Pre-existing position detected. Using current price ${entry_price:.2f} as entry (P&L will track from now)")
                             
@@ -504,8 +595,8 @@ class LoopController:
                                 pnl_percentage = ((entry_price - snapshot.price) / entry_price) * 100 if entry_price > 0 else 0
                             
                             # Get stop loss and take profit for this position
-                            stop_loss = self.position_stop_losses.get(self.config.symbol)
-                            take_profit = self.position_take_profits.get(self.config.symbol)
+                            stop_loss = self.position_stop_losses.get(trading_symbol)
+                            take_profit = self.position_take_profits.get(trading_symbol)
                             
                             # Calculate actual leverage used (position value / equity)
                             actual_leverage = (position_value / equity) if equity > 0 else 0.0
@@ -543,7 +634,7 @@ class LoopController:
                         # Send smart agent messages (only useful info, no spam)
                         self._send_smart_agent_message(
                             decision, snapshot, position_size, equity, 
-                            available_cash, total_unrealized_pnl, cycle_count
+                            available_cash, total_unrealized_pnl, cycle_count, snapshots
                         )
                         
                         # If trade was executed AND it's a CLOSE/SELL action, log the completed trade
@@ -570,7 +661,7 @@ class LoopController:
                             # Get entry and exit timestamps
                             entry_timestamp = None
                             if decision.action in ['sell', 'close']:
-                                entry_timestamp = self.position_entry_timestamps.get(self.config.symbol)
+                                entry_timestamp = self.position_entry_timestamps.get(trading_symbol)
                             exit_timestamp = int(time.time())
                             
                             # If we don't have entry timestamp, use current time as fallback
@@ -584,7 +675,7 @@ class LoopController:
                             quantity_value = abs(execution_result.filled_size)
                             
                             self.api_client.add_trade(
-                                coin=self.config.symbol.split('/')[0],
+                                coin=trading_symbol.split('/')[0],
                                 side=trade_side,  # Use determined side (LONG/SHORT, not CLOSE)
                                 entry_price=final_entry_price,
                                 exit_price=execution_result.fill_price,
@@ -598,7 +689,8 @@ class LoopController:
                             )
                             
                             # Send execution confirmation using AI's reasoning
-                            trade_msg = f"EXECUTED {decision.action.upper()}: {execution_result.filled_size:.6f} BTC @ ${execution_result.fill_price:,.2f}"
+                            base_currency = trading_symbol.split('/')[0]
+                            trade_msg = f"EXECUTED {decision.action.upper()}: {execution_result.filled_size:.6f} {base_currency} @ ${execution_result.fill_price:,.2f}"
                             if trade_pnl != 0:
                                 trade_msg += f" | P&L: ${trade_pnl:,.2f}"
                             if decision.reason:
@@ -640,18 +732,19 @@ class LoopController:
     
     def _generate_ai_message(
         self, decision, snapshot, position_size: float, equity: float,
-        available_cash: float, unrealized_pnl: float
+        available_cash: float, unrealized_pnl: float, all_snapshots: dict = None
     ) -> str:
         """
         Use AI to generate natural, conversational trading messages.
         
         Args:
             decision: Trading decision
-            snapshot: Market snapshot
+            snapshot: Market snapshot for the trading symbol
             position_size: Current position size
             equity: Account equity
             available_cash: Available cash
             unrealized_pnl: Unrealized P&L
+            all_snapshots: Dict of {symbol: snapshot} for all monitored coins
             
         Returns:
             Natural language message from AI
@@ -667,6 +760,27 @@ class LoopController:
             # Build context for AI
             indicators = snapshot.indicators
             price = snapshot.price
+            symbol = snapshot.symbol
+            base_currency = symbol.split('/')[0]
+            
+            # Build ALL COINS market overview
+            all_coins_context = ""
+            if all_snapshots:
+                all_coins_context = "\n\nALL 6 COINS MARKET OVERVIEW:\n"
+                for coin_symbol, coin_snap in all_snapshots.items():
+                    coin_name = coin_symbol.split('/')[0]
+                    coin_price = coin_snap.price
+                    coin_ind = coin_snap.indicators
+                    coin_trend_1d = coin_ind.get('trend_1d', 'unknown')
+                    coin_trend_1h = 'bullish' if coin_price > coin_ind.get('ema_50', 0) else 'bearish'
+                    coin_vwap_5m = coin_ind.get('vwap_5m', coin_price)
+                    vwap_pos = 'above' if coin_price > coin_vwap_5m else 'below'
+                    coin_vol = coin_ind.get('volume_ratio_1h', 1.0)
+                    vol_str = 'STRONG' if coin_vol >= 1.5 else 'MODERATE' if coin_vol >= 1.2 else 'WEAK'
+                    coin_r1 = coin_ind.get('resistance_1', 0)
+                    coin_s1 = coin_ind.get('support_1', 0)
+                    
+                    all_coins_context += f"- {coin_name}: ${coin_price:,.2f} | 1D={coin_trend_1d}, 1H={coin_trend_1h} | {vwap_pos} VWAP | Vol: {coin_vol:.2f}x ({vol_str}) | R1=${coin_r1:,.0f}, S1=${coin_s1:,.0f}\n"
             
             # Build prompt for AI message generation
             prompt = f"""You are a professional crypto trader explaining your decision to your client in a casual, conversational way.
@@ -674,10 +788,10 @@ class LoopController:
 CURRENT SITUATION:
 - Action: {decision.action.upper()}
 - Position Type: {position_type} (swing = multi-day hold, scalp = quick in/out)
-- BTC Price: ${price:,.2f}
+- {symbol} Price: ${price:,.2f}
 - Your Equity: ${equity:,.2f}
 - Available Cash: ${available_cash:,.2f}
-- Current Position Size: {position_size:.6f} BTC
+- Current Position Size: {position_size:.6f} {base_currency}
 - Unrealized P&L: ${unrealized_pnl:,.2f}
 
 DECISION DETAILS:
@@ -686,7 +800,7 @@ DECISION DETAILS:
 {f"- Stop Loss: ${decision.stop_loss:,.2f}" if decision.stop_loss else ""}
 {f"- Take Profit: ${decision.take_profit:,.2f}" if decision.take_profit else ""}
 
-MARKET CONTEXT:
+MARKET CONTEXT ({symbol}):
 - Daily Trend: {indicators.get('trend_1d', 'unknown')}
 - 4H Trend: {indicators.get('trend_4h', 'unknown')}
 - 1H RSI: {indicators.get('rsi_14', 50):.1f}
@@ -694,10 +808,15 @@ MARKET CONTEXT:
 - VWAP 5m: ${indicators.get('vwap_5m', 0)/1000:.1f}k (price is {'above' if price > indicators.get('vwap_5m', price) else 'below'})
 - Swing High: ${indicators.get('swing_high', 0)/1000:.1f}k, Swing Low: ${indicators.get('swing_low', 0)/1000:.1f}k
 - Volume (1h): {indicators.get('volume_ratio_1h', 1.0):.2f}x average ({'STRONG' if indicators.get('volume_ratio_1h', 1.0) >= 1.5 else 'MODERATE' if indicators.get('volume_ratio_1h', 1.0) >= 1.2 else 'WEAK'})
-- Volume Trend: {indicators.get('volume_trend_1h', 'stable')} | OBV: {indicators.get('obv_trend_1h', 'neutral')}
+- Volume Trend: {indicators.get('volume_trend_1h', 'stable')} | OBV: {indicators.get('obv_trend_1h', 'neutral')}{all_coins_context}
 
 YOUR TASK:
-Write a brief, natural message (1-3 sentences) explaining what you're doing and why, like you're updating a friend. Be conversational, confident, and VARY your phrasing. Use first person ("I'm buying", "I'll wait", "watching for").
+Write a DETAILED, natural message (3-5 sentences) explaining what you're doing and why, like you're updating a friend. Include:
+1. What action you're taking (or why you're waiting)
+2. Key market context (S/R levels, VWAP, trends, volume)
+3. Your reasoning and what you're watching for next
+4. **CRITICAL**: Mention other coins from the ALL 6 COINS overview when relevant (e.g., "ETH looks weak", "SOL has strong volume", "XRP at support")
+Be conversational, confident, and VARY your phrasing. Use first person ("I'm buying", "I'll wait", "watching for").
 
 IMPORTANT - Include market context in your reasoning:
 - Mention S/R levels (e.g., "bounced from support at $109.7k", "testing R1 resistance")
@@ -705,6 +824,7 @@ IMPORTANT - Include market context in your reasoning:
 - Mention multi-timeframe alignment (e.g., "1d/4h bullish", "5m bearish")
 - Mention key price action (e.g., "rejected at swing high", "broke above pivot")
 - Mention VOLUME when relevant (e.g., "strong volume confirms breakout", "weak volume, waiting for confirmation", "volume spike at support")
+- **Mention other coins** when explaining why you're choosing (or not choosing) to trade (e.g., "BTC is the cleanest setup - ETH below VWAP, SOL weak volume")
 
 VARY YOUR PHRASING - Don't repeat the same words. Use different expressions:
 
@@ -726,15 +846,14 @@ SELLING/CLOSING (vary these):
 - "Stop hit at $66.5k, -$734 loss. Broke below S1 support, capital preservation mode."
 - "Exiting at $67.1k for small +$85 gain. Trend reversed below VWAP, not worth the risk."
 
-WAITING/NO POSITION (vary these - BE CREATIVE):
-- "Watching from sidelines. Price at R1 resistance $110.5k - need to see breakout or rejection before entering."
-- "No position. Price below VWAP and 5m bearish, but at S1 support - waiting to see if it bounces or breaks."
-- "Staying patient. Price between pivot and R1, no clear setup yet. Want to see which way it breaks."
-- "Holding cash. 1d/4h trends mixed, price chopping between S1 and R1. Need cleaner structure."
-- "Waiting for better entry. Price testing swing high resistance - if it breaks I'll go long, if rejects I'll short."
-- "No trade yet. Below VWAP but near swing low support - watching for bounce or breakdown."
+WAITING/NO POSITION (vary these - BE CREATIVE AND DETAILED):
+- "Watching from sidelines right now. Price is testing R1 resistance at $110.5k with weak volume (0.8x average), and the 1-hour trend just flipped bearish. I'm waiting to see if we get a clean breakout above R1 with volume confirmation, or if we reject and head back to support. Daily trend is still bearish, so I'm cautious about longs here. If we break and hold above $110.5k with strong volume, I'll consider a scalp to R2."
+- "No position yet - just monitoring all 6 coins. BTC is at $110.2k testing pivot resistance with mixed trends (daily bearish, 1h bullish). ETH and SOL both look weak below their VWAPs. DOGE is at support but volume is too low. BNB had a volume spike but got rejected at R1. XRP is the most interesting - sitting at S1 support with OBV trending up, but I want to see price reclaim VWAP first. Overall, no clear high-probability setups across any coins yet, so I'm staying patient and waiting for a strong signal."
+- "Staying patient. Price is chopping between S1 support at $109.2k and pivot at $109.8k with weak volume (0.7x average), which tells me neither bulls nor bears have conviction yet. Daily trend is bearish but 4-hour is bullish - mixed signals. I'm waiting for a clear break of this range with volume confirmation before entering. If we break below S1 with volume, I'll look for shorts to S2. If we reclaim pivot with strong volume (>1.5x), I'll consider longs to R1."
+- "Holding cash and being selective. Price rejected at swing high $110.9k twice in the past hour, which is a strong resistance level. The 5-minute chart is bearish and we're below VWAP at $110.3k, but the 1-hour trend is still bullish so I don't want to short blindly. I'm watching to see if we get a third rejection (strong short signal) or if bulls can push through with volume. Volume is currently moderate (1.1x), need to see it spike above 1.5x for a breakout trade."
+- "Patience mode activated. Volume completely dried up (0.5x average) and price is just drifting sideways between $109.5k and $110.0k. The daily and 4-hour trends are both bearish, but we're sitting right on S1 support at $109.5k which has held three times today. I'm waiting for a volume spike - if we get strong volume at this support level and price bounces, that's a great long entry to pivot. If volume comes in and we break below S1, that's a short signal to S2. Right now, it's just noise."
 
-BE CREATIVE - Don't copy these examples exactly. Mix and match concepts. Explain your actual market analysis.
+BE CREATIVE - Don't copy these examples exactly. Mix and match concepts. Explain your actual market analysis in detail (3-5 sentences).
 
 Write ONLY the message, nothing else:"""
             
@@ -742,7 +861,7 @@ Write ONLY the message, nothing else:"""
             response = self.openai_client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=150,
+                max_tokens=300,  # Increased for longer, more detailed messages
                 temperature=0.7,
                 timeout=5.0
             )
@@ -764,10 +883,13 @@ Write ONLY the message, nothing else:"""
     
     def _send_smart_agent_message(
         self, decision, snapshot, position_size: float, equity: float,
-        available_cash: float, unrealized_pnl: float, cycle_count: int
+        available_cash: float, unrealized_pnl: float, cycle_count: int, all_snapshots: dict = None
     ) -> None:
         """
         Send AI-generated natural messages to users.
+        
+        Args:
+            all_snapshots: Dict of {symbol: snapshot} for all monitored coins
         
         Rules:
         - Always send: BUY, SELL, CLOSE actions
@@ -780,7 +902,7 @@ Write ONLY the message, nothing else:"""
         if decision.action in ["long", "sell", "close"]:
             message = self._generate_ai_message(
                 decision, snapshot, position_size, equity, 
-                available_cash, unrealized_pnl
+                available_cash, unrealized_pnl, all_snapshots
             )
             self.api_client.add_agent_message(message)
             self.last_message_type = decision.action
@@ -792,7 +914,7 @@ Write ONLY the message, nothing else:"""
             if cycle_count == 1 or (cycle_count - self.last_message_cycle) >= 10:
                 message = self._generate_ai_message(
                     decision, snapshot, position_size, equity,
-                    available_cash, unrealized_pnl
+                    available_cash, unrealized_pnl, all_snapshots
                 )
                 self.api_client.add_agent_message(message)
                 self.last_message_type = "hold"

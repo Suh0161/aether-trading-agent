@@ -333,30 +333,38 @@ async def agent_chat(request: ChatRequest):
             strategy_mode = "HYBRID (ATR Breakout + AI Filter)"  # Default, can be read from config if needed
             
             # Build position info string
+            base_currency = snapshot.symbol.split('/')[0]
             if current_position != 0:
                 # Calculate actual risk/reward if not provided
                 actual_risk = risk_amount if risk_amount else (abs((entry_price - stop_loss) * current_position) if stop_loss and entry_price else 0)
                 actual_reward = reward_amount if reward_amount else (abs((take_profit - entry_price) * current_position) if take_profit and entry_price else 0)
                 
+                # Build position info with safe formatting
+                entry_str = f"${entry_price:,.2f}" if entry_price else "N/A"
+                sl_str = f"${stop_loss:,.2f} (risk: ${actual_risk:.2f} if hit)" if stop_loss else "Not set"
+                tp_str = f"${take_profit:,.2f} (reward: ${actual_reward:.2f} if hit)" if take_profit else "Not set"
+                rr_str = f"1:{(actual_reward / actual_risk):.2f}" if actual_risk > 0 else "N/A"
+                pnl_pct = (unrealized_pnl / (abs(current_position) * entry_price) * 100) if entry_price and entry_price > 0 else 0
+                
                 position_info = f"""
 CURRENT POSITION:
 - Type: {position_type.upper() if position_type else 'UNKNOWN'}
-- Size: {current_position:.8f} BTC (${abs(current_position) * price:,.2f} notional)
+- Size: {current_position:.8f} {base_currency} (${abs(current_position) * price:,.2f} notional)
 - Direction: {'LONG' if current_position > 0 else 'SHORT'}
 - Leverage: {leverage:.1f}x
-- Entry Price: ${entry_price:,.2f} {f'(entered at ${entry_price:,.2f})' if entry_price else ''}
+- Entry Price: {entry_str}
 - Current Price: ${price:,.2f}
-- Unrealized P&L: ${unrealized_pnl:+,.2f} ({(unrealized_pnl / (abs(current_position) * entry_price) * 100):+.2f}% if entry_price else 0)
-- Stop Loss: ${stop_loss:,.2f} (risk: ${actual_risk:.2f} if hit)
-- Take Profit: ${take_profit:,.2f} (reward: ${actual_reward:.2f} if hit)
-- Risk:Reward Ratio: 1:{(actual_reward / actual_risk):.2f} if actual_risk > 0 else 'N/A'"""
+- Unrealized P&L: ${unrealized_pnl:+,.2f} ({pnl_pct:+.2f}%)
+- Stop Loss: {sl_str}
+- Take Profit: {tp_str}
+- Risk:Reward Ratio: {rr_str}"""
             else:
                 position_info = "\nCURRENT POSITION: NO OPEN POSITION"
             
             context = f"""=== FULL TRADING AGENT STATUS ===
 
 MARKET DATA:
-- BTC/USDT Price: ${price:,.2f}
+- {snapshot.symbol} Price: ${price:,.2f}
 - Multi-Timeframe Trends: 1D={trend_1d}, 4H={trend_4h}, 1H={trend_1h}, 15m={trend_15m}, 5m={trend_5m}, 1m={trend_1m}
 
 INDICATORS:
@@ -403,7 +411,7 @@ AGENT CAPABILITIES:
                 base_url="https://api.deepseek.com"
             )
             
-            prompt = f"""You are an AUTONOMOUS TRADING AGENT actively monitoring and trading BTC/USDT in REAL-TIME. You make decisions every 30 seconds based on the data below.
+            prompt = f"""You are an AUTONOMOUS MULTI-COIN TRADING AGENT actively monitoring and trading 6 cryptocurrencies (BTC, ETH, SOL, DOGE, BNB, XRP) in REAL-TIME. You make decisions every 30 seconds, evaluating ALL 6 coins and trading the one with the best opportunity.
 
 {context}
 
@@ -415,11 +423,12 @@ CRITICAL INSTRUCTIONS - FOLLOW EXACTLY:
 5. If a number is in the context, copy it exactly (with proper formatting)
 6. NEVER reference prices, levels, or data not shown in the context above
 7. **CRITICAL**: If "NO OPEN POSITION" is shown, DO NOT mention any position, entry price, P&L, or gains/losses
-8. **CRITICAL**: If "CURRENT POSITION" shows 0.0 BTC, DO NOT calculate or mention any profit/loss
+8. **CRITICAL**: If "CURRENT POSITION" shows 0.0 {base_currency}, DO NOT calculate or mention any profit/loss
+9. **CRITICAL**: You are a MULTI-COIN agent. You evaluate BTC, ETH, SOL, DOGE, BNB, and XRP every cycle and trade the best opportunity. DO NOT say you're "BTC-only" or "BTC-focused".
 
 User Question: {user_question}
 
-Answer using ONLY the data from the context above. Quote the exact numbers provided. If there's no open position, do NOT mention position details, P&L, or gains. Be conversational but factually accurate. Under 150 words."""
+Answer using ONLY the data from the context above. Quote the exact numbers provided. If there's no open position, do NOT mention position details, P&L, or gains. Be conversational but factually accurate. If asked about trading other coins, explain that you evaluate all 6 coins every cycle and trade the one with the best setup. Under 150 words."""
             
             response = client.chat.completions.create(
                 model="deepseek-chat",

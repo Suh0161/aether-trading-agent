@@ -19,7 +19,9 @@
 ## Key Features
 
 ### Trading Intelligence
+- **Multi-Coin Trading** - Simultaneously monitors 6 cryptocurrencies (BTC, ETH, SOL, DOGE, BNB, XRP) and automatically trades the coin with the highest confidence setup each cycle
 - **Adaptive Strategy System** - Automatically switches between swing trading (multi-day holds) and scalping (quick in-and-out) based on market conditions
+- **Bidirectional Trading** - Supports both LONG (buy low, sell high) and SHORT (sell high, buy low) positions with proper stop-loss/take-profit for each direction
 - **AI Risk Filter** - DeepSeek AI validates every trade, vetoing risky entries and approving high-confidence setups
 - **Multi-Timeframe Analysis** - Analyzes 6 timeframes simultaneously (1D → 1m) for comprehensive market view
 - **Volume Confirmation** - Requires strong volume (1.2x-1.5x average) to confirm breakouts and avoid fake moves
@@ -30,18 +32,18 @@
 - **Two-Layer Position Sizing** - Layer 1: Capital allocation based on confidence (6-25% of equity). Layer 2: Leverage multiplier (1-3x) for amplification
 - **Confidence-Based Leverage** - High-confidence setups (≥0.9) get 3x leverage, medium (0.6-0.8) get 1.5-2x, low (<0.6) get 1x
 - **Smart Capital Allocation** - Allocates 25% capital for high-confidence swings, 15% for scalps, down to 6% for uncertain setups
-- **Auto Stop-Loss/Take-Profit** - Every position has automatic exit levels with calculated risk/reward ratios
+- **Auto Stop-Loss/Take-Profit** - Every position (both LONG and SHORT) has automatic exit levels with calculated risk/reward ratios. SHORT positions have inverted SL/TP logic (SL above entry, TP below entry)
 - **Daily Loss Cap** - Optional daily loss limit to prevent catastrophic drawdowns
 - **Cooldown Periods** - Prevents rapid-fire trading and overtrading
 - **Virtual Equity Mode** - Test with $100 virtual balance while using real testnet account
 
 ### Dashboard Features
-- **Live TradingView Charts** - Professional candlestick/area charts with trade markers
-- **Interactive AI Chat** - Ask your agent questions like "when will you trade?" and get real-time answers
-- **Real-Time P&L Tracking** - Monitor unrealized P&L, leverage, and position details live
-- **Complete Trade History** - Audit trail with entry/exit prices, holding times, and performance
+- **Live TradingView Charts** - Professional candlestick/area charts with trade markers and multi-coin selector (BTC, ETH, SOL, DOGE, BNB, XRP)
+- **Interactive AI Chat** - Ask your agent questions like "when will you trade?" and get real-time answers with full position awareness
+- **Real-Time P&L Tracking** - Monitor unrealized P&L, leverage, and position details live. Positions tab shows SIDE (LONG/SHORT), coin, leverage, notional value, and unrealized P&L
+- **Complete Trade History** - Audit trail with entry/exit prices, holding times, P&L, and trade direction (LONG/SHORT)
 - **Emergency Controls** - One-click kill switch to close all positions + pause/resume agent
-- **Agent Messages** - Intelligent filtering shows only key decisions and market analysis
+- **Agent Messages** - Intelligent filtering shows only key decisions and market analysis with detailed reasoning
 
 ### Technical Indicators
 - **EMA** (50-period) - Trend direction
@@ -51,6 +53,18 @@
 - **VWAP** (1h, 5m) - Institutional order flow
 - **Pivot Points** (R1-R3, S1-S3) - Support/resistance levels
 - **OBV** (On-Balance Volume) - Volume trend confirmation
+
+## Trading Concepts
+
+### LONG vs SHORT (Direction)
+- **LONG** - Buy low, sell high. Profit when price goes UP. Stop-loss is BELOW entry, take-profit is ABOVE entry.
+- **SHORT** - Sell high, buy low. Profit when price goes DOWN. Stop-loss is ABOVE entry, take-profit is BELOW entry.
+
+### SWING vs SCALP (Time Horizon)
+- **SWING** - Multi-day holds (hours to days). Larger position sizes (up to 25% capital), higher leverage (up to 3x), wider stops, bigger targets.
+- **SCALP** - Quick in-and-out (minutes). Smaller position sizes (up to 15% capital), moderate leverage (up to 2x), tight stops, quick profits.
+
+**Example**: You can have a "LONG SWING" (buying BTC for a multi-day uptrend) or a "SHORT SCALP" (selling ETH for a quick 5-minute drop).
 
 ## How It Works
 
@@ -166,7 +180,7 @@ Create a `.env` file in the `backend` directory:
 ```bash
 # Exchange Configuration
 EXCHANGE_TYPE=binance_testnet
-SYMBOL=BTC/USDT
+SYMBOLS=BTC/USDT,ETH/USDT,SOL/USDT,DOGE/USDT,BNB/USDT,XRP/USDT
 
 # API Credentials
 EXCHANGE_API_KEY=your_exchange_api_key
@@ -309,7 +323,7 @@ Based on confidence + setup quality:
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `EXCHANGE_TYPE` | Exchange type | `binance_testnet`, `binance`, `hyperliquid` |
-| `SYMBOL` | Trading pair | `BTC/USDT` |
+| `SYMBOLS` | Trading pairs (comma-separated) | `BTC/USDT,ETH/USDT,SOL/USDT,DOGE/USDT,BNB/USDT,XRP/USDT` |
 | `EXCHANGE_API_KEY` | Exchange API key | Your exchange API key |
 | `EXCHANGE_API_SECRET` | Exchange API secret | Your exchange API secret |
 | `DEEPSEEK_API_KEY` | DeepSeek API key | Your DeepSeek API key |
@@ -460,6 +474,32 @@ spooky/
 
 ##  Monitoring & Logging
 
+### Dashboard Tabs
+
+#### Positions Tab
+Displays all open positions with:
+- **SIDE**: LONG (green) or SHORT (red) - indicates trade direction
+- **COIN**: Which cryptocurrency (BTC, ETH, SOL, etc.)
+- **LEVERAGE**: Actual leverage used (e.g., 2.0X)
+- **NOTIONAL**: Total position value in USD
+- **UNREAL P&L**: Current profit/loss ($ amount and %)
+- **Exit Plan**: Click the menu button to see stop-loss, take-profit, and invalidation conditions
+
+**Note**: Position type (SWING/SCALP) is tracked internally but not displayed in the UI. The agent knows which positions are swings vs scalps and manages them accordingly.
+
+#### Completed Trades Tab
+Shows trade history with:
+- **Trade Summary**: "completed a **long** trade on BTC" (green for LONG, red for SHORT)
+- **Entry/Exit Prices**: Where you entered and exited
+- **Holding Time**: How long the position was held (e.g., "4H 53M")
+- **P&L**: Profit or loss in USD
+- **Timestamp**: When the trade was completed
+
+#### Agent Chat Tab
+- **Auto-Updates**: Agent sends messages when opening/closing positions or when market conditions change
+- **Interactive Chat**: Ask questions like "why aren't you trading?" or "what's your plan?" and get detailed responses
+- **Full Awareness**: Agent knows its current positions, P&L, leverage, risk/reward, and can explain its reasoning
+
 ### Log Files
 - **`logs/agent.log`**: Standard application log (INFO/DEBUG)
 - **`logs/agent_log.jsonl`**: Structured JSON log for each cycle
@@ -468,7 +508,7 @@ spooky/
 Each cycle is logged as a JSON object with:
 - Timestamp
 - Market snapshot (price, indicators)
-- Decision (action, confidence, reasoning)
+- Decision (action, confidence, reasoning, position_type)
 - Risk check results
 - Execution result
 - P&L updates
