@@ -210,6 +210,9 @@ DECISION_PROVIDER=deepseek
 # Demo Account Configuration (for RUN_MODE=demo)
 MOCK_STARTING_EQUITY=100.0
 # Starting equity amount for demo mode testing
+# This is the initial equity when using RUN_MODE=demo with binance_demo
+# The agent will track equity changes based on realized P&L from trades
+# Example: Set to 100.0 for $100 starting balance, 50.0 for $50, etc.
 ```
 
 ### 3. Frontend Setup
@@ -265,6 +268,8 @@ The frontend will run on `http://localhost:3000`
 Open your browser and navigate to `http://localhost:3000`
 
 > **Note**: The trading agent now automatically starts the API server in a background thread. You no longer need to run `api_server.py` separately!
+
+> **Demo Mode with MOCK_STARTING_EQUITY**: When using `RUN_MODE=demo` with `EXCHANGE_TYPE=binance_demo`, the agent uses `MOCK_STARTING_EQUITY` as the initial account balance. All trades update this equity based on realized P&L. This allows you to test the trading system without needing a real exchange account or risking real funds. The UI will show your starting equity (from `MOCK_STARTING_EQUITY`) plus any realized profits/losses from completed trades. Unrealized P&L is also tracked and displayed in real-time.
 
 ## Position Sizing System
 
@@ -348,7 +353,7 @@ Based on confidence + setup quality:
 | `MAX_EQUITY_USAGE_PCT` | Max equity usage (0.0-1.0) | `0.10` |
 | `MAX_LEVERAGE` | Maximum leverage allowed | `3.0` |
 | `STRATEGY_MODE` | Strategy type | `hybrid_atr` |
-| `MOCK_STARTING_EQUITY` | Starting equity for demo mode | `100.0` |
+| `MOCK_STARTING_EQUITY` | Starting equity for demo mode (only used when `RUN_MODE=demo` and `EXCHANGE_TYPE=binance_demo`) | `100.0` |
 | `DAILY_LOSS_CAP_PCT` | Daily loss cap (0.0-1.0) | None |
 | `COOLDOWN_SECONDS` | Cooldown between trades | None |
 
