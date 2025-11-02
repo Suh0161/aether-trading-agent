@@ -35,7 +35,8 @@
 - **Auto Stop-Loss/Take-Profit** - Every position (both LONG and SHORT) has automatic exit levels with calculated risk/reward ratios. SHORT positions have inverted SL/TP logic (SL above entry, TP below entry)
 - **Daily Loss Cap** - Optional daily loss limit to prevent catastrophic drawdowns
 - **Cooldown Periods** - Prevents rapid-fire trading and overtrading
-- **Virtual Equity Mode** - Test with $100 virtual balance while using real testnet account
+- **Demo Account Mode** - Configurable mock starting equity via `.env` for testing without real funds
+- **Futures Trading** - Full support for Binance USD-M Futures (long and short positions)
 
 ### Dashboard Features
 - **Live TradingView Charts** - Professional candlestick/area charts with trade markers and multi-coin selector (BTC, ETH, SOL, DOGE, BNB, XRP)
@@ -70,15 +71,17 @@
 
 AETHER operates in a continuous 30-second cycle, analyzing markets and making decisions:
 
-1. **Data Collection** - Fetches OHLCV data from exchange for 6 timeframes (1D, 4H, 1H, 15m, 5m, 1m)
+1. **Data Collection** - Fetches OHLCV data from Binance Futures API for 6 timeframes (1D, 4H, 1H, 15m, 5m, 1m)
 2. **Indicator Calculation** - Computes EMA, RSI, ATR, Keltner Channels, VWAP, Pivot Points, and volume metrics
-3. **Strategy Analysis** - Rule-based strategies (ATR Breakout or EMA Crossover) generate trade signals with confidence scores
-4. **Position Sizing** - Two-layer system calculates capital allocation (6-25%) and leverage multiplier (1-3x) based on confidence
-5. **AI Validation** - DeepSeek AI reviews the signal and market context, approving or vetoing the trade
-6. **Risk Check** - Risk manager validates position size, leverage, and portfolio limits
-7. **Execution** - If approved, order is placed on exchange with automatic stop-loss/take-profit
-8. **Monitoring** - Position is tracked every cycle for exit conditions (SL/TP hit, trend reversal, etc.)
-9. **Communication** - Agent sends intelligent updates to dashboard and responds to user questions with full position awareness
+3. **Strategy Analysis** - Rule-based strategies (ATR Breakout or EMA Crossover) generate trade signals with confidence scores for both LONG and SHORT positions
+4. **Position Sizing** - Two-layer system calculates capital allocation (6-25%) and leverage multiplier (1-3x) based on confidence, fully respecting `MAX_EQUITY_USAGE_PCT`
+5. **Cost Optimization** - Intelligent LLM call skipping based on market change detection to reduce API costs by 50-70%
+6. **AI Validation** - DeepSeek AI reviews the signal and market context, approving or vetoing the trade
+7. **Risk Check** - Risk manager validates position size, leverage, and portfolio limits (prevents duplicate positions)
+8. **Execution** - If approved, order is placed on Binance Futures with automatic stop-loss/take-profit for both LONG and SHORT positions
+9. **P&L Tracking** - Real-time calculation of realized and unrealized P&L with accurate reporting in agent messages
+10. **Monitoring** - Position is tracked every cycle for exit conditions (SL/TP hit, trend reversal, etc.)
+11. **Communication** - Agent sends intelligent updates to dashboard with accurate profit/loss reporting and responds to user questions with full position awareness
 
 ### Decision Flow
 
@@ -142,8 +145,12 @@ Market Data → Strategy Signal → AI Filter → Risk Manager → Execute
 
 - **Python 3.8+** with pip
 - **Node.js 16+** and npm
-- **Exchange Account**: Binance testnet (recommended) or live account
+- **Exchange Account**: 
+  - **Demo Mode**: No account needed! Uses mock equity for testing
+  - **Testnet**: Binance testnet account for testing with virtual funds
+  - **Live**: Binance live account with Futures trading enabled
 - **DeepSeek API Key**: Get one at [platform.deepseek.com](https://platform.deepseek.com)
+- **For Futures Trading**: Enable "Enable Futures Trading" in Binance API Management settings
 
 ## Quick Start
 
@@ -179,7 +186,8 @@ Create a `.env` file in the `backend` directory:
 
 ```bash
 # Exchange Configuration
-EXCHANGE_TYPE=binance_testnet
+EXCHANGE_TYPE=binance_demo
+# Options: binance_demo (demo trading), binance_testnet, binance (live), hyperliquid
 SYMBOLS=BTC/USDT,ETH/USDT,SOL/USDT,DOGE/USDT,BNB/USDT,XRP/USDT
 
 # API Credentials
@@ -191,14 +199,17 @@ DEEPSEEK_API_KEY=your_deepseek_api_key
 LOOP_INTERVAL_SECONDS=30
 MAX_EQUITY_USAGE_PCT=0.10
 MAX_LEVERAGE=3.0
-RUN_MODE=testnet
+RUN_MODE=demo
+# Options: demo (uses MOCK_STARTING_EQUITY), testnet, live
 
 # Strategy Mode: hybrid_atr, hybrid_ema, or ai_only
-STRATEGY_MODE=hybrid_atr or STRATEGY_MODE=ai_only
+STRATEGY_MODE=hybrid_atr
+# or STRATEGY_MODE=ai_only
 DECISION_PROVIDER=deepseek
 
-# Virtual Equity (optional) - Test with virtual balance instead of real account balance
-# VIRTUAL_STARTING_EQUITY=100.0
+# Demo Account Configuration (for RUN_MODE=demo)
+MOCK_STARTING_EQUITY=100.0
+# Starting equity amount for demo mode testing
 ```
 
 ### 3. Frontend Setup
@@ -322,12 +333,12 @@ Based on confidence + setup quality:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `EXCHANGE_TYPE` | Exchange type | `binance_testnet`, `binance`, `hyperliquid` |
+| `EXCHANGE_TYPE` | Exchange type | `binance_demo`, `binance_testnet`, `binance`, `hyperliquid` |
 | `SYMBOLS` | Trading pairs (comma-separated) | `BTC/USDT,ETH/USDT,SOL/USDT,DOGE/USDT,BNB/USDT,XRP/USDT` |
 | `EXCHANGE_API_KEY` | Exchange API key | Your exchange API key |
 | `EXCHANGE_API_SECRET` | Exchange API secret | Your exchange API secret |
 | `DEEPSEEK_API_KEY` | DeepSeek API key | Your DeepSeek API key |
-| `RUN_MODE` | Execution mode | `testnet` or `live` |
+| `RUN_MODE` | Execution mode | `demo`, `testnet`, or `live` |
 
 #### Optional
 
@@ -337,6 +348,7 @@ Based on confidence + setup quality:
 | `MAX_EQUITY_USAGE_PCT` | Max equity usage (0.0-1.0) | `0.10` |
 | `MAX_LEVERAGE` | Maximum leverage allowed | `3.0` |
 | `STRATEGY_MODE` | Strategy type | `hybrid_atr` |
+| `MOCK_STARTING_EQUITY` | Starting equity for demo mode | `100.0` |
 | `DAILY_LOSS_CAP_PCT` | Daily loss cap (0.0-1.0) | None |
 | `COOLDOWN_SECONDS` | Cooldown between trades | None |
 
@@ -423,8 +435,10 @@ Based on confidence + setup quality:
 - **Live Mode Warning**: 5-second confirmation before live trading
 
 ### Best Practices
-- ✅ **Always start with testnet**
+- ✅ **Always start with demo mode** (`RUN_MODE=demo` with `MOCK_STARTING_EQUITY`) for initial testing
+- ✅ **Test on testnet** before live trading
 - ✅ **Use API keys with read/trade only** (disable withdrawals)
+- ✅ **For Futures trading**: Enable "Enable Futures Trading" in Binance API settings
 - ✅ **Set conservative position sizes** (MAX_EQUITY_USAGE_PCT < 0.20)
 - ✅ **Monitor the dashboard regularly**
 - ✅ **Keep logs for audit trail** (`logs/agent_log.jsonl`)
@@ -530,9 +544,11 @@ Each cycle is logged as a JSON object with:
 
 **Agent not executing trades:**
 - Check exchange API credentials
-- Verify `RUN_MODE=testnet` for testing
+- Verify `RUN_MODE=demo` for demo mode or `RUN_MODE=testnet` for testing
+- For Futures trading: Ensure "Enable Futures Trading" is enabled in Binance API settings
 - Check logs for error messages
-- Ensure sufficient balance on exchange
+- Ensure sufficient balance on exchange (or correct `MOCK_STARTING_EQUITY` for demo mode)
+- Verify `EXCHANGE_TYPE` matches your `RUN_MODE` (e.g., `binance_demo` for demo mode)
 
 **Chart not loading:**
 - Chart fetches directly from Binance public API
@@ -565,11 +581,24 @@ Each cycle is logged as a JSON object with:
 - Components: Modify React components in `frontend/src/components/`
 - API calls: Update `App.jsx` fetch endpoints
 
+## Recent Updates (November 2, 2025)
+
+-**Futures Trading Support** - Full integration with Binance USD-M Futures for both LONG and SHORT positions
+-**Demo Account Mode** - Configurable mock starting equity via `MOCK_STARTING_EQUITY` environment variable
+-**Enhanced Short Trading** - Comprehensive multi-timeframe analysis for short positions (1D, 4H, 1H, 15m, 5m, 1m)
+-**Accurate P&L Reporting** - Fixed realized/unrealized P&L calculations with precise AI message reporting
+-**Cost Optimization** - Intelligent LLM call skipping based on market conditions to reduce API costs by 50-70%
+-**Position Tracking** - Internal position and equity tracking for demo mode with real-time UI updates
+-**Emergency Close** - Enhanced emergency stop functionality with proper position cleanup
+-**Configurable Equity Limits** - `MAX_EQUITY_USAGE_PCT` now fully respected across all strategy components
+
 ## License
 
 Apache License 2.0
 
 Copyright 2025 AETHER Trading Agent Contributors
+
+**Last Updated: November 2, 2025**
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -585,7 +614,7 @@ limitations under the License.
 
 ## Disclaimer
 
-**This software is for educational and research purposes only. Trading cryptocurrencies involves substantial risk of loss. Always test thoroughly on testnet before using real funds. The authors are not responsible for any financial losses incurred while using this software.**
+**This software is for educational and research purposes only. Trading cryptocurrencies involves substantial risk of loss. Always test thoroughly with demo mode or testnet before using real funds. The authors are not responsible for any financial losses incurred while using this software.**
 
 ##  Acknowledgments
 
