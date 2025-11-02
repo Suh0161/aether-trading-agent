@@ -592,15 +592,17 @@ Each cycle is logged as a JSON object with:
 
 ## Recent Updates (November 2, 2025)
 
--**Futures Trading Support** - Full integration with Binance USD-M Futures for both LONG and SHORT positions
--**Demo Account Mode** - Configurable mock starting equity via `MOCK_STARTING_EQUITY` environment variable
--**Enhanced Short Trading** - Comprehensive multi-timeframe analysis for short positions (1D, 4H, 1H, 15m, 5m, 1m)
--**Accurate P&L Reporting** - Fixed realized/unrealized P&L calculations with precise AI message reporting
--**Cost Optimization** - Intelligent LLM call skipping based on market conditions to reduce API costs by 50-70%
--**Position Tracking** - Internal position and equity tracking for demo mode with real-time UI updates
--**Emergency Close** - Enhanced emergency stop functionality with proper position cleanup
--**Configurable Equity Limits** - `MAX_EQUITY_USAGE_PCT` now fully respected across all strategy components
--**Testing Phase Disclaimer** - Added clear warnings about testing status and demo-only usage
+| Feature | Description |
+|---------|-------------|
+| **Futures Trading Support** | Full integration with Binance USD-M Futures for both LONG and SHORT positions |
+| **Demo Account Mode** | Configurable mock starting equity via `MOCK_STARTING_EQUITY` environment variable |
+| **Enhanced Short Trading** | Comprehensive multi-timeframe analysis for short positions (1D, 4H, 1H, 15m, 5m, 1m) |
+| **Accurate P&L Reporting** | Fixed realized/unrealized P&L calculations with precise AI message reporting |
+| **Cost Optimization** | Intelligent LLM call skipping based on market conditions to reduce API costs by 50-70% |
+| **Position Tracking** | Internal position and equity tracking for demo mode with real-time UI updates |
+| **Emergency Close** | Enhanced emergency stop functionality with proper position cleanup |
+| **Configurable Equity Limits** | `MAX_EQUITY_USAGE_PCT` now fully respected across all strategy components |
+| **Testing Phase Disclaimer** | Added clear warnings about testing status and demo-only usage |
 
 ### Future Improvements
 
