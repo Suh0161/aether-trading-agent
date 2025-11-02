@@ -922,6 +922,7 @@ class LoopController:
     def _sleep_until_next_cycle(self, cycle_start_time: float) -> None:
         """
         Sleep until the next cycle should start.
+        Checks for emergency close flag periodically to allow immediate interruption.
         
         Args:
             cycle_start_time: Time when the current cycle started (from time.time())
@@ -930,8 +931,26 @@ class LoopController:
         sleep_time = max(0, self.config.loop_interval_seconds - elapsed)
         
         if sleep_time > 0:
+            # Check for emergency close flag BEFORE sleeping
+            emergency_flag = os.path.join(os.path.dirname(os.path.dirname(__file__)), "emergency_close.flag")
+            if os.path.exists(emergency_flag):
+                logger.warning("Emergency close flag detected - skipping sleep to process immediately")
+                return
+            
             logger.info(f"Sleeping for {sleep_time:.1f} seconds until next cycle...")
-            time.sleep(sleep_time)
+            
+            # Sleep in 1-second chunks to allow emergency flag to interrupt
+            remaining_sleep = sleep_time
+            while remaining_sleep > 0:
+                # Check for emergency flag every second
+                if os.path.exists(emergency_flag):
+                    logger.warning("Emergency close flag detected during sleep - interrupting immediately")
+                    break
+                
+                # Sleep for 1 second or remaining time, whichever is smaller
+                chunk = min(1.0, remaining_sleep)
+                time.sleep(chunk)
+                remaining_sleep -= chunk
         else:
             logger.warning(f"Cycle took {elapsed:.1f}s, longer than interval {self.config.loop_interval_seconds}s")
     

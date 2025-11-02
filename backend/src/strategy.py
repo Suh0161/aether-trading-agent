@@ -721,7 +721,7 @@ class ATRBreakoutStrategy:
         reward_amount = abs((take_profit if action == "long" else take_profit) - price) * position_btc
         
         # Ensure minimum position size (at least $5 notional after leverage)
-        min_notional = 15.0  # Binance minimum is ~$10, add buffer
+        min_notional = 20.0  # Binance Futures minimum notional is $20 USD
         if position_notional < min_notional:
             # Adjust capital allocation to meet minimum
             required_capital = min_notional / leverage
@@ -1069,7 +1069,7 @@ class ScalpingStrategy:
                 reward_amount = (price * self.profit_target_pct) * position_btc
                 
                 # Ensure minimum notional
-                min_notional = 15.0
+                min_notional = 20.0  # Binance Futures minimum notional is $20 USD
                 if position_notional < min_notional:
                     required_capital = min_notional / leverage
                     position_size_pct = required_capital / equity
@@ -1247,7 +1247,7 @@ class ScalpingStrategy:
                 reward_amount = (price * self.profit_target_pct) * position_btc
                 
                 # Ensure minimum notional
-                min_notional = 15.0
+                min_notional = 20.0  # Binance Futures minimum notional is $20 USD
                 if position_notional < min_notional:
                     required_capital = min_notional / leverage
                     position_size_pct = required_capital / equity

@@ -196,8 +196,9 @@ class TradeExecutor:
         order_value_usd = capital_amount * leverage
         order_size = order_value_usd / price
         
-        # Binance minimum notional value is ~$10 USD 
-        MIN_ORDER_VALUE_USD = 10.0
+        # Binance Futures minimum notional value is $20 USD
+        # (Binance Spot has $10 minimum, but Futures requires $20)
+        MIN_ORDER_VALUE_USD = 20.0
         
         if order_value_usd < MIN_ORDER_VALUE_USD:
             # Smart money: For small accounts, calculate what leverage is needed to reach minimum

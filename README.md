@@ -7,6 +7,10 @@
 
 **AETHER** is a sophisticated autonomous cryptocurrency trading agent powered by **DeepSeek AI**. It combines multi-timeframe technical analysis, intelligent risk management, and real-time execution with a beautiful web dashboard for complete control and monitoring.
 
+> **Current Status: Testing Phase**
+> 
+> **This project is currently in active testing and development. It has only been tested with demo/paper trading accounts and has NOT been tested with real funds on live exchanges. Use at your own risk. Always start with demo mode (`RUN_MODE=demo`) and thoroughly test all functionality before considering any live trading. The authors assume no responsibility for any financial losses.**
+
 ### Why AETHER?
 
 - **AI-Powered Decision Making** - DeepSeek AI analyzes market conditions and validates every trade
@@ -596,6 +600,11 @@ Each cycle is logged as a JSON object with:
 -**Position Tracking** - Internal position and equity tracking for demo mode with real-time UI updates
 -**Emergency Close** - Enhanced emergency stop functionality with proper position cleanup
 -**Configurable Equity Limits** - `MAX_EQUITY_USAGE_PCT` now fully respected across all strategy components
+-**Testing Phase Disclaimer** - Added clear warnings about testing status and demo-only usage
+
+### Future Improvements
+
+- **UI Enhancements** - Planned improvements to the dashboard interface for better user experience and functionality
 
 ## License
 
@@ -619,7 +628,7 @@ limitations under the License.
 
 ## Disclaimer
 
-**This software is for educational and research purposes only. Trading cryptocurrencies involves substantial risk of loss. Always test thoroughly with demo mode or testnet before using real funds. The authors are not responsible for any financial losses incurred while using this software.**
+**This software is for educational and research purposes only. Trading cryptocurrencies involves substantial risk of loss. This project is currently in testing phase and has only been tested with demo/paper trading accounts - it has NOT been tested with real funds on live exchanges. Always test thoroughly with demo mode (`RUN_MODE=demo`) or testnet before considering any live trading. Do NOT use real funds until you have thoroughly tested and validated the system in demo mode. The authors are not responsible for any financial losses incurred while using this software.**
 
 ##  Acknowledgments
 

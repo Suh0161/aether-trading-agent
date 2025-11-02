@@ -302,7 +302,13 @@ async def agent_chat(request: ChatRequest):
             unrealized_pnl = 0.0
             
             if loop_controller_instance:
-                current_position = getattr(loop_controller_instance, 'current_position_size', 0.0)
+                # FIX: Get position for SPECIFIC symbol (not total across all coins)
+                symbol = snapshot.symbol  # Get symbol first
+                if hasattr(loop_controller_instance, 'tracked_position_sizes'):
+                    current_position = loop_controller_instance.tracked_position_sizes.get(symbol, 0.0)
+                else:
+                    current_position = getattr(loop_controller_instance, 'current_position_size', 0.0)
+                
                 # Get real equity (virtual equity removed)
                 # Default fallback if equity not available
                 current_equity = 100.0
@@ -313,12 +319,11 @@ async def agent_chat(request: ChatRequest):
                 except:
                     pass
                 
-                # Get position type
-                if hasattr(loop_controller_instance, 'position_types') and loop_controller_instance.position_types:
-                    position_type = list(loop_controller_instance.position_types.values())[0] if loop_controller_instance.position_types else None
+                # Get position type for SPECIFIC symbol (not first in dict)
+                if hasattr(loop_controller_instance, 'position_types'):
+                    position_type = loop_controller_instance.position_types.get(symbol)
                 
                 # Get entry price, stop loss, take profit, leverage, risk, reward
-                symbol = snapshot.symbol
                 if hasattr(loop_controller_instance, 'position_entry_prices'):
                     entry_price = loop_controller_instance.position_entry_prices.get(symbol)
                 if hasattr(loop_controller_instance, 'position_stop_losses'):
