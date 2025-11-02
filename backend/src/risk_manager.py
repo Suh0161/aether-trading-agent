@@ -59,7 +59,26 @@ class RiskManager:
             logger.info("Risk check: hold action auto-approved")
             return RiskResult(approved=True, reason="")
         
-        # Rule 2: Close/Sell validation - auto-approve closing positions
+        # Rule 2: Prevent new entries if position already exists (same direction)
+        # Allow adding to position ONLY if it's the same direction (long+long or short+short)
+        # But prevent opening NEW position if one already exists
+        if decision.action in ["long", "short"]:
+            # Check if we already have a position in the OPPOSITE direction
+            if decision.action == "long" and position_size < 0:
+                logger.warning("Risk check: denied - cannot open LONG while SHORT position exists")
+                return RiskResult(approved=False, reason="opposite position exists")
+            elif decision.action == "short" and position_size > 0:
+                logger.warning("Risk check: denied - cannot open SHORT while LONG position exists")
+                return RiskResult(approved=False, reason="opposite position exists")
+            # If we already have a position in the SAME direction, also prevent (no adding)
+            elif decision.action == "long" and position_size > 0:
+                logger.warning("Risk check: denied - LONG position already exists (no position scaling)")
+                return RiskResult(approved=False, reason="position already exists")
+            elif decision.action == "short" and position_size < 0:
+                logger.warning("Risk check: denied - SHORT position already exists (no position scaling)")
+                return RiskResult(approved=False, reason="position already exists")
+        
+        # Rule 3: Close/Sell validation - auto-approve closing positions
         if decision.action in ["close", "sell"]:
             if position_size == 0:
                 logger.warning("Risk check: denied - no position to close")
@@ -68,12 +87,12 @@ class RiskManager:
                 logger.info("Risk check: close/sell action approved (exiting position)")
                 return RiskResult(approved=True, reason="")
         
-        # Rule 3: Price validity
+        # Rule 4: Price validity
         if snapshot.price <= 0:
             logger.warning(f"Risk check: denied - invalid price {snapshot.price}")
             return RiskResult(approved=False, reason="no valid price")
         
-        # Rule 4: Position size limit (only for opening new positions)
+        # Rule 5: Position size limit (only for opening new positions)
         proposed_size = (equity * decision.size_pct) / snapshot.price
         max_allowed_size = (equity * self.max_equity_usage_pct) / snapshot.price
         
@@ -84,7 +103,7 @@ class RiskManager:
             )
             return RiskResult(approved=False, reason="exceeds max position size")
         
-        # Rule 5: Smart leverage limit (adaptive based on portfolio size)
+        # Rule 6: Smart leverage limit (adaptive based on portfolio size)
         proposed_position_value = proposed_size * snapshot.price
         
         # Calculate smart leverage based on portfolio size
@@ -92,8 +111,8 @@ class RiskManager:
         smart_max_leverage = self._calculate_smart_leverage(equity)
         max_leverage_value = equity * smart_max_leverage
         
-        # Also check current leverage if we have a position
-        current_position_value = position_size * snapshot.price if position_size > 0 else 0.0
+        # Also check current leverage if we have a position (handle both LONG and SHORT)
+        current_position_value = abs(position_size) * snapshot.price if position_size != 0 else 0.0
         total_proposed_value = current_position_value + proposed_position_value
         proposed_leverage = (total_proposed_value / equity) if equity > 0 else 0.0
         
@@ -111,7 +130,7 @@ class RiskManager:
             )
             return RiskResult(approved=False, reason="exceeds max leverage")
         
-        # Rule 6: Daily loss cap
+        # Rule 7: Daily loss cap
         if self.daily_loss_cap_pct is not None and self.starting_equity is not None:
             loss_threshold = self.starting_equity * (1 - self.daily_loss_cap_pct)
             

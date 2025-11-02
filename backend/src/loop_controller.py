@@ -1,6 +1,7 @@
 """Loop controller for the Autonomous Trading Agent."""
 
 import logging
+import os
 import signal
 import time
 from datetime import datetime, timezone
@@ -63,6 +64,11 @@ class LoopController:
         # Track entry prices and timestamps for P&L calculation and trade logging
         self.position_entry_prices = {}  # {symbol: entry_price}
         self.position_entry_timestamps = {}  # {symbol: entry_timestamp} - Unix timestamp in seconds
+        # Track position sizes internally (for demo mode when exchange doesn't support position queries)
+        self.tracked_position_sizes = {}  # {symbol: position_size} - positive for long, negative for short
+        # Track equity dynamically for demo mode (starts at mock equity from config, updates with realized P&L)
+        self.tracked_equity = config.mock_starting_equity  # Starting equity for demo mode (will update with realized P&L)
+        self.starting_equity = config.mock_starting_equity  # Track starting equity for daily reset
         # Track stop loss and take profit for automatic monitoring
         self.position_stop_losses = {}  # {symbol: stop_loss_price}
         self.position_take_profits = {}  # {symbol: take_profit_price}
@@ -142,13 +148,21 @@ class LoopController:
         # Test 1: Exchange connectivity
         logger.info("Testing exchange connectivity...")
         try:
-            balance = self.trade_executor.exchange.fetch_balance()
-            logger.info(f"[OK] Exchange connection successful")
-            
-            # Log available balance (without exposing exact amounts in production)
-            total_balance = balance.get('total', {})
-            if total_balance:
-                logger.info(f"  Available currencies: {list(total_balance.keys())[:5]}")
+            # For demo trading, use Futures-specific endpoints instead of fetch_balance()
+            # because fetch_balance() calls live SAPI which fails with demo keys
+            if self.config.exchange_type.lower() == "binance_demo":
+                # Use Futures public ping endpoint for demo (works on demo-fapi.binance.com)
+                self.trade_executor.exchange.fapiPublicGetPing()
+                logger.info(f"[OK] Demo Futures API connection successful")
+            else:
+                # For live trading, use fetch_balance()
+                balance = self.trade_executor.exchange.fetch_balance()
+                logger.info(f"[OK] Exchange connection successful")
+                
+                # Log available balance (without exposing exact amounts in production)
+                total_balance = balance.get('total', {})
+                if total_balance:
+                    logger.info(f"  Available currencies: {list(total_balance.keys())[:5]}")
         except Exception as e:
             logger.error(f"[ERROR] Exchange connection failed: {e}")
             return False
@@ -169,7 +183,7 @@ class LoopController:
             )
             
             # Make a test call (using $100 for test - actual equity comes from exchange)
-            response = self.decision_provider.get_decision(test_snapshot, 0.0, 100.0)
+            response = self.decision_provider.get_decision(test_snapshot, 0.0, self.config.mock_starting_equity)
             
             if "error" in response.lower() or "deepseek api error" in response.lower():
                 logger.error(f"[ERROR] DeepSeek API test failed: {response}")
@@ -201,9 +215,7 @@ class LoopController:
             cycle_count += 1
             cycle_start_time = time.time()
             
-            logger.info(f"\n{'=' * 60}")
-            logger.info(f"CYCLE {cycle_count} - {datetime.now(timezone.utc).isoformat()}")
-            logger.info(f"{'=' * 60}")
+            logger.info(f"\nCYCLE {cycle_count} - {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
             
             try:
                 # Check if agent is paused
@@ -222,9 +234,9 @@ class LoopController:
                     self.all_snapshots = snapshots
                     # Store first snapshot for interactive chat (backward compatibility)
                     self.last_snapshot = list(snapshots.values())[0] if snapshots else None
-                    logger.info(f"  Fetched {len(snapshots)} symbols:")
-                    for sym, snap in snapshots.items():
-                        logger.info(f"    {sym}: ${snap.price:,.2f}")
+                    # Aggregate prices into one line for cleaner output
+                    price_summary = ", ".join([f"{sym}: ${snap.price:,.2f}" for sym, snap in snapshots.items()])
+                    logger.info(f"  Markets: {price_summary}")
                 except Exception as e:
                     logger.error(f"Failed to fetch market snapshots: {e}")
                     logger.info("Skipping this cycle due to data acquisition failure")
@@ -232,34 +244,69 @@ class LoopController:
                     continue
                 
                 # Step 2: Fetch current positions and equity for all symbols
-                logger.info("Step 2: Fetching positions and equity...")
+                logger.debug("Step 2: Fetching positions and equity...")
                 try:
-                    balance = self.trade_executor.exchange.fetch_balance()
+                    # For demo trading, use Futures-specific endpoints
+                    if self.config.exchange_type.lower() == "binance_demo":
+                        balance, positions_fetched = self._fetch_futures_balance_and_positions()
+                        # For demo mode, use internally tracked positions (exchange doesn't support position queries)
+                        positions = {}
+                        for symbol in self.config.symbols:
+                            if symbol in self.tracked_position_sizes:
+                                positions[symbol] = self.tracked_position_sizes[symbol]
+                            else:
+                                positions[symbol] = 0.0
+                    else:
+                        balance = self.trade_executor.exchange.fetch_balance()
+                        # Get position sizes for all symbols from balance
+                        positions = {}  # {symbol: position_size}
+                        for symbol in self.config.symbols:
+                            base_currency = symbol.split('/')[0]
+                            pos_size = balance['total'].get(base_currency, 0.0)
+                            positions[symbol] = pos_size
                     
                     # Get equity (total USDT or quote currency) - assume all pairs use USDT
                     quote_currency = 'USDT'
                     real_equity = balance['total'].get(quote_currency, 0.0)
                     
-                    # Get position sizes for all symbols
-                    positions = {}  # {symbol: position_size}
+                    # For demo mode, use tracked equity (includes realized P&L from closed trades)
+                    # For live mode, use real equity from exchange
+                    if self.config.exchange_type.lower() == "binance_demo":
+                        # Calculate current equity = tracked_equity + unrealized P&L from open positions
+                        total_unrealized_pnl = 0.0
+                        for symbol in self.config.symbols:
+                            pos_size = positions.get(symbol, 0.0)
+                            if pos_size != 0 and symbol in snapshots:
+                                entry_price = self.position_entry_prices.get(symbol, snapshots[symbol].price)
+                                current_price = snapshots[symbol].price
+                                if pos_size > 0:  # LONG
+                                    unrealized_pnl = pos_size * (current_price - entry_price)
+                                else:  # SHORT
+                                    unrealized_pnl = abs(pos_size) * (entry_price - current_price)
+                                total_unrealized_pnl += unrealized_pnl
+                        
+                        # Equity = tracked base equity + unrealized P&L
+                        equity = self.tracked_equity + total_unrealized_pnl
+                        logger.debug(f"Demo mode equity: ${equity:.2f} = tracked ${self.tracked_equity:.2f} + unrealized P&L ${total_unrealized_pnl:.2f}")
+                    else:
+                        # Use real equity from exchange
+                        equity = real_equity
+                    
+                    # Calculate total position value
                     total_position_value = 0.0
                     for symbol in self.config.symbols:
-                        base_currency = symbol.split('/')[0]
-                        pos_size = balance['total'].get(base_currency, 0.0)
-                        positions[symbol] = pos_size
+                        pos_size = positions.get(symbol, 0.0)
                         if pos_size != 0 and symbol in snapshots:
                             total_position_value += abs(pos_size) * snapshots[symbol].price
                     
                     # For backward compatibility, use first symbol's position as "position_size"
                     position_size = positions.get(self.config.symbols[0], 0.0)
                     
-                    # Use real equity directly (no virtual equity)
-                    equity = real_equity
-                    
-                    logger.info(f"  Equity (used for calculations): {equity} {quote_currency}")
-                    # Log all positions
+                    logger.debug(f"  Equity (used for calculations): {equity} {quote_currency}")
+                    # Log all positions (only at DEBUG for cleaner output)
                     position_strs = [f"{s.split('/')[0]}={positions[s]:.8f}" for s in positions if positions[s] != 0]
-                    logger.info(f"  Positions: {', '.join(position_strs) if position_strs else 'None'}")
+                    if position_strs:
+                        logger.debug(f"  Positions: {', '.join(position_strs)}")
                     
                     # Store total position size for interactive chat (backward compatibility)
                     self.current_position_size = sum(abs(p) for p in positions.values())
@@ -273,7 +320,7 @@ class LoopController:
                 # Multi-coin strategy: Process ALL symbols independently each cycle
                 # Each symbol: 1) Manage existing positions, 2) Evaluate new opportunities
                 
-                logger.info("  Processing all symbols for multi-coin trading...")
+                logger.debug("  Processing all symbols for multi-coin trading...")
                 
                 # Reset decisions tracking for this cycle
                 self.current_cycle_decisions = {}
@@ -294,14 +341,32 @@ class LoopController:
                         logger.error(f"  {symbol}: Error processing symbol - {e}")
                         continue
                         
+                # Clear emergency close flag if it exists (after processing all symbols)
+                emergency_flag = os.path.join(os.path.dirname(os.path.dirname(__file__)), "emergency_close.flag")
+                if os.path.exists(emergency_flag):
+                    try:
+                        os.remove(emergency_flag)
+                        logger.info("Emergency close flag cleared after processing all symbols")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete emergency close flag: {e}")
+                
                 # After processing all symbols, refresh positions and update frontend
                 try:
                     # Refresh positions after all processing
-                    balance = self.trade_executor.exchange.fetch_balance()
-                    quote_currency = 'USDT'
-                    for symbol in self.config.symbols:
-                        base_currency = symbol.split('/')[0]
-                        positions[symbol] = balance['total'].get(base_currency, 0.0)
+                    if self.config.exchange_type.lower() == "binance_demo":
+                        balance, positions_refresh = self._fetch_futures_balance_and_positions()
+                        # For demo mode, use internally tracked positions (exchange doesn't support position queries)
+                        for symbol in self.config.symbols:
+                            if symbol in self.tracked_position_sizes:
+                                positions[symbol] = self.tracked_position_sizes[symbol]
+                            else:
+                                positions[symbol] = 0.0
+                    else:
+                        balance = self.trade_executor.exchange.fetch_balance()
+                        quote_currency = 'USDT'
+                        for symbol in self.config.symbols:
+                            base_currency = symbol.split('/')[0]
+                            positions[symbol] = balance['total'].get(base_currency, 0.0)
                     
                     # Update frontend with all positions
                     self._update_frontend_all_positions(
@@ -313,9 +378,8 @@ class LoopController:
                 except Exception as e:
                     logger.warning(f"Failed to refresh positions/update frontend: {e}")
                 
-                logger.info(f"{'=' * 60}")
-                logger.info(f"CYCLE {cycle_count} COMPLETE")
-                logger.info(f"{'=' * 60}\n")
+                # Clean cycle summary
+                logger.info(f"CYCLE {cycle_count} COMPLETE\n")
                 
             except Exception as e:
                 logger.error(f"Unexpected error in cycle {cycle_count}: {e}", exc_info=True)
@@ -425,7 +489,7 @@ class LoopController:
             
             if should_skip_llm:
                 # Use cached "hold" decision from last call
-                logger.info(f"    {symbol}: Skipping LLM call - market unchanged (price change < 0.5%, no volume spike)")
+                logger.debug(f"  {symbol}: Skipping LLM call - market unchanged")
                 raw_llm_output = '{"action": "hold", "size_pct": 0.0, "reason": "Market unchanged - waiting for significant movement"}'
             else:
                 try:
@@ -443,10 +507,10 @@ class LoopController:
                     }
                     
                     if position_size == 0:
-                        # Log decision for new entry evaluation
+                        # Log decision for new entry evaluation (only at DEBUG for cleaner output)
                         temp_parsed = self.decision_parser.parse(raw_llm_output)
                         temp_confidence = getattr(temp_parsed, 'confidence', 0.0)
-                        logger.info(f"    {symbol}: {temp_parsed.action} (confidence: {temp_confidence:.2f})")
+                        logger.debug(f"  {symbol}: {temp_parsed.action} (confidence: {temp_confidence:.2f})")
                 except Exception as e:
                     logger.error(f"  {symbol}: Decision provider failed: {e}")
                     raw_llm_output = f"Error: {str(e)}"
@@ -464,28 +528,40 @@ class LoopController:
         )
         
         if not risk_result.approved and decision.action in ['long', 'short', 'close', 'sell']:
-            logger.info(f"    {symbol}: Risk manager denied: {risk_result.reason}")
+            logger.warning(f"  {symbol}: Risk check FAILED - {risk_result.reason}")
         
         # ====================================================================
         # STEP 6: Execute trade if approved
         # ====================================================================
         execution_result = None
-        if risk_result.approved:
+        if risk_result.approved and decision.action != 'hold':
+            logger.info(f"  {symbol}: [{decision.action.upper()}] Risk check PASSED")
             try:
                 execution_result = self.trade_executor.execute(
                     decision, snapshot, position_size, equity
                 )
                 if execution_result.executed:
-                    logger.info(f"    {symbol}: EXECUTED - {decision.action} @ ${execution_result.fill_price:.2f}")
+                    logger.info(f"  {symbol}: [OK] EXECUTED {decision.action.upper()} @ ${execution_result.fill_price:.2f}")
+                    if execution_result.order_id:
+                        logger.info(f"     Order ID: {execution_result.order_id} | Size: {execution_result.filled_size}")
                 elif execution_result.error:
-                    logger.warning(f"    {symbol}: Execution error: {execution_result.error}")
+                    logger.error(f"  {symbol}: [FAIL] Execution error: {execution_result.error}")
+                elif not execution_result.executed:
+                    logger.warning(f"  {symbol}: [FAIL] Order not executed (no error message, check logs above)")
             except Exception as e:
-                logger.error(f"    {symbol}: Execution failed: {e}")
+                logger.error(f"  {symbol}: [FAIL] Execution failed: {e}")
                 from src.models import ExecutionResult
                 execution_result = ExecutionResult(
                     executed=False, order_id=None, filled_size=None,
                     fill_price=None, error=str(e)
                 )
+        elif decision.action == 'hold':
+            logger.debug(f"  {symbol}: Hold (no action)")
+            from src.models import ExecutionResult
+            execution_result = ExecutionResult(
+                executed=False, order_id=None, filled_size=None,
+                fill_price=None, error=None
+            )
         else:
             from src.models import ExecutionResult
             execution_result = ExecutionResult(
@@ -499,6 +575,15 @@ class LoopController:
         if execution_result and execution_result.executed and execution_result.filled_size:
             # Handle position opening
             if decision.action in ['long', 'short'] and execution_result.fill_price:
+                # Track position size: positive for long, negative for short
+                filled_size = execution_result.filled_size
+                if decision.action == 'long':
+                    # Long position: positive size
+                    self.tracked_position_sizes[symbol] = self.tracked_position_sizes.get(symbol, 0.0) + filled_size
+                elif decision.action == 'short':
+                    # Short position: negative size
+                    self.tracked_position_sizes[symbol] = self.tracked_position_sizes.get(symbol, 0.0) - filled_size
+                
                 self.position_entry_prices[symbol] = execution_result.fill_price
                 self.position_entry_timestamps[symbol] = int(time.time())
                 
@@ -522,6 +607,64 @@ class LoopController:
             
             # Handle position closing
             elif decision.action in ['sell', 'close']:
+                # Update tracked position size (reduce or clear position)
+                if symbol in self.tracked_position_sizes:
+                    if not execution_result:
+                        # Execution failed completely (exception thrown) - create empty result
+                        from src.models import ExecutionResult
+                        execution_result = ExecutionResult(
+                            executed=False,
+                            order_id=None,
+                            filled_size=None,
+                            fill_price=None,
+                            error="Execution exception occurred"
+                        )
+                    # Determine if we're closing a long or short
+                    current_position = self.tracked_position_sizes[symbol]
+                    
+                    # If execution succeeded, use filled_size
+                    if execution_result.executed and execution_result.filled_size:
+                        closed_size = execution_result.filled_size
+                        if current_position > 0:  # Closing long position
+                            self.tracked_position_sizes[symbol] = current_position - closed_size
+                        elif current_position < 0:  # Closing short position
+                            self.tracked_position_sizes[symbol] = current_position + closed_size
+                    # If execution failed but we're in demo mode (or emergency close), clear the position anyway
+                    # (prevents infinite retry loop when demo API doesn't support closing)
+                    elif not execution_result.executed and (self.config.exchange_type.lower() == "binance_demo" or 'emergency' in str(decision.reason).lower()):
+                        close_type = "emergency" if 'emergency' in str(decision.reason).lower() else "demo mode"
+                        logger.warning(f"Close execution failed for {symbol} in {close_type}. Clearing position from tracking to prevent infinite retry.")
+                        closed_size = abs(current_position)  # Use full position size for tracking update
+                        self.tracked_position_sizes[symbol] = 0.0
+                        
+                        # For emergency close, also clear position tracking data immediately
+                        if 'emergency' in str(decision.reason).lower():
+                            if symbol in self.position_entry_prices:
+                                del self.position_entry_prices[symbol]
+                            if symbol in self.position_entry_timestamps:
+                                del self.position_entry_timestamps[symbol]
+                            if symbol in self.position_stop_losses:
+                                del self.position_stop_losses[symbol]
+                            if symbol in self.position_take_profits:
+                                del self.position_take_profits[symbol]
+                            if symbol in self.position_types:
+                                del self.position_types[symbol]
+                            if symbol in self.position_leverages:
+                                del self.position_leverages[symbol]
+                            if symbol in self.position_risk_amounts:
+                                del self.position_risk_amounts[symbol]
+                            if symbol in self.position_reward_amounts:
+                                del self.position_reward_amounts[symbol]
+                    # For live mode, only update if execution succeeded
+                    else:
+                        # Execution failed and not demo mode - don't update position
+                        logger.warning(f"Close execution failed for {symbol}. Position still tracked. Error: {execution_result.error if execution_result else 'Unknown'}")
+                        closed_size = 0.0  # Don't update position size
+                    
+                    # If position size is very close to zero, clear it
+                    if abs(self.tracked_position_sizes[symbol]) < 0.0001:
+                        self.tracked_position_sizes[symbol] = 0.0
+                
                 # Save entry price before deletion for trade logging
                 entry_price_for_closed_trade = self.position_entry_prices.get(symbol)
                 entry_timestamp = self.position_entry_timestamps.get(symbol)
@@ -536,6 +679,11 @@ class LoopController:
                     else:
                         pnl_pct = ((entry_price_for_closed_trade - execution_result.fill_price) / entry_price_for_closed_trade) * 100
                         trade_pnl = (entry_price_for_closed_trade - execution_result.fill_price) * abs(execution_result.filled_size)
+                    
+                    # Update tracked equity with realized P&L (for demo mode)
+                    if self.config.exchange_type.lower() == "binance_demo":
+                        self.tracked_equity += trade_pnl
+                        logger.debug(f"Updated tracked equity: ${self.tracked_equity:.2f} (realized P&L: ${trade_pnl:.2f})")
                     
                     # Log trade to frontend
                     if self.api_client:
@@ -571,6 +719,9 @@ class LoopController:
                     available_cash_for_msg = equity  # Position closed, all equity is available
                     unrealized_pnl_for_msg = 0.0  # Position closed, no unrealized P&L
                     
+                    # Get the actual realized P&L for the closed trade
+                    realized_pnl = trade_pnl if entry_price_for_closed_trade and execution_result.fill_price else None
+                    
                     self._send_smart_agent_message(
                         decision=decision,
                         snapshot=snapshot,
@@ -579,7 +730,8 @@ class LoopController:
                         available_cash=available_cash_for_msg,
                         unrealized_pnl=unrealized_pnl_for_msg,
                         cycle_count=cycle_count,
-                        all_snapshots=all_snapshots_for_msg
+                        all_snapshots=all_snapshots_for_msg,
+                        realized_pnl=realized_pnl  # Pass actual P&L for accurate reporting
                     )
                 
                 # Clear all position tracking
@@ -591,7 +743,8 @@ class LoopController:
                     self.position_types,
                     self.position_leverages,
                     self.position_risk_amounts,
-                    self.position_reward_amounts
+                    self.position_reward_amounts,
+                    self.tracked_position_sizes
                 ]:
                     if symbol in tracking_dict:
                         del tracking_dict[symbol]
@@ -694,8 +847,11 @@ class LoopController:
             # Sync all positions
             self.api_client.sync_positions(positions_list)
             
-            # Update balance (available cash = equity - total unrealized P&L)
-            available_cash = equity - total_unrealized_pnl
+            # Update balance
+            # Available cash should be the net equity (equity already includes unrealized P&L)
+            # Since equity = base_equity + unrealized_pnl, available_cash should just be equity
+            # This shows the actual cash available after accounting for unrealized gains/losses
+            available_cash = equity  # Equity already includes unrealized P&L, so this is the net available cash
             self.api_client.update_balance(available_cash, total_unrealized_pnl)
             
             logger.info(f"  Frontend updated: Cash=${available_cash:.2f}, P&L=${total_unrealized_pnl:.2f} (positions: {len(positions_list)})")
@@ -781,7 +937,8 @@ class LoopController:
     
     def _generate_ai_message(
         self, decision, snapshot, position_size: float, equity: float,
-        available_cash: float, unrealized_pnl: float, all_snapshots: dict = None
+        available_cash: float, unrealized_pnl: float, all_snapshots: dict = None,
+        realized_pnl: float = None
     ) -> str:
         """
         Use AI to generate natural, conversational trading messages.
@@ -886,6 +1043,8 @@ class LoopController:
             # Build prompt for AI message generation
             prompt = f"""You are a professional crypto trader explaining your decision to your client in a casual, conversational way.
 
+{f"**CRITICAL - REALIZED P&L VALUE**: The realized_pnl for this trade is ${realized_pnl:,.2f}. This is a {'PROFIT' if realized_pnl > 0 else 'LOSS'}. Your message MUST say 'for a {'profit' if realized_pnl > 0 else 'loss'}' or 'with a {'profit' if realized_pnl > 0 else 'loss'}' of ${abs(realized_pnl):,.2f}. DO NOT say 'for a profit' if realized_pnl is negative. If realized_pnl = ${realized_pnl:,.2f}, you MUST say 'loss', NOT 'profit'!" if realized_pnl is not None and decision.action == "close" else ""}
+
 CURRENT SITUATION:
 - Action: {decision.action.upper()}
 - Position Type: {position_type} (swing = multi-day hold, scalp = quick in/out)
@@ -894,6 +1053,7 @@ CURRENT SITUATION:
 - Available Cash: ${available_cash:,.2f}
 - Current Position Size: {position_size:.6f} {base_currency}
 - Unrealized P&L: ${unrealized_pnl:,.2f}
+{f"**CRITICAL - REALIZED P&L (THIS TRADE)**: realized_pnl = ${realized_pnl:,.2f}. This is a {'PROFIT' if realized_pnl > 0 else 'LOSS'} of ${abs(realized_pnl):,.2f}. You MUST state this in your message. If realized_pnl = ${realized_pnl:,.2f} (negative), you MUST say 'for a LOSS' or 'at a LOSS', NOT 'for a profit'!" if realized_pnl is not None and decision.action == "close" else ""}
 
 DECISION DETAILS:
 - Reason: {decision.reason}
@@ -906,6 +1066,8 @@ DECISION DETAILS:
 {"**STOP LOSS TRIGGERED** - Price hit stop loss level, closing position to limit losses. Explain this was a risk management exit, not a manual close." if 'stop loss' in decision.reason.lower() and 'emergency' not in decision.reason.lower() else ""}
 {"**TAKE PROFIT TRIGGERED** - Price hit take profit level, closing position to lock in gains. Explain this was a profit target hit." if 'take profit' in decision.reason.lower() and 'emergency' not in decision.reason.lower() else ""}
 
+{f"**CRITICAL - REALIZED P&L VALUE**: realized_pnl = ${realized_pnl:,.2f}. This value is {'POSITIVE' if realized_pnl > 0 else 'NEGATIVE' if realized_pnl < 0 else 'ZERO'}, which means this is a {'PROFIT' if realized_pnl > 0 else 'LOSS' if realized_pnl < 0 else 'BREAK-EVEN'} of ${abs(realized_pnl):,.2f}. Your message MUST state this accurately. If realized_pnl = ${realized_pnl:,.2f} (which is {'POSITIVE' if realized_pnl > 0 else 'NEGATIVE'}), you {'CAN' if realized_pnl > 0 else 'CANNOT'} say 'for a profit'. You {'CANNOT' if realized_pnl > 0 else 'MUST'} say 'for a loss' if realized_pnl < 0." if realized_pnl is not None else ""}
+
 MARKET CONTEXT ({symbol}):
 - Daily Trend: {indicators.get('trend_1d', 'unknown')}
 - 4H Trend: {indicators.get('trend_4h', 'unknown')}
@@ -916,12 +1078,17 @@ MARKET CONTEXT ({symbol}):
 - Volume (1h): {indicators.get('volume_ratio_1h', 1.0):.2f}x average ({'STRONG' if indicators.get('volume_ratio_1h', 1.0) >= 1.5 else 'MODERATE' if indicators.get('volume_ratio_1h', 1.0) >= 1.2 else 'WEAK'})
 - Volume Trend: {indicators.get('volume_trend_1h', 'stable')} | OBV: {indicators.get('obv_trend_1h', 'neutral')}{all_coins_context}
 
+{f"**CRITICAL ERROR PREVENTION**: realized_pnl = ${realized_pnl:,.2f}. This number is LESS THAN ZERO (NEGATIVE). This means the trade resulted in a LOSS. You CANNOT and MUST NOT say 'for a profit' because realized_pnl is negative. You MUST say one of these EXACT phrases: 'for a loss of ${abs(realized_pnl):,.2f}', 'at a loss of ${abs(realized_pnl):,.2f}', 'with a loss of ${abs(realized_pnl):,.2f}', or 'resulted in a loss of ${abs(realized_pnl):,.2f}'. DO NOT use the word 'profit' anywhere in your message when realized_pnl < 0." if realized_pnl is not None and realized_pnl < 0 and decision.action == "close" else ""}
+{f"**CORRECT**: realized_pnl = ${realized_pnl:,.2f}. This is POSITIVE, which means PROFIT. You can say 'for a profit' of ${abs(realized_pnl):,.2f}." if realized_pnl is not None and realized_pnl > 0 and decision.action == "close" else ""}
+{f"**ZERO P&L**: realized_pnl = ${realized_pnl:,.2f}. This is zero, meaning break-even. Say 'at break-even' or 'with no profit or loss'." if realized_pnl is not None and realized_pnl == 0 and decision.action == "close" else ""}
+
 YOUR TASK:
 Write a DETAILED, natural message (3-5 sentences) explaining what you're doing and why, like you're updating a friend. Include:
 1. What action you're taking (or why you're waiting)
-2. Key market context (S/R levels, VWAP, trends, volume)
-3. Your reasoning and what you're watching for next
-4. **CRITICAL**: Mention other coins from the ALL 6 COINS overview when relevant (e.g., "ETH looks weak", "SOL has strong volume", "XRP at support")
+{f"2. **IF CLOSING**: You MUST state the P&L: realized_pnl = ${realized_pnl:,.2f}, which is a {'PROFIT' if realized_pnl > 0 else 'LOSS'}. Say 'for a {'profit' if realized_pnl > 0 else 'loss'}' of ${abs(realized_pnl):,.2f}." if realized_pnl is not None and decision.action == "close" else "2. Key market context (S/R levels, VWAP, trends, volume)"}
+{f"3. Key market context (S/R levels, VWAP, trends, volume)" if realized_pnl is not None and decision.action == "close" else "3. Your reasoning and what you're watching for next"}
+{f"4. Your reasoning and what you're watching for next" if realized_pnl is not None and decision.action == "close" else "4. **CRITICAL**: Mention other coins from the ALL 6 COINS overview when relevant (e.g., 'ETH looks weak', 'SOL has strong volume', 'XRP at support')"}
+{f"5. **CRITICAL**: Mention other coins from the ALL 6 COINS overview when relevant (e.g., 'ETH looks weak', 'SOL has strong volume', 'XRP at support')" if realized_pnl is not None and decision.action == "close" else ""}
 Be conversational, confident, and VARY your phrasing. Use first person ("I'm buying", "I'll wait", "watching for").
 
 IMPORTANT - Include market context in your reasoning:
@@ -947,10 +1114,16 @@ HOLDING (vary these):
 - "Up $340 on this trade. Price between pivot and R1, trend intact, holding."
 
 SELLING/CLOSING (vary these):
-- "Closing at $68.5k for +$1,265 profit. Hit R1 resistance perfectly, taking the win."
-- "Out at $67.9k with +$665. Price rejected at swing high, smart to exit here."
-- "Stop hit at $66.5k, -$734 loss. Broke below S1 support, capital preservation mode."
-- "Exiting at $67.1k for small +$85 gain. Trend reversed below VWAP, not worth the risk."
+{f"- **IMPORTANT**: When closing a position, you MUST use the ACTUAL P&L provided above (${realized_pnl:,.2f}) if available. Do NOT make up profit/loss numbers!" if realized_pnl is not None else "- **IMPORTANT**: When closing a position, mention the actual profit/loss accurately based on the entry and exit prices."}
+{f"- If actual P&L is provided: Use it exactly (e.g., 'Closed at $68.5k for ${realized_pnl:,.2f} {'profit' if realized_pnl > 0 else 'loss'}')" if realized_pnl is not None else ""}
+{f"- Examples WITH actual P&L ({'profit' if realized_pnl > 0 else 'loss'} of ${abs(realized_pnl):,.2f}):" if realized_pnl is not None else "- Examples:"}
+{f"  * 'Closed at $68.5k for ${realized_pnl:,.2f} {'profit' if realized_pnl > 0 else 'loss'}. Hit R1 resistance perfectly.'" if realized_pnl is not None else ""}
+{f"  * 'Out at $67.9k with ${realized_pnl:,.2f} {'profit' if realized_pnl > 0 else 'loss'}. Price rejected at swing high.'" if realized_pnl is not None else ""}
+{f"**STOP - READ THIS FIRST**: realized_pnl = ${realized_pnl:,.2f}. This is a {'PROFIT' if realized_pnl > 0 else 'LOSS'}. You CANNOT say 'for a profit' if realized_pnl is negative. You MUST say 'for a loss' if realized_pnl < 0." if realized_pnl is not None and realized_pnl < 0 else ""}
+
+- Examples WITHOUT actual P&L (only if not provided):
+  * "Closing at $68.5k for a profit. Hit R1 resistance perfectly, taking the win."
+  * "Stop hit at $66.5k, a loss. Broke below S1 support, capital preservation mode."
 - **EMERGENCY CLOSE ONLY**: "Emergency closing all positions at market price as requested. Closing immediately at current market price ${price:,.2f} to exit all positions."
 - **STOP LOSS ONLY**: "Stop loss triggered at $66.5k, closing position to limit losses. Price broke below S1 support, capital preservation activated."
 - **TAKE PROFIT ONLY**: "Take profit hit at $68.5k, closing position to lock in gains. Hit R1 resistance perfectly, taking the win."
@@ -987,12 +1160,19 @@ Write ONLY the message, nothing else:"""
             
         except Exception as e:
             logger.warning(f"Failed to generate AI message: {e}")
-            # Fallback to simple message
-            return f"{decision.action.upper()}: {decision.reason}"
+            # Fallback to simple message with actual P&L if available
+            if realized_pnl is not None and decision.action == "close":
+                pnl_desc = f"${abs(realized_pnl):,.2f} {'profit' if realized_pnl > 0 else 'loss'}"
+                return f"CLOSE: {decision.reason}. Resulted in {pnl_desc}."
+            elif decision.action == "close":
+                return f"CLOSE: {decision.reason}. (P&L calculation unavailable)"
+            else:
+                return f"{decision.action.upper()}: {decision.reason}"
     
     def _send_smart_agent_message(
         self, decision, snapshot, position_size: float, equity: float,
-        available_cash: float, unrealized_pnl: float, cycle_count: int, all_snapshots: dict = None
+        available_cash: float, unrealized_pnl: float, cycle_count: int, all_snapshots: dict = None,
+        realized_pnl: float = None
     ) -> None:
         """
         Send AI-generated natural messages to users.
@@ -1011,7 +1191,7 @@ Write ONLY the message, nothing else:"""
         if decision.action in ["long", "sell", "close"]:
             message = self._generate_ai_message(
                 decision, snapshot, position_size, equity, 
-                available_cash, unrealized_pnl, all_snapshots
+                available_cash, unrealized_pnl, all_snapshots, realized_pnl=realized_pnl
             )
             self.api_client.add_agent_message(message)
             self.last_message_type = decision.action
@@ -1093,7 +1273,7 @@ Write ONLY the message, nothing else:"""
                             status_text = f"{coin_name} ({symbol}): {action.upper()} signal ({confidence:.0%} confidence) - {reason}"
                     elif action in ['close', 'sell']:
                         if executed:
-                            status_text = f"{coin_name} ({symbol}): ✅ CLOSED position at ${price:,.2f}"
+                            status_text = f"{coin_name} ({symbol}): CLOSED position at ${price:,.2f}"
                         else:
                             status_text = f"{coin_name} ({symbol}): Closing - {reason}"
                     else:
@@ -1228,6 +1408,86 @@ Write ONLY the message, nothing else (2-3 sentences max):"""
                 self.api_client.add_agent_message(fallback_msg)
                 self.last_message_type = "hold"
                 self.last_message_cycle = cycle_count
+    
+    def _fetch_futures_balance_and_positions(self) -> tuple:
+        """
+        Fetch Futures account balance and positions for demo trading.
+        Uses Futures-specific endpoints (fapiPrivateV2GetAccount, fapiPrivateV2GetPositionRisk).
+        
+        Note: Binance Demo Trading environment doesn't fully support /fapi/v2/account endpoint,
+        so we fall back to mock values for demo mode.
+        
+        Returns:
+            Tuple of (balance_dict, positions_dict)
+            balance_dict: { 'total': {'USDT': float, ...}, 'free': {...}, 'used': {...} }
+            positions_dict: { 'BTC/USDT': float, 'ETH/USDT': float, ... }
+        """
+        exchange = self.trade_executor.exchange
+        
+        # Try to fetch real account data
+        try:
+            # Fetch Futures account info (use v2 endpoint - v1 is deprecated)
+            account = exchange.fapiPrivateV2GetAccount()
+            
+            # Extract balance info
+            total_wallet_balance = float(account.get('totalWalletBalance', 0))
+            available_balance = float(account.get('availableBalance', 0))
+            unrealized_pnl = float(account.get('totalUnrealizedProfit', 0))
+            
+            # Create balance dict in ccxt format
+            balance = {
+                'total': {'USDT': total_wallet_balance},
+                'free': {'USDT': available_balance},
+                'used': {'USDT': total_wallet_balance - available_balance},
+                'info': account
+            }
+            
+            # Fetch positions
+            position_risk = exchange.fapiPrivateV2GetPositionRisk()
+            
+            # Extract positions by symbol
+            positions = {}
+            for pos in position_risk:
+                symbol_str = pos.get('symbol', '')
+                position_amt = float(pos.get('positionAmt', 0))
+                
+                # Convert BTCUSDT -> BTC/USDT
+                if len(symbol_str) >= 6 and symbol_str.endswith('USDT'):
+                    base = symbol_str[:-4]
+                    symbol = f"{base}/USDT"
+                    if abs(position_amt) > 0.0001:  # Only include non-zero positions
+                        positions[symbol] = position_amt
+            
+            # Initialize all symbols with 0 position if not found
+            for symbol in self.config.symbols:
+                if symbol not in positions:
+                    positions[symbol] = 0.0
+            
+            return balance, positions
+            
+        except Exception as e:
+            # Check if it's the -2015 error (Invalid API-key, IP, or permissions)
+            error_msg = str(e)
+            if self.config.exchange_type.lower() == "binance_demo" and ("-2015" in error_msg or "Invalid API-key" in error_msg):
+                # Binance Demo doesn't fully support account endpoints - use mock values
+                logger.warning("Demo mode: Binance Demo Trading doesn't support /fapi/v2/account endpoint. Using mock balance/positions.")
+                
+                # Use mock balance for demo (from config)
+                mock_equity = self.config.mock_starting_equity
+                balance = {
+                    'total': {'USDT': mock_equity},
+                    'free': {'USDT': mock_equity},
+                    'used': {'USDT': 0.0},
+                    'info': {}
+                }
+                
+                # Initialize all symbols with 0 position
+                positions = {symbol: 0.0 for symbol in self.config.symbols}
+                
+                return balance, positions
+            else:
+                # For non-demo or other errors, re-raise
+                raise
     
     def _should_skip_llm_call(self, symbol: str, snapshot, position_size: float, cycle_count: int) -> bool:
         """

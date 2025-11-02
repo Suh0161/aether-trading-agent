@@ -74,8 +74,8 @@ class HybridDecisionProvider:
         # Step 1: Get signal from swing strategy (primary)
         swing_signal = self.strategy.analyze(snapshot, position_size, equity)
         
-        logger.info(f"Swing signal: {swing_signal.action} (confidence: {swing_signal.confidence:.2f}, type: {swing_signal.position_type})")
-        logger.info(f"Swing reason: {swing_signal.reason}")
+        logger.debug(f"Swing signal: {swing_signal.action} (confidence: {swing_signal.confidence:.2f}, type: {swing_signal.position_type})")
+        logger.debug(f"Swing reason: {swing_signal.reason}")
         
         # Step 2: If swing strategy has a position or wants to close, use it directly
         if swing_signal.action in ["close"]:
@@ -88,10 +88,10 @@ class HybridDecisionProvider:
             
             if not ai_approved:
                 # AI vetoed the swing trade - check scalping as fallback
-                logger.warning("AI filter VETOED swing trade, checking scalping fallback")
+                logger.debug("AI filter VETOED swing trade, checking scalping fallback")
                 return self._check_scalping_fallback(snapshot, position_size, equity)
             
-            logger.info("AI filter APPROVED swing trade")
+            logger.debug("AI filter APPROVED swing trade")
             return self._format_decision(swing_signal)
         
         # Step 4: Swing strategy says "hold" - check if we should try scalping
@@ -125,8 +125,8 @@ class HybridDecisionProvider:
         # Get scalping signal
         scalp_signal = self.scalping_strategy.analyze(snapshot, position_size, equity)
         
-        logger.info(f"Scalp signal: {scalp_signal.action} (confidence: {scalp_signal.confidence:.2f})")
-        logger.info(f"Scalp reason: {scalp_signal.reason}")
+        logger.debug(f"Scalp signal: {scalp_signal.action} (confidence: {scalp_signal.confidence:.2f})")
+        logger.debug(f"Scalp reason: {scalp_signal.reason}")
         
         # If scalping wants to close (we're in a scalp position), use it
         if scalp_signal.action == "close":
@@ -140,7 +140,7 @@ class HybridDecisionProvider:
                 logger.warning("AI filter VETOED scalp trade")
                 return '{"action": "hold", "size_pct": 0.0, "reason": "AI filter vetoed scalp: ' + scalp_signal.reason + '", "position_type": "scalp"}'
             
-            logger.info("AI filter APPROVED scalp trade")
+            logger.debug("AI filter APPROVED scalp trade")
             return self._format_decision(scalp_signal)
         
         # Scalping also says hold - return hold signal
@@ -192,20 +192,20 @@ class HybridDecisionProvider:
             
             if first_word in ["veto", "reject", "no"]:
                 # Fix Unicode encoding issue: replace ≥ with >= for Windows console
-                safe_response = ai_response[:200].replace('\u2265', '>=').replace('\u2264', '<=').replace('\u2192', '->')
-                logger.info(f"AI VETOED: {safe_response}")
+                safe_response = ai_response[:150].replace('\u2265', '>=').replace('\u2264', '<=').replace('\u2192', '->')
+                logger.debug(f"AI VETOED: {safe_response}")
                 return False
             elif first_word == "approve":
                 # Fix Unicode encoding issue: replace ≥ with >= for Windows console
-                safe_response = ai_response[:200].replace('\u2265', '>=').replace('\u2264', '<=').replace('\u2192', '->')
-                logger.info(f"AI APPROVED: {safe_response}")
+                safe_response = ai_response[:150].replace('\u2265', '>=').replace('\u2264', '<=').replace('\u2192', '->')
+                logger.debug(f"AI APPROVED: {safe_response}")
                 return True
             else:
                 # Fallback: check if veto/reject appears early in response
                 if "veto" in ai_response_lower[:50] or "reject" in ai_response_lower[:50]:
                     # Fix Unicode encoding issue: replace ≥ with >= for Windows console
-                    safe_response = ai_response[:200].replace('\u2265', '>=').replace('\u2264', '<=').replace('\u2192', '->')
-                    logger.info(f"AI VETOED (fallback): {safe_response}")
+                    safe_response = ai_response[:150].replace('\u2265', '>=').replace('\u2264', '<=').replace('\u2192', '->')
+                    logger.debug(f"AI VETOED (fallback): {safe_response}")
                     return False
                 # Default to approve if unclear
                 logger.warning(f"AI response unclear, defaulting to APPROVE: {ai_response[:100]}")

@@ -344,7 +344,7 @@ class ATRBreakoutStrategy:
             if entry_timeframe:
                 # LONG entry confirmed - proceed with trade setup
                 # Position size and leverage automatically adjusted by confidence
-                logger.info(f"[SWING LONG] Volume: {volume_ratio_1h:.2f}x -> {volume_confidence_boost:+.2f}, OBV: {obv_trend_1h}, Confidence: {base_confidence:.2f}")
+                logger.info(f"  |-- [SWING LONG] Confidence: {base_confidence:.2f} | Vol: {volume_ratio_1h:.2f}x ({volume_confidence_boost:+.2f}) | OBV: {obv_trend_1h}")
                 
                 return self._build_entry_signal(
                     snapshot=snapshot,
@@ -470,7 +470,7 @@ class ATRBreakoutStrategy:
             if entry_timeframe:
                 # SHORT entry confirmed - proceed with trade setup
                 # Position size and leverage automatically adjusted by confidence
-                logger.info(f"[SWING SHORT] Volume: {volume_ratio_1h:.2f}x -> {volume_confidence_boost:+.2f}, OBV: {obv_trend_1h}, Confidence: {base_confidence:.2f}")
+                logger.info(f"  |-- [SWING SHORT] Confidence: {base_confidence:.2f} | Vol: {volume_ratio_1h:.2f}x ({volume_confidence_boost:+.2f}) | OBV: {obv_trend_1h}")
                 
                 return self._build_entry_signal(
                     snapshot=snapshot,
@@ -545,7 +545,7 @@ class ATRBreakoutStrategy:
         
         base_confidence = max(0.3, min(0.95, base_confidence + volume_confidence_boost + obv_bonus + alignment_bonus))
         
-        logger.info(f"[SWING LONG at SUPPORT] Volume: {volume_ratio_1h:.2f}x, OBV: {obv_trend_1h}, Confidence: {base_confidence:.2f}")
+        logger.info(f"  |-- [SWING LONG @ SUPPORT] Confidence: {base_confidence:.2f} | Vol: {volume_ratio_1h:.2f}x | OBV: {obv_trend_1h}")
         
         # Use nearest support level as entry reference
         support_level = min([s for s in [s1, s2, swing_low] if s > 0], default=price)
@@ -594,7 +594,7 @@ class ATRBreakoutStrategy:
         
         base_confidence = max(0.3, min(0.95, base_confidence + volume_confidence_boost + obv_bonus + alignment_bonus))
         
-        logger.info(f"[SWING SHORT at RESISTANCE] Volume: {volume_ratio_1h:.2f}x, OBV: {obv_trend_1h}, Confidence: {base_confidence:.2f}")
+        logger.info(f"  |-- [SWING SHORT @ RESISTANCE] Confidence: {base_confidence:.2f} | Vol: {volume_ratio_1h:.2f}x | OBV: {obv_trend_1h}")
         
         # Use nearest resistance level as entry reference
         resistance_level = max([r for r in [r1, r2, swing_high] if r > 0], default=price)
@@ -769,11 +769,13 @@ class ATRBreakoutStrategy:
             volume_info += " OK"
         obv_info = f"OBV: {obv_trend}"
         
-        # Position sizing summary for logging
+        # Position sizing summary for logging (structured format)
         logger.info(
-            f"Position sizing: Capital={capital_allocation_pct*100:.1f}% (${capital_amount:.2f}), "
-            f"Leverage={leverage:.1f}x, Notional=${position_notional:.2f}, "
-            f"Risk=${risk_amount:.2f}, Reward=${reward_amount:.2f}, R:R={reward_amount/risk_amount:.2f}"
+            f"  \\-- Capital: {capital_allocation_pct*100:.1f}% (${capital_amount:.2f}) | "
+            f"Leverage: {leverage:.1f}x | Notional: ${position_notional:.2f}"
+        )
+        logger.info(
+            f"     Risk: ${risk_amount:.2f} | Reward: ${reward_amount:.2f} | R:R: {reward_amount/risk_amount:.2f}"
         )
         
         return StrategySignal(
@@ -1033,7 +1035,7 @@ class ScalpingStrategy:
                 stop_distance = price * self.stop_loss_pct
                 
                 # Confidence already calculated above (progressive system)
-                logger.info(f"[SCALP LONG] Volume: {active_volume_ratio:.2f}x -> {volume_confidence_boost:+.2f}, OBV: {obv_trend_5m}, Confidence: {base_confidence:.2f}")
+                logger.info(f"  |-- [SCALP LONG] Confidence: {base_confidence:.2f} | Vol: {active_volume_ratio:.2f}x ({volume_confidence_boost:+.2f}) | OBV: {obv_trend_5m}")
                 
                 # LAYER 1: Capital Allocation (scalps are smaller than swings)
                 # Scale percentages based on MAX_EQUITY_USAGE_PCT from .env
@@ -1111,11 +1113,13 @@ class ScalpingStrategy:
                 else:
                     volume_info += " [LOW]"
                 
-                # Position sizing summary for logging
+                # Position sizing summary for logging (structured format)
                 logger.info(
-                    f"Scalp position sizing: Capital={capital_allocation_pct*100:.1f}% (${capital_amount:.2f}), "
-                    f"Leverage={leverage:.1f}x, Notional=${position_notional:.2f}, "
-                    f"Risk=${risk_amount:.2f}, Reward=${reward_amount:.2f}"
+                    f"  └─ Capital: {capital_allocation_pct*100:.1f}% (${capital_amount:.2f}) | "
+                    f"Leverage: {leverage:.1f}x | Notional: ${position_notional:.2f}"
+                )
+                logger.info(
+                    f"     Risk: ${risk_amount:.2f} | Reward: ${reward_amount:.2f}"
                 )
                 
                 return StrategySignal(
@@ -1215,7 +1219,7 @@ class ScalpingStrategy:
                 stop_distance = price * self.stop_loss_pct
                 
                 # Confidence already calculated above (progressive system)
-                logger.info(f"[SCALP SHORT] Volume: {active_volume_ratio:.2f}x -> {volume_confidence_boost:+.2f}, OBV: {obv_trend_5m}, Confidence: {base_confidence:.2f}")
+                logger.info(f"  |-- [SCALP SHORT] Confidence: {base_confidence:.2f} | Vol: {active_volume_ratio:.2f}x ({volume_confidence_boost:+.2f}) | OBV: {obv_trend_5m}")
                 
                 # LAYER 1: Capital Allocation (scalps are smaller than swings)
                 if base_confidence >= 0.8:
@@ -1288,11 +1292,13 @@ class ScalpingStrategy:
                 else:
                     volume_info += " [LOW]"
                 
-                # Position sizing summary for logging
+                # Position sizing summary for logging (structured format)
                 logger.info(
-                    f"Scalp position sizing: Capital={capital_allocation_pct*100:.1f}% (${capital_amount:.2f}), "
-                    f"Leverage={leverage:.1f}x, Notional=${position_notional:.2f}, "
-                    f"Risk=${risk_amount:.2f}, Reward=${reward_amount:.2f}"
+                    f"  └─ Capital: {capital_allocation_pct*100:.1f}% (${capital_amount:.2f}) | "
+                    f"Leverage: {leverage:.1f}x | Notional: ${position_notional:.2f}"
+                )
+                logger.info(
+                    f"     Risk: ${risk_amount:.2f} | Reward: ${reward_amount:.2f}"
                 )
                 
                 return StrategySignal(
@@ -1349,7 +1355,7 @@ class ScalpingStrategy:
         
         base_confidence = max(0.4, min(0.85, base_confidence + volume_confidence_boost + obv_bonus + vwap_bonus))
         
-        logger.info(f"[SCALP LONG at SUPPORT] Volume: {active_volume_ratio:.2f}x, OBV: {obv_trend_5m}, Confidence: {base_confidence:.2f}")
+        logger.info(f"  |-- [SCALP LONG @ SUPPORT] Confidence: {base_confidence:.2f} | Vol: {active_volume_ratio:.2f}x | OBV: {obv_trend_5m}")
         
         # Use support level as entry reference
         support_level = min([s for s in [s1, s2, swing_low] if s > 0], default=price)
@@ -1424,7 +1430,7 @@ class ScalpingStrategy:
         
         base_confidence = max(0.4, min(0.85, base_confidence + volume_confidence_boost + obv_bonus + vwap_bonus))
         
-        logger.info(f"[SCALP SHORT at RESISTANCE] Volume: {active_volume_ratio:.2f}x, OBV: {obv_trend_5m}, Confidence: {base_confidence:.2f}")
+        logger.info(f"  |-- [SCALP SHORT @ RESISTANCE] Confidence: {base_confidence:.2f} | Vol: {active_volume_ratio:.2f}x | OBV: {obv_trend_5m}")
         
         # Use resistance level as entry reference
         resistance_level = max([r for r in [r1, r2, swing_high] if r > 0], default=price)

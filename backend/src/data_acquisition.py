@@ -59,7 +59,37 @@ class DataAcquisition:
         exchange_type = config.exchange_type.lower()
         
         # Map exchange types to ccxt classes
-        if exchange_type == "binance_testnet":
+        if exchange_type == "binance_demo":
+            # Binance Demo Trading uses demo.binance.com URLs
+            # Demo trading is DIFFERENT from testnet - do NOT use set_sandbox_mode
+            # Just override URLs directly to point to demo.binance.com
+            logger.info("DEMO TRADING MODE: Using Binance Demo Trading environment.")
+            logger.info("Using demo API keys from demo.binance.com")
+            exchange = ccxt.binance({
+                'apiKey': config.exchange_api_key,
+                'secret': config.exchange_api_secret,
+                'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'future',  # Use USD-M Futures
+                    'adjustForTimeDifference': True,
+                }
+            })
+            # Override ALL URLs to demo endpoints - DO NOT use set_sandbox_mode
+            # because ccxt will block Futures in sandbox mode
+            # Override base API URLs to prevent calls to live SAPI endpoints
+            exchange.urls['api'].update({
+                'public': 'https://demo.binance.com/api',
+                'private': 'https://demo.binance.com/api',
+                'fapiPublic': 'https://demo-fapi.binance.com/fapi/v1',
+                'fapiPrivate': 'https://demo-fapi.binance.com/fapi/v1',
+            })
+        elif exchange_type == "binance_testnet":
+            # NOTE: Binance Futures does not support testnet/sandbox mode anymore
+            # We'll use live Futures API endpoints (user should use small amounts for testing)
+            logger.warning("TESTNET MODE: Binance Futures testnet is deprecated. Using live Futures API.")
+            logger.warning("IMPORTANT: You MUST use LIVE API keys (not testnet keys) for Futures trading.")
+            logger.warning("IMPORTANT: Ensure your API key has 'Enable Futures' enabled in Binance API Management.")
+            logger.warning("IMPORTANT: Use small amounts for testing. Switch to RUN_MODE=live for Futures trading.")
             exchange = ccxt.binance({
                 'apiKey': config.exchange_api_key,
                 'secret': config.exchange_api_secret,
@@ -68,8 +98,7 @@ class DataAcquisition:
                     'defaultType': 'future',  # Use USD-M Futures
                 }
             })
-            # Override API URL for testnet
-            exchange.set_sandbox_mode(True)
+            # DO NOT call set_sandbox_mode(True) for Futures - it's not supported
         elif exchange_type == "binance":
             exchange = ccxt.binance({
                 'apiKey': config.exchange_api_key,
@@ -86,6 +115,41 @@ class DataAcquisition:
             raise ValueError(f"Unsupported exchange type: {exchange_type}")
         
         return exchange
+    
+    def _fetch_futures_klines(self, symbol: str, timeframe: str, limit: int) -> List[List[float]]:
+        """
+        Fetch OHLCV data using Futures klines endpoint for demo trading.
+        This ensures we use demo-fapi.binance.com instead of live endpoints.
+        
+        Args:
+            symbol: Trading pair symbol (e.g., "BTC/USDT")
+            timeframe: Timeframe string (e.g., "1d", "1h", "15m")
+            limit: Number of candles to fetch
+            
+        Returns:
+            List of OHLCV candles in ccxt format [[timestamp, open, high, low, close, volume], ...]
+        """
+        # Convert symbol format (BTC/USDT -> BTCUSDT)
+        futures_symbol = symbol.replace('/', '')
+        
+        # Map timeframe to Binance format
+        tf_map = {
+            '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m',
+            '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h', '8h': '8h', '12h': '12h',
+            '1d': '1d', '3d': '3d', '1w': '1w', '1M': '1M'
+        }
+        binance_tf = tf_map.get(timeframe, timeframe)
+        
+        # Call Futures klines endpoint (uses demo-fapi.binance.com for demo trading)
+        # ccxt method: fapiPublicGetKlines for /fapi/v1/klines
+        klines = self.exchange.fapiPublicGetKlines({
+            'symbol': futures_symbol,
+            'interval': binance_tf,
+            'limit': limit
+        })
+        
+        # Convert to ccxt format: [[timestamp, open, high, low, close, volume], ...]
+        return [[int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in klines]
     
     def _compute_indicators(self, ohlcv: List[List[float]]) -> Dict[str, float]:
         """
@@ -308,8 +372,36 @@ class DataAcquisition:
         """
         try:
             # Fetch ticker data
-            ticker = self.exchange.fetch_ticker(symbol)
-            current_price = ticker['last']
+            # For demo trading, use Futures-specific ticker endpoint
+            if self.config.exchange_type.lower() == "binance_demo":
+                # Use Futures public ticker endpoints (works on demo-fapi.binance.com)
+                # fapiPublicGetTickerPrice gives current price
+                # fapiPublicGetTickerBookTicker gives bid/ask
+                sym = symbol.replace('/', '')
+                ticker_price = self.exchange.fapiPublicGetTickerPrice({'symbol': sym})
+                current_price = float(ticker_price['price'])
+                
+                # Get bid/ask from book ticker
+                try:
+                    book_ticker = self.exchange.fapiPublicGetTickerBookTicker({'symbol': sym})
+                    bid = float(book_ticker.get('bidPrice', current_price))
+                    ask = float(book_ticker.get('askPrice', current_price))
+                except:
+                    bid = current_price
+                    ask = current_price
+                
+                ticker = {
+                    'last': current_price,
+                    'bid': bid,
+                    'ask': ask,
+                    'high': current_price,  # Demo doesn't provide 24h stats
+                    'low': current_price,
+                    'volume': 0.0,
+                    'timestamp': int(time.time() * 1000),
+                }
+            else:
+                ticker = self.exchange.fetch_ticker(symbol)
+                current_price = ticker['last']
             
             # Fetch multi-timeframe OHLCV data
             # Higher timeframes for trend (daily/4h) - cached and updated less frequently
@@ -321,7 +413,10 @@ class DataAcquisition:
             # Update only every hour (cache TTL)
             if (not self._cached_indicators_1d or 
                 (current_time - self._cache_timestamp_1d) > self._cache_ttl_1d):
-                ohlcv_1d = self.exchange.fetch_ohlcv(symbol, timeframe='1d', limit=200)
+                if self.config.exchange_type.lower() == "binance_demo":
+                    ohlcv_1d = self._fetch_futures_klines(symbol, '1d', 200)
+                else:
+                    ohlcv_1d = self.exchange.fetch_ohlcv(symbol, timeframe='1d', limit=200)
                 indicators_1d = self._compute_indicators(ohlcv_1d)
                 self._cached_indicators_1d = indicators_1d
                 self._cache_timestamp_1d = current_time
@@ -334,7 +429,10 @@ class DataAcquisition:
             # Update every 15 minutes (cache TTL)
             if (not self._cached_indicators_4h or 
                 (current_time - self._cache_timestamp_4h) > self._cache_ttl_4h):
-                ohlcv_4h = self.exchange.fetch_ohlcv(symbol, timeframe='4h', limit=300)
+                if self.config.exchange_type.lower() == "binance_demo":
+                    ohlcv_4h = self._fetch_futures_klines(symbol, '4h', 300)
+                else:
+                    ohlcv_4h = self.exchange.fetch_ohlcv(symbol, timeframe='4h', limit=300)
                 indicators_4h = self._compute_indicators(ohlcv_4h)
                 self._cached_indicators_4h = indicators_4h
                 self._cache_timestamp_4h = current_time
@@ -345,19 +443,28 @@ class DataAcquisition:
             
             # 3. 1-hour timeframe - for short-term trend (500 candles = ~21 days)
             # Always fetch fresh (main analysis timeframe)
-            ohlcv_1h = self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=500)
+            if self.config.exchange_type.lower() == "binance_demo":
+                ohlcv_1h = self._fetch_futures_klines(symbol, '1h', 500)
+            else:
+                ohlcv_1h = self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=500)
             indicators_1h = self._compute_indicators(ohlcv_1h)
             
             # 4. 15-minute timeframe - for entry timing (200 candles = ~2 days)
             # Always fetch fresh (precise entry signals)
-            ohlcv_15m = self.exchange.fetch_ohlcv(symbol, timeframe='15m', limit=200)
+            if self.config.exchange_type.lower() == "binance_demo":
+                ohlcv_15m = self._fetch_futures_klines(symbol, '15m', 200)
+            else:
+                ohlcv_15m = self.exchange.fetch_ohlcv(symbol, timeframe='15m', limit=200)
             indicators_15m = self._compute_indicators(ohlcv_15m)
             
             # 5. 5-minute timeframe - for scalping fallback (200 candles = ~17 hours)
             # Cached with short TTL (1 minute)
             if (not self._cached_indicators_5m or 
                 (current_time - self._cache_timestamp_5m) > self._cache_ttl_5m):
-                ohlcv_5m = self.exchange.fetch_ohlcv(symbol, timeframe='5m', limit=200)
+                if self.config.exchange_type.lower() == "binance_demo":
+                    ohlcv_5m = self._fetch_futures_klines(symbol, '5m', 200)
+                else:
+                    ohlcv_5m = self.exchange.fetch_ohlcv(symbol, timeframe='5m', limit=200)
                 indicators_5m = self._compute_indicators(ohlcv_5m)
                 self._cached_indicators_5m = indicators_5m
                 self._cache_timestamp_5m = current_time
@@ -370,7 +477,10 @@ class DataAcquisition:
             # Cached with very short TTL (30 seconds)
             if (not self._cached_indicators_1m or 
                 (current_time - self._cache_timestamp_1m) > self._cache_ttl_1m):
-                ohlcv_1m = self.exchange.fetch_ohlcv(symbol, timeframe='1m', limit=200)
+                if self.config.exchange_type.lower() == "binance_demo":
+                    ohlcv_1m = self._fetch_futures_klines(symbol, '1m', 200)
+                else:
+                    ohlcv_1m = self.exchange.fetch_ohlcv(symbol, timeframe='1m', limit=200)
                 indicators_1m = self._compute_indicators(ohlcv_1m)
                 self._cached_indicators_1m = indicators_1m
                 self._cache_timestamp_1m = current_time
@@ -479,7 +589,7 @@ class DataAcquisition:
             # Cache the snapshot for error recovery
             self._cached_snapshot = snapshot
             
-            logger.info(f"Fetched multi-timeframe snapshot for {symbol}: price={snapshot.price}")
+            logger.debug(f"Fetched multi-timeframe snapshot for {symbol}: price={snapshot.price}")
             logger.debug(f"Trend alignment: 1D={combined_indicators['trend_1d']}, 4H={combined_indicators['trend_4h']}, 15M={combined_indicators['trend_15m']}")
             
             return snapshot

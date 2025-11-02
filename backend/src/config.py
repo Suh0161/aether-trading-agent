@@ -31,6 +31,9 @@ class Config:
     daily_loss_cap_pct: Optional[float]
     cooldown_seconds: Optional[int]
     
+    # Demo mode (only used for binance_demo exchange type)
+    mock_starting_equity: float  # Starting equity for demo mode (default: 100.0)
+    
     # LLM
     decision_provider: str
     strategy_mode: str  # "hybrid_atr", "hybrid_ema", "ai_only"
@@ -127,9 +130,18 @@ class Config:
         if cooldown_seconds is not None and cooldown_seconds < 0:
             raise ValueError("COOLDOWN_SECONDS must be non-negative")
         
+        # Load mock starting equity (for demo mode only)
+        try:
+            mock_starting_equity = float(os.getenv("MOCK_STARTING_EQUITY", "100.0"))
+        except ValueError:
+            raise ValueError("MOCK_STARTING_EQUITY must be a valid float")
+        
+        if mock_starting_equity <= 0:
+            raise ValueError("MOCK_STARTING_EQUITY must be greater than 0")
+        
         # Validate run mode
-        if run_mode not in ["testnet", "live"]:
-            raise ValueError("RUN_MODE must be either 'testnet' or 'live'")
+        if run_mode not in ["testnet", "live", "demo"]:
+            raise ValueError("RUN_MODE must be either 'testnet', 'live', or 'demo'")
         
         return cls(
             exchange_type=exchange_type,
@@ -143,6 +155,7 @@ class Config:
             run_mode=run_mode,
             daily_loss_cap_pct=daily_loss_cap_pct,
             cooldown_seconds=cooldown_seconds,
+            mock_starting_equity=mock_starting_equity,
             decision_provider=decision_provider,
             strategy_mode=strategy_mode,
         )
