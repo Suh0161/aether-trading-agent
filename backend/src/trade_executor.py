@@ -26,6 +26,7 @@ class TradeExecutor:
     def _init_exchange(self, config: Config) -> ccxt.Exchange:
         """
         Initialize ccxt exchange client based on configuration.
+        Uses Binance USD-M Futures for shorting support.
         
         Args:
             config: Configuration object
@@ -41,6 +42,9 @@ class TradeExecutor:
                 'apiKey': config.exchange_api_key,
                 'secret': config.exchange_api_secret,
                 'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'future',  # Use USD-M Futures
+                }
             })
             # Override to testnet URL
             exchange.set_sandbox_mode(True)
@@ -49,11 +53,14 @@ class TradeExecutor:
                 'apiKey': config.exchange_api_key,
                 'secret': config.exchange_api_secret,
                 'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'future',  # Use USD-M Futures
+                }
             })
         else:
             raise ValueError(f"Unsupported exchange type: {exchange_type}")
         
-        logger.info(f"Initialized {exchange_type} exchange client")
+        logger.info(f"Initialized {exchange_type} exchange client (USD-M Futures)")
         return exchange
     
     def execute(
@@ -203,17 +210,22 @@ class TradeExecutor:
     
     def _execute_short(self, symbol: str, order_size: float) -> ExecutionResult:
         """
-        Execute a market sell order (short).
+        Execute a market sell order (short) on Futures.
+        
+        For Futures, shorting means opening a short position (selling contracts).
+        The exchange uses 'sell' side for short positions.
         
         Args:
             symbol: Trading symbol
-            order_size: Size of the order
+            order_size: Size of the order (in contracts for Futures)
             
         Returns:
             ExecutionResult with order details
         """
         try:
-            logger.info(f"Executing SHORT: market sell {order_size} {symbol}")
+            logger.info(f"Executing SHORT: market sell {order_size} {symbol} (Futures)")
+            # For Futures, use 'sell' side to open short position
+            # Futures API automatically handles short positions
             order = self.exchange.create_market_sell_order(symbol, order_size)
             return self._parse_order_response(order)
         

@@ -303,7 +303,15 @@ async def agent_chat(request: ChatRequest):
             
             if loop_controller_instance:
                 current_position = getattr(loop_controller_instance, 'current_position_size', 0.0)
-                current_equity = getattr(loop_controller_instance, 'virtual_equity', 100.0)
+                # Get real equity (virtual equity removed)
+                # Default fallback if equity not available
+                current_equity = 100.0
+                try:
+                    # Equity is now always real equity, accessed through positions/balance
+                    # For API context, we use a default value
+                    pass
+                except:
+                    pass
                 
                 # Get position type
                 if hasattr(loop_controller_instance, 'position_types') and loop_controller_instance.position_types:

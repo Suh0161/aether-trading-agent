@@ -64,6 +64,9 @@ class DataAcquisition:
                 'apiKey': config.exchange_api_key,
                 'secret': config.exchange_api_secret,
                 'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'future',  # Use USD-M Futures
+                }
             })
             # Override API URL for testnet
             exchange.set_sandbox_mode(True)
@@ -72,6 +75,9 @@ class DataAcquisition:
                 'apiKey': config.exchange_api_key,
                 'secret': config.exchange_api_secret,
                 'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'future',  # Use USD-M Futures
+                }
             })
         elif exchange_type == "hyperliquid":
             # Placeholder for future Hyperliquid support

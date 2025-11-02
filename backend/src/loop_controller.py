@@ -83,9 +83,6 @@ class LoopController:
         # Track last LLM call per symbol for cost optimization
         self.last_llm_call = {}  # {symbol: {'price': float, 'cycle': int, 'timestamp': int}}
         
-        # Track initial real equity for virtual equity calculation
-        self.initial_real_equity: Optional[float] = None
-        self.virtual_starting_equity = config.virtual_starting_equity
         
         # Store snapshots for interactive chat (multi-coin support)
         self.all_snapshots = {}  # {symbol: snapshot} - all 6 coins
@@ -140,8 +137,6 @@ class LoopController:
         logger.info(f"Exchange: {self.config.exchange_type}")
         logger.info(f"Decision Provider: {self.config.decision_provider}")
         logger.info(f"Loop Interval: {self.config.loop_interval_seconds}s")
-        if self.config.virtual_starting_equity:
-            logger.info(f"Virtual Equity Mode: ENABLED (Starting at ${self.config.virtual_starting_equity:,.2f})")
         logger.info("=" * 60)
         
         # Test 1: Exchange connectivity
@@ -258,30 +253,8 @@ class LoopController:
                     # For backward compatibility, use first symbol's position as "position_size"
                     position_size = positions.get(self.config.symbols[0], 0.0)
                     
-                    # Track initial real equity on first fetch (for virtual equity calculation)
-                    if self.initial_real_equity is None:
-                        # If there are pre-existing positions, wait until they're all closed
-                        has_preexisting = any(pos != 0 for pos in positions.values())
-                        if has_preexisting and self.virtual_starting_equity:
-                            logger.warning(f"  Pre-existing positions detected (total value: ${total_position_value:,.2f})")
-                            logger.warning(f"  Virtual equity tracking will start AFTER all positions are closed")
-                            logger.warning(f"  Reason: We don't know the entry prices of pre-existing positions")
-                        else:
-                            # No pre-existing positions, safe to start tracking
-                            self.initial_real_equity = real_equity
-                            if self.virtual_starting_equity:
-                                logger.info(f"  Initial real equity: ${real_equity:,.2f}")
-                                logger.info(f"  Virtual starting equity: ${self.virtual_starting_equity:,.2f}")
-                                logger.info(f"  Virtual equity mode ENABLED - agent will use virtual equity for calculations")
-                    
-                    # Calculate virtual equity if enabled
-                    # Virtual equity starts at virtual_starting_equity and tracks P&L changes
-                    if self.virtual_starting_equity is not None and self.initial_real_equity is not None:
-                        equity_change = real_equity - self.initial_real_equity
-                        equity = self.virtual_starting_equity + equity_change
-                        logger.info(f"  Real equity: ${real_equity:,.2f} | Virtual equity: ${equity:,.2f} (change: ${equity_change:+,.2f})")
-                    else:
-                        equity = real_equity
+                    # Use real equity directly (no virtual equity)
+                    equity = real_equity
                     
                     logger.info(f"  Equity (used for calculations): {equity} {quote_currency}")
                     # Log all positions
