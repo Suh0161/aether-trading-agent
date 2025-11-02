@@ -196,44 +196,59 @@ class ATRBreakoutStrategy:
             long_primary_breakout = keltner_upper > 0 and price > keltner_upper
             long_near_upper_1h = keltner_upper > 0 and price > (keltner_upper * 0.995)
             
-            # Volume confirmation (GOAT-level addition)
-            # Strong volume: ratio > 1.5 (50% above average)
-            # Moderate volume: ratio > 1.2 (20% above average)
-            # Weak volume: ratio < 1.0 (below average)
-            volume_confirmed = volume_ratio_1h >= 1.2  # At least 20% above average
-            volume_strong = volume_ratio_1h >= 1.5  # 50% above average = strong conviction
-            
-            # OBV confirmation (money flow)
+            # PROGRESSIVE CONFIDENCE SYSTEM (Option 3)
+            # Never block trades - adjust confidence based on volume quality
             obv_bullish = obv_trend_1h == "bullish"
             
-            # Entry condition: Higher TF bullish + (breakout OR near band) + VOLUME CONFIRMATION
+            # Base confidence for swing longs
+            base_confidence = 0.8
+            
+            # Progressive volume confidence boost/penalty
+            if volume_ratio_1h >= 1.5:
+                volume_confidence_boost = 0.15  # Strong volume (50%+ above average)
+            elif volume_ratio_1h >= 1.2:
+                volume_confidence_boost = 0.10  # Good volume (20%+ above average)
+            elif volume_ratio_1h >= 1.0:
+                volume_confidence_boost = 0.05  # Acceptable volume (at least average)
+            elif volume_ratio_1h >= 0.8:
+                volume_confidence_boost = 0.00  # Below average but acceptable
+            else:
+                volume_confidence_boost = -0.10  # Very low volume (penalty but still allow)
+            
+            # OBV bonus (money flow confirmation)
+            obv_bonus = 0.05 if obv_bullish else 0.0
+            
+            # Perfect setup bonus (S/R bounce + multi-TF alignment)
+            s1 = indicators.get("support_1", 0)
+            s2 = indicators.get("support_2", 0)
+            swing_low = indicators.get("swing_low", 0)
+            near_support = (s1 > 0 and abs(price - s1) / s1 < 0.005) or \
+                          (s2 > 0 and abs(price - s2) / s2 < 0.005) or \
+                          (swing_low > 0 and abs(price - swing_low) / swing_low < 0.005)
+            strong_alignment = trend_1d == "bullish" and trend_4h == "bullish"
+            perfect_setup_bonus = 0.05 if (near_support and strong_alignment) else 0.0
+            
+            # Final confidence (clamped to 0.3-0.95)
+            base_confidence = max(0.3, min(0.95, base_confidence + volume_confidence_boost + obv_bonus + perfect_setup_bonus))
+            
+            # Entry condition: Higher TF bullish + (breakout OR near band)
+            # Always allow entry if setup found (confidence determines position size)
             entry_timeframe = None
             entry_keltner = 0
             
             if (long_breakout_15m or long_near_upper_15m) and long_trend_15m:
-                # Check volume confirmation for 15m entries
-                if volume_confirmed:
-                    # Use 15m for precise entry timing (preferred method)
-                    entry_keltner = keltner_upper_15m
-                    entry_timeframe = "15m"
-                else:
-                    logger.info(f"15m long setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need >=1.2) - waiting for confirmation")
+                # Use 15m for precise entry timing (preferred method)
+                entry_keltner = keltner_upper_15m
+                entry_timeframe = "15m"
             elif long_primary_breakout or long_near_upper_1h:
-                # Check volume confirmation for 1h entries
-                if volume_confirmed:
-                    # Fallback to primary timeframe
-                    entry_keltner = keltner_upper
-                    entry_timeframe = "1h"
-                else:
-                    logger.info(f"1h long setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need >=1.2) - waiting for confirmation")
+                # Fallback to primary timeframe
+                entry_keltner = keltner_upper
+                entry_timeframe = "1h"
             
             if entry_timeframe:
-                # LONG entry confirmed with VOLUME - proceed with trade setup
-                # Boost confidence if volume is STRONG
-                base_confidence = 0.8
-                if volume_strong and obv_bullish:
-                    base_confidence = 0.95  # Very high confidence with strong volume + bullish OBV
-                    logger.info(f"[STRONG VOLUME] Confirmation: ratio={volume_ratio_1h:.2f}, OBV={obv_trend_1h}")
+                # LONG entry confirmed - proceed with trade setup
+                # Position size and leverage automatically adjusted by confidence
+                logger.info(f"[SWING LONG] Volume: {volume_ratio_1h:.2f}x -> {volume_confidence_boost:+.2f}, OBV: {obv_trend_1h}, Confidence: {base_confidence:.2f}")
                 
                 return self._build_entry_signal(
                     snapshot=snapshot,
@@ -269,41 +284,59 @@ class ATRBreakoutStrategy:
             short_primary_breakdown = keltner_lower > 0 and price < keltner_lower
             short_near_lower_1h = keltner_lower > 0 and price < (keltner_lower * 1.005)
             
-            # Volume confirmation (GOAT-level addition)
-            volume_confirmed = volume_ratio_1h >= 1.2  # At least 20% above average
-            volume_strong = volume_ratio_1h >= 1.5  # 50% above average = strong conviction
-            
-            # OBV confirmation (money flow)
+            # PROGRESSIVE CONFIDENCE SYSTEM (Option 3)
+            # Never block trades - adjust confidence based on volume quality
             obv_bearish = obv_trend_1h == "bearish"
             
-            # Entry condition: Higher TF bearish + (breakdown OR near band) + VOLUME CONFIRMATION
+            # Base confidence for swing shorts
+            base_confidence = 0.8
+            
+            # Progressive volume confidence boost/penalty
+            if volume_ratio_1h >= 1.5:
+                volume_confidence_boost = 0.15  # Strong volume (50%+ above average)
+            elif volume_ratio_1h >= 1.2:
+                volume_confidence_boost = 0.10  # Good volume (20%+ above average)
+            elif volume_ratio_1h >= 1.0:
+                volume_confidence_boost = 0.05  # Acceptable volume (at least average)
+            elif volume_ratio_1h >= 0.8:
+                volume_confidence_boost = 0.00  # Below average but acceptable
+            else:
+                volume_confidence_boost = -0.10  # Very low volume (penalty but still allow)
+            
+            # OBV bonus (money flow confirmation)
+            obv_bonus = 0.05 if obv_bearish else 0.0
+            
+            # Perfect setup bonus (S/R rejection + multi-TF alignment)
+            r1 = indicators.get("resistance_1", 0)
+            r2 = indicators.get("resistance_2", 0)
+            swing_high = indicators.get("swing_high", 0)
+            near_resistance = (r1 > 0 and abs(price - r1) / r1 < 0.005) or \
+                             (r2 > 0 and abs(price - r2) / r2 < 0.005) or \
+                             (swing_high > 0 and abs(price - swing_high) / swing_high < 0.005)
+            strong_alignment = trend_1d == "bearish" and trend_4h == "bearish"
+            perfect_setup_bonus = 0.05 if (near_resistance and strong_alignment) else 0.0
+            
+            # Final confidence (clamped to 0.3-0.95)
+            base_confidence = max(0.3, min(0.95, base_confidence + volume_confidence_boost + obv_bonus + perfect_setup_bonus))
+            
+            # Entry condition: Higher TF bearish + (breakdown OR near band)
+            # Always allow entry if setup found (confidence determines position size)
             entry_timeframe = None
             entry_keltner = 0
             
             if (short_breakdown_15m or short_near_lower_15m) and short_trend_15m:
-                # Check volume confirmation for 15m entries
-                if volume_confirmed:
-                    # Use 15m for precise entry timing (preferred method)
-                    entry_keltner = keltner_lower_15m
-                    entry_timeframe = "15m"
-                else:
-                    logger.info(f"15m short setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need >=1.2) - waiting for confirmation")
+                # Use 15m for precise entry timing (preferred method)
+                entry_keltner = keltner_lower_15m
+                entry_timeframe = "15m"
             elif short_primary_breakdown or short_near_lower_1h:
-                # Check volume confirmation for 1h entries
-                if volume_confirmed:
-                    # Fallback to primary timeframe
-                    entry_keltner = keltner_lower
-                    entry_timeframe = "1h"
-                else:
-                    logger.info(f"1h short setup found but VOLUME TOO LOW (ratio={volume_ratio_1h:.2f}, need >=1.2) - waiting for confirmation")
+                # Fallback to primary timeframe
+                entry_keltner = keltner_lower
+                entry_timeframe = "1h"
             
             if entry_timeframe:
-                # SHORT entry confirmed with VOLUME - proceed with trade setup
-                # Boost confidence if volume is STRONG
-                base_confidence = 0.8
-                if volume_strong and obv_bearish:
-                    base_confidence = 0.95  # Very high confidence with strong volume + bearish OBV
-                    logger.info(f"[STRONG VOLUME] Confirmation: ratio={volume_ratio_1h:.2f}, OBV={obv_trend_1h}")
+                # SHORT entry confirmed - proceed with trade setup
+                # Position size and leverage automatically adjusted by confidence
+                logger.info(f"[SWING SHORT] Volume: {volume_ratio_1h:.2f}x -> {volume_confidence_boost:+.2f}, OBV: {obv_trend_1h}, Confidence: {base_confidence:.2f}")
                 
                 return self._build_entry_signal(
                     snapshot=snapshot,
@@ -625,11 +658,41 @@ class ScalpingStrategy:
             volume_ratio_1m = indicators.get("volume_ratio_1m", 1.0)
             obv_trend_5m = indicators.get("obv_trend_5m", "neutral")
             
-            # Volume confirmation for scalping (use 5m or 1m volume)
-            # For scalps, we want at least 1.3x average volume (higher threshold than swings)
-            volume_confirmed_5m = volume_ratio_5m >= 1.3
-            volume_confirmed_1m = volume_ratio_1m >= 1.3
-            volume_confirmed = volume_confirmed_5m or volume_confirmed_1m
+            # PROGRESSIVE CONFIDENCE SYSTEM (Option 3) for scalps
+            # Never block trades - adjust confidence based on volume quality
+            # Use the higher of 5m or 1m volume for confidence calculation
+            active_volume_ratio = max(volume_ratio_5m, volume_ratio_1m)
+            
+            # Base confidence for scalps (lower than swings)
+            base_confidence = 0.7
+            
+            # Progressive volume confidence boost/penalty for scalps
+            if active_volume_ratio >= 1.5:
+                volume_confidence_boost = 0.10  # Strong volume
+            elif active_volume_ratio >= 1.3:
+                volume_confidence_boost = 0.08  # Good volume (30%+ above average)
+            elif active_volume_ratio >= 1.1:
+                volume_confidence_boost = 0.05  # Acceptable volume (10%+ above average)
+            elif active_volume_ratio >= 1.0:
+                volume_confidence_boost = 0.02  # At least average
+            elif active_volume_ratio >= 0.9:
+                volume_confidence_boost = 0.00  # Below average but acceptable
+            else:
+                volume_confidence_boost = -0.08  # Very low volume (penalty but still allow)
+            
+            # OBV bonus for scalps
+            obv_bonus = 0.03 if obv_trend_5m == "bullish" else 0.0
+            
+            # Perfect setup bonus (S/R bounce + VWAP alignment)
+            s1 = indicators.get("support_1", 0)
+            swing_low = indicators.get("swing_low", 0)
+            near_support = (s1 > 0 and abs(price - s1) / s1 < 0.005) or \
+                          (swing_low > 0 and abs(price - swing_low) / swing_low < 0.005)
+            above_vwap = price > vwap_5m
+            perfect_setup_bonus = 0.03 if (near_support and above_vwap) else 0.0
+            
+            # Final confidence for scalps (clamped to 0.4-0.85)
+            base_confidence = max(0.4, min(0.85, base_confidence + volume_confidence_boost + obv_bonus + perfect_setup_bonus))
             
             # Check 1m momentum for longs
             long_momentum_1m = price > ema_20_1m and rsi_1m < 75  # Not overbought
@@ -644,20 +707,17 @@ class ScalpingStrategy:
             near_upper_1m = keltner_upper_1m > 0 and price > (keltner_upper_1m * 0.995)
             near_upper_5m = keltner_upper_5m > 0 and price > (keltner_upper_5m * 0.995)
             
-            # Entry: 5m bullish trend + price above VWAP + (breakout OR near band with momentum) + VOLUME
+            # Entry: 5m bullish trend + price above VWAP + (breakout OR near band with momentum)
+            # Always allow entry if setup found (confidence determines position size)
             has_breakout = long_breakout_1m or long_breakout_5m
             has_momentum_entry = (near_upper_1m or near_upper_5m) and long_momentum_1m
             
-            if (has_breakout or has_momentum_entry) and long_momentum_1m and volume_confirmed:
+            if (has_breakout or has_momentum_entry) and long_momentum_1m:
                 # Calculate position size using TWO-LAYER SYSTEM for scalps
                 stop_distance = price * self.stop_loss_pct
                 
-                # Base confidence for scalps (lower than swings)
-                base_confidence = 0.7
-                
-                # Boost confidence if volume is VERY strong
-                if volume_ratio_5m >= 1.5 or volume_ratio_1m >= 1.5:
-                    base_confidence = 0.8
+                # Confidence already calculated above (progressive system)
+                logger.info(f"[SCALP LONG] Volume: {active_volume_ratio:.2f}x -> {volume_confidence_boost:+.2f}, OBV: {obv_trend_5m}, Confidence: {base_confidence:.2f}")
                 
                 # LAYER 1: Capital Allocation (scalps are smaller than swings)
                 if base_confidence >= 0.8:
@@ -718,11 +778,16 @@ class ScalpingStrategy:
                     entry_type = "momentum"
                     entry_tf = "1m" if near_upper_1m else "5m"
                 
-                # Volume info for scalp
-                active_volume_ratio = volume_ratio_1m if volume_confirmed_1m else volume_ratio_5m
+                # Volume info for scalp (active_volume_ratio already calculated above)
                 volume_info = f"Vol: {active_volume_ratio:.2f}x"
                 if active_volume_ratio >= 1.5:
-                    volume_info += " [STRONG]"  # Changed from emoji for Windows compatibility
+                    volume_info += " [STRONG]"
+                elif active_volume_ratio >= 1.3:
+                    volume_info += " [GOOD]"
+                elif active_volume_ratio >= 1.0:
+                    volume_info += " [OK]"
+                else:
+                    volume_info += " [LOW]"
                 
                 # Position sizing summary for logging
                 logger.info(
@@ -753,11 +818,41 @@ class ScalpingStrategy:
             volume_ratio_1m = indicators.get("volume_ratio_1m", 1.0)
             obv_trend_5m = indicators.get("obv_trend_5m", "neutral")
             
-            # Volume confirmation for scalping (use 5m or 1m volume)
-            # For scalps, we want at least 1.3x average volume (higher threshold than swings)
-            volume_confirmed_5m = volume_ratio_5m >= 1.3
-            volume_confirmed_1m = volume_ratio_1m >= 1.3
-            volume_confirmed = volume_confirmed_5m or volume_confirmed_1m
+            # PROGRESSIVE CONFIDENCE SYSTEM (Option 3) for scalps
+            # Never block trades - adjust confidence based on volume quality
+            # Use the higher of 5m or 1m volume for confidence calculation
+            active_volume_ratio = max(volume_ratio_5m, volume_ratio_1m)
+            
+            # Base confidence for scalps (lower than swings)
+            base_confidence = 0.7
+            
+            # Progressive volume confidence boost/penalty for scalps
+            if active_volume_ratio >= 1.5:
+                volume_confidence_boost = 0.10  # Strong volume
+            elif active_volume_ratio >= 1.3:
+                volume_confidence_boost = 0.08  # Good volume (30%+ above average)
+            elif active_volume_ratio >= 1.1:
+                volume_confidence_boost = 0.05  # Acceptable volume (10%+ above average)
+            elif active_volume_ratio >= 1.0:
+                volume_confidence_boost = 0.02  # At least average
+            elif active_volume_ratio >= 0.9:
+                volume_confidence_boost = 0.00  # Below average but acceptable
+            else:
+                volume_confidence_boost = -0.08  # Very low volume (penalty but still allow)
+            
+            # OBV bonus for scalps
+            obv_bonus = 0.03 if obv_trend_5m == "bearish" else 0.0
+            
+            # Perfect setup bonus (S/R rejection + VWAP alignment)
+            r1 = indicators.get("resistance_1", 0)
+            swing_high = indicators.get("swing_high", 0)
+            near_resistance = (r1 > 0 and abs(price - r1) / r1 < 0.005) or \
+                             (swing_high > 0 and abs(price - swing_high) / swing_high < 0.005)
+            below_vwap = price < vwap_5m
+            perfect_setup_bonus = 0.03 if (near_resistance and below_vwap) else 0.0
+            
+            # Final confidence for scalps (clamped to 0.4-0.85)
+            base_confidence = max(0.4, min(0.85, base_confidence + volume_confidence_boost + obv_bonus + perfect_setup_bonus))
             
             # Check 1m momentum for shorts
             short_momentum_1m = price < ema_20_1m and rsi_1m > 25  # Not oversold
@@ -772,20 +867,17 @@ class ScalpingStrategy:
             near_lower_1m = keltner_lower_1m > 0 and price < (keltner_lower_1m * 1.005)
             near_lower_5m = keltner_lower_5m > 0 and price < (keltner_lower_5m * 1.005)
             
-            # Entry: 5m bearish trend + price below VWAP + (breakdown OR near band with momentum) + VOLUME
+            # Entry: 5m bearish trend + price below VWAP + (breakdown OR near band with momentum)
+            # Always allow entry if setup found (confidence determines position size)
             has_breakdown = short_breakdown_1m or short_breakdown_5m
             has_momentum_entry = (near_lower_1m or near_lower_5m) and short_momentum_1m
             
-            if (has_breakdown or has_momentum_entry) and short_momentum_1m and volume_confirmed:
+            if (has_breakdown or has_momentum_entry) and short_momentum_1m:
                 # Calculate position size using TWO-LAYER SYSTEM for scalps
                 stop_distance = price * self.stop_loss_pct
                 
-                # Base confidence for scalps (lower than swings)
-                base_confidence = 0.7
-                
-                # Boost confidence if volume is VERY strong
-                if volume_ratio_5m >= 1.5 or volume_ratio_1m >= 1.5:
-                    base_confidence = 0.8
+                # Confidence already calculated above (progressive system)
+                logger.info(f"[SCALP SHORT] Volume: {active_volume_ratio:.2f}x -> {volume_confidence_boost:+.2f}, OBV: {obv_trend_5m}, Confidence: {base_confidence:.2f}")
                 
                 # LAYER 1: Capital Allocation (scalps are smaller than swings)
                 if base_confidence >= 0.8:
@@ -846,11 +938,16 @@ class ScalpingStrategy:
                     entry_type = "momentum"
                     entry_tf = "1m" if near_lower_1m else "5m"
                 
-                # Volume info for scalp
-                active_volume_ratio = volume_ratio_1m if volume_confirmed_1m else volume_ratio_5m
+                # Volume info for scalp (active_volume_ratio already calculated above)
                 volume_info = f"Vol: {active_volume_ratio:.2f}x"
                 if active_volume_ratio >= 1.5:
-                    volume_info += " [STRONG]"  # Changed from emoji for Windows compatibility
+                    volume_info += " [STRONG]"
+                elif active_volume_ratio >= 1.3:
+                    volume_info += " [GOOD]"
+                elif active_volume_ratio >= 1.0:
+                    volume_info += " [OK]"
+                else:
+                    volume_info += " [LOW]"
                 
                 # Position sizing summary for logging
                 logger.info(
