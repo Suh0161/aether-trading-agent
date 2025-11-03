@@ -7,6 +7,9 @@ import time
 from typing import Optional, Dict, List
 from src.config import Config
 from src.models import MarketSnapshot
+from src.orderbook_analyzer import OrderBookAnalyzer
+from src.regime_classifier import RegimeClassifier
+from src.tiered_data import EnhancedMarketSnapshot, Tier1Data, Tier3Data
 
 
 logger = logging.getLogger(__name__)
@@ -45,6 +48,10 @@ class DataAcquisition:
         # Scalping TF cache TTL: Update more frequently than higher TFs but still cache
         self._cache_ttl_5m = 60    # 5m: update every 1 minute
         self._cache_ttl_1m = 30    # 1m: update every 30 seconds
+        
+        # Initialize tiered data components
+        self.orderbook_analyzer = OrderBookAnalyzer(self.exchange)
+        self.regime_classifier = RegimeClassifier()
     
     def _init_exchange(self, config: Config) -> ccxt.Exchange:
         """
@@ -635,3 +642,177 @@ class DataAcquisition:
         
         logger.info(f"Fetched {len(snapshots)} symbol snapshots successfully")
         return snapshots
+    
+    def fetch_enhanced_snapshot(
+        self,
+        symbol: str,
+        position_size: float = 0.0
+    ) -> EnhancedMarketSnapshot:
+        """
+        Fetch market snapshot with Tier 2 (order book) and Tier 3 (regime) data.
+        
+        Args:
+            symbol: Trading pair symbol (e.g., "BTC/USDT")
+            position_size: Current position size (for Tier 1 data)
+            
+        Returns:
+            EnhancedMarketSnapshot with all tiered data
+        """
+        # Fetch base snapshot
+        snapshot = self.fetch_market_snapshot(symbol)
+        indicators = snapshot.indicators
+        
+        # Extract Tier 1 data
+        tier1 = Tier1Data(
+            price=snapshot.price,
+            bid=snapshot.bid,
+            ask=snapshot.ask,
+            ema_1m=indicators.get('ema_20_1m', snapshot.price),
+            ema_5m=indicators.get('ema_20_5m', snapshot.price),
+            ema_15m=indicators.get('ema_50_15m', snapshot.price),
+            ema_1h=indicators.get('ema_50', snapshot.price),
+            ema_50_4h=indicators.get('ema_50_4h', snapshot.price),
+            ema_50_1d=indicators.get('ema_50_1d', snapshot.price),
+            atr_14=indicators.get('atr_14', 0.0),
+            volume_1m=indicators.get('volume_1m', 0.0),
+            volume_5m=indicators.get('volume_5m', 0.0),
+            volume_1h=indicators.get('volume_1h', 0.0),
+            position_size=position_size,
+            position_side="long" if position_size > 0 else ("short" if position_size < 0 else "none"),
+            fees=0.04,  # Binance Futures maker/taker fee (0.02% each, 0.04% total)
+            tick_size=0.01  # Default tick size (can be fetched from exchange if needed)
+        )
+        
+        # Fetch Tier 2 data (order book)
+        tier2 = self.orderbook_analyzer.fetch_orderbook_metrics(symbol)
+        
+        # Compute liquidity zone features (if tier2 exists)
+        if tier2:
+            # Get recent candles for sweep detection (1m and 5m)
+            try:
+                if self.config.exchange_type.lower() == "binance_demo":
+                    ohlcv_1m = self._fetch_futures_klines(symbol, '1m', 10)  # Last 10 candles
+                    ohlcv_5m = self._fetch_futures_klines(symbol, '5m', 10)
+                else:
+                    ohlcv_1m = self.exchange.fetch_ohlcv(symbol, timeframe='1m', limit=10)
+                    ohlcv_5m = self.exchange.fetch_ohlcv(symbol, timeframe='5m', limit=10)
+            except Exception as e:
+                logger.warning(f"Failed to fetch recent candles for liquidity analysis for {symbol}: {e}")
+                ohlcv_1m = None
+                ohlcv_5m = None
+            
+            # Compute liquidity features
+            liquidity_features = self.orderbook_analyzer.liquidity_analyzer.compute_tier2_liquidity(
+                symbol=symbol,
+                price=snapshot.price,
+                indicators=indicators,
+                recent_1m_candles=ohlcv_1m,
+                recent_5m_candles=ohlcv_5m
+            )
+            
+            # Add liquidity features to Tier2Data
+            tier2.distance_to_liquidity_zone_pct = liquidity_features.get("distance_pct")
+            tier2.nearest_liquidity_zone_price = liquidity_features.get("zone_price")
+            tier2.liquidity_zone_type = liquidity_features.get("zone_type")
+            tier2.liquidity_sweep_detected = liquidity_features.get("sweep_detected", False)
+            tier2.sweep_confidence = liquidity_features.get("sweep_confidence", 0.0)
+            tier2.sweep_direction = liquidity_features.get("sweep_direction")
+            
+            # Log liquidity zone info
+            if tier2.liquidity_zone_type:
+                sweep_info = ""
+                if tier2.liquidity_sweep_detected:
+                    sweep_info = f", SWEEP DETECTED ({tier2.sweep_direction}, confidence: {tier2.sweep_confidence:.2f})"
+                logger.debug(
+                    f"Liquidity zone for {symbol}: "
+                    f"{tier2.liquidity_zone_type} @ ${tier2.nearest_liquidity_zone_price:,.2f}, "
+                    f"distance: {tier2.distance_to_liquidity_zone_pct:.2f}%"
+                    f"{sweep_info}"
+                )
+        
+        # Compute Tier 3 data (regime/context)
+        ema_20 = indicators.get('ema_20', snapshot.price)
+        ema_50 = indicators.get('ema_50', snapshot.price)
+        atr = indicators.get('atr_14', 0.0)
+        
+        # Get historical ATR for percentile calculation (if available)
+        historical_atr = None
+        if hasattr(self.regime_classifier, '_atr_history') and symbol in self.regime_classifier._atr_history:
+            atr_history = self.regime_classifier._atr_history[symbol]
+            if len(atr_history) > 0:
+                historical_atr = sum(atr_history) / len(atr_history)
+        
+        tier3 = self.regime_classifier.compute_tier3_data(
+            symbol=symbol,
+            price=snapshot.price,
+            ema_20=ema_20,
+            ema_50=ema_50,
+            atr=atr,
+            historical_atr=historical_atr
+        )
+        
+        return EnhancedMarketSnapshot(
+            original=snapshot,
+            tier1=tier1,
+            tier2=tier2,
+            tier3=tier3
+        )
+    
+    def fetch_multi_symbol_enhanced_snapshots(
+        self,
+        symbols: List[str],
+        position_sizes: Optional[Dict[str, float]] = None
+    ) -> Dict[str, EnhancedMarketSnapshot]:
+        """
+        Fetch enhanced market snapshots with Tier 2 and Tier 3 data for multiple symbols.
+        
+        Args:
+            symbols: List of trading pair symbols (e.g., ["BTC/USDT", "ETH/USDT"])
+            position_sizes: Dictionary mapping symbol to position size (default: all 0)
+            
+        Returns:
+            Dictionary mapping symbol to EnhancedMarketSnapshot
+        """
+        if position_sizes is None:
+            position_sizes = {symbol: 0.0 for symbol in symbols}
+        
+        enhanced_snapshots = {}
+        errors = []
+        
+        for symbol in symbols:
+            try:
+                position_size = position_sizes.get(symbol, 0.0)
+                enhanced_snapshot = self.fetch_enhanced_snapshot(symbol, position_size)
+                enhanced_snapshots[symbol] = enhanced_snapshot
+                
+                # Log tiered data summary
+                tier2_info = ""
+                liquidity_info = ""
+                if enhanced_snapshot.tier2:
+                    tier2_info = f", OB imbalance={enhanced_snapshot.tier2.order_book_imbalance:.3f}"
+                    if enhanced_snapshot.tier2.liquidity_zone_type:
+                        sweep_info = ""
+                        if enhanced_snapshot.tier2.liquidity_sweep_detected:
+                            sweep_info = f", SWEEP({enhanced_snapshot.tier2.sweep_direction}, conf:{enhanced_snapshot.tier2.sweep_confidence:.2f})"
+                        liquidity_info = f", {enhanced_snapshot.tier2.liquidity_zone_type}@{enhanced_snapshot.tier2.nearest_liquidity_zone_price:,.0f}({enhanced_snapshot.tier2.distance_to_liquidity_zone_pct:.2f}%){sweep_info}"
+                
+                logger.debug(
+                    f"Enhanced snapshot for {symbol}: "
+                    f"price=${enhanced_snapshot.tier1.price:,.2f}, "
+                    f"session={enhanced_snapshot.tier3.session}, "
+                    f"vol_regime={enhanced_snapshot.tier3.vol_regime}, "
+                    f"condition={enhanced_snapshot.tier3.market_condition}"
+                    f"{tier2_info}"
+                    f"{liquidity_info}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to fetch enhanced snapshot for {symbol}: {e}")
+                errors.append(symbol)
+        
+        if errors:
+            logger.warning(f"Failed to fetch enhanced snapshots for {len(errors)} symbol(s): {', '.join(errors)}")
+        
+        if enhanced_snapshots:
+            logger.info(f"Fetched {len(enhanced_snapshots)} enhanced snapshots successfully")
+        
+        return enhanced_snapshots

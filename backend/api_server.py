@@ -289,60 +289,134 @@ async def agent_chat(request: ChatRequest):
             obv_trend_1h = indicators.get('obv_trend_1h', 'neutral')
             obv_trend_5m = indicators.get('obv_trend_5m', 'neutral')
             
-            # Get current position and equity from loop controller
-            current_position = 0.0
-            current_equity = 100.0
-            position_type = None
-            entry_price = None
-            stop_loss = None
-            take_profit = None
-            leverage = 1.0
-            risk_amount = None
-            reward_amount = None
-            unrealized_pnl = 0.0
+            # Get ALL positions from loop controller (not just snapshot symbol)
+            all_positions_info = []
+            # Default to MOCK_STARTING_EQUITY from env or 100.0 if not available
+            import os
+            default_equity = float(os.getenv("MOCK_STARTING_EQUITY", "100.0"))
+            current_equity = default_equity
+            total_unrealized_pnl = 0.0
             
             if loop_controller_instance:
-                # FIX: Get position for SPECIFIC symbol (not total across all coins)
-                symbol = snapshot.symbol  # Get symbol first
+                # Get ALL positions across all symbols
                 if hasattr(loop_controller_instance, 'tracked_position_sizes'):
-                    current_position = loop_controller_instance.tracked_position_sizes.get(symbol, 0.0)
+                    tracked_positions = loop_controller_instance.tracked_position_sizes
+                    
+                    # Build info for EACH position
+                    for symbol, position_size in tracked_positions.items():
+                        if position_size == 0.0:
+                            continue
+                        
+                        # Get base currency
+                        base_currency = symbol.split('/')[0]
+                        
+                        # Determine direction (positive = LONG, negative = SHORT)
+                        is_long = position_size > 0
+                        position_direction = "LONG" if is_long else "SHORT"
+                        abs_position_size = abs(position_size)
+                        
+                        # Get position details for this symbol
+                        position_type = None
+                        entry_price = None
+                        stop_loss = None
+                        take_profit = None
+                        leverage = 1.0
+                        risk_amount = None
+                        reward_amount = None
+                        
+                        if hasattr(loop_controller_instance, 'position_types'):
+                            position_type = loop_controller_instance.position_types.get(symbol)
+                        if hasattr(loop_controller_instance, 'position_entry_prices'):
+                            entry_price = loop_controller_instance.position_entry_prices.get(symbol)
+                        if hasattr(loop_controller_instance, 'position_stop_losses'):
+                            stop_loss = loop_controller_instance.position_stop_losses.get(symbol)
+                        if hasattr(loop_controller_instance, 'position_take_profits'):
+                            take_profit = loop_controller_instance.position_take_profits.get(symbol)
+                        if hasattr(loop_controller_instance, 'position_leverages'):
+                            leverage = loop_controller_instance.position_leverages.get(symbol, 1.0)
+                        if hasattr(loop_controller_instance, 'position_risk_amounts'):
+                            risk_amount = loop_controller_instance.position_risk_amounts.get(symbol)
+                        if hasattr(loop_controller_instance, 'position_reward_amounts'):
+                            reward_amount = loop_controller_instance.position_reward_amounts.get(symbol)
+                        
+                        # Get current price for this symbol
+                        current_price = price  # Default to snapshot price
+                        if all_snapshots and symbol in all_snapshots:
+                            current_price = all_snapshots[symbol].price
+                        elif snapshot and snapshot.symbol == symbol:
+                            current_price = snapshot.price
+                        
+                        # Calculate unrealized P&L
+                        unrealized_pnl = 0.0
+                        if entry_price and entry_price > 0:
+                            if is_long:  # LONG
+                                unrealized_pnl = (current_price - entry_price) * abs_position_size
+                            else:  # SHORT
+                                unrealized_pnl = (entry_price - current_price) * abs_position_size
+                            total_unrealized_pnl += unrealized_pnl
+                        
+                        # Calculate risk/reward
+                        actual_risk = risk_amount
+                        actual_reward = reward_amount
+                        if not actual_risk and stop_loss and entry_price:
+                            if is_long:
+                                actual_risk = abs((entry_price - stop_loss) * abs_position_size)
+                            else:
+                                actual_risk = abs((stop_loss - entry_price) * abs_position_size)
+                        if not actual_reward and take_profit and entry_price:
+                            if is_long:
+                                actual_reward = abs((take_profit - entry_price) * abs_position_size)
+                            else:
+                                actual_reward = abs((entry_price - take_profit) * abs_position_size)
+                        
+                        # Calculate notional value
+                        notional_value = abs_position_size * current_price
+                        
+                        # Calculate P&L percentage
+                        pnl_pct = (unrealized_pnl / (abs_position_size * entry_price) * 100) if entry_price and entry_price > 0 else 0
+                        
+                        # Format strings
+                        entry_str = f"${entry_price:,.2f}" if entry_price else "N/A"
+                        sl_str = f"${stop_loss:,.2f} (risk: ${actual_risk:.2f} if hit)" if stop_loss and actual_risk else ("Not set" if not stop_loss else f"${stop_loss:,.2f}")
+                        tp_str = f"${take_profit:,.2f} (reward: ${actual_reward:.2f} if hit)" if take_profit and actual_reward else ("Not set" if not take_profit else f"${take_profit:,.2f}")
+                        rr_str = f"1:{(actual_reward / actual_risk):.2f}" if actual_risk and actual_risk > 0 else "N/A"
+                        
+                        # Format position size based on magnitude
+                        if abs_position_size >= 1:
+                            size_str = f"{abs_position_size:.2f}"
+                        elif abs_position_size >= 0.01:
+                            size_str = f"{abs_position_size:.4f}"
+                        else:
+                            size_str = f"{abs_position_size:.8f}"
+                        
+                        # Build position info for this symbol
+                        pos_info = f"""
+{symbol} - {position_direction} POSITION:
+- Type: {position_type.upper() if position_type else 'UNKNOWN'}
+- Size: {size_str} {base_currency} (${notional_value:,.2f} notional)
+- Direction: {position_direction}
+- Leverage: {leverage:.1f}x
+- Entry Price: {entry_str}
+- Current Price: ${current_price:,.2f}
+- Unrealized P&L: ${unrealized_pnl:+,.2f} ({pnl_pct:+.2f}%)
+- Stop Loss: {sl_str}
+- Take Profit: {tp_str}
+- Risk:Reward Ratio: {rr_str}"""
+                        
+                        all_positions_info.append(pos_info)
+                
+                # Get current equity from loop controller
+                if hasattr(loop_controller_instance, 'current_equity'):
+                    # Use stored current equity if available
+                    current_equity = loop_controller_instance.current_equity
+                elif hasattr(loop_controller_instance, 'tracked_equity'):
+                    # Calculate equity for demo mode: tracked_equity + unrealized P&L
+                    # For live mode, this should come from exchange balance
+                    tracked_equity = loop_controller_instance.tracked_equity
+                    current_equity = tracked_equity + total_unrealized_pnl
                 else:
-                    current_position = getattr(loop_controller_instance, 'current_position_size', 0.0)
-                
-                # Get real equity (virtual equity removed)
-                # Default fallback if equity not available
-                current_equity = 100.0
-                try:
-                    # Equity is now always real equity, accessed through positions/balance
-                    # For API context, we use a default value
-                    pass
-                except:
-                    pass
-                
-                # Get position type for SPECIFIC symbol (not first in dict)
-                if hasattr(loop_controller_instance, 'position_types'):
-                    position_type = loop_controller_instance.position_types.get(symbol)
-                
-                # Get entry price, stop loss, take profit, leverage, risk, reward
-                if hasattr(loop_controller_instance, 'position_entry_prices'):
-                    entry_price = loop_controller_instance.position_entry_prices.get(symbol)
-                if hasattr(loop_controller_instance, 'position_stop_losses'):
-                    stop_loss = loop_controller_instance.position_stop_losses.get(symbol)
-                if hasattr(loop_controller_instance, 'position_take_profits'):
-                    take_profit = loop_controller_instance.position_take_profits.get(symbol)
-                if hasattr(loop_controller_instance, 'position_leverages'):
-                    leverage = loop_controller_instance.position_leverages.get(symbol, 1.0)
-                if hasattr(loop_controller_instance, 'position_risk_amounts'):
-                    risk_amount = loop_controller_instance.position_risk_amounts.get(symbol)
-                if hasattr(loop_controller_instance, 'position_reward_amounts'):
-                    reward_amount = loop_controller_instance.position_reward_amounts.get(symbol)
-                
-                # Calculate unrealized P&L if we have a position
-                if current_position != 0 and entry_price:
-                    if current_position > 0:  # LONG
-                        unrealized_pnl = (price - entry_price) * current_position
-                    else:  # SHORT
-                        unrealized_pnl = (entry_price - price) * abs(current_position)
+                    # Fallback to default
+                    current_equity = default_equity
             
             # Get completed trades summary
             total_trades = len(trades_data)
@@ -354,34 +428,11 @@ async def agent_chat(request: ChatRequest):
             # Strategy mode
             strategy_mode = "HYBRID (ATR Breakout + AI Filter)"  # Default, can be read from config if needed
             
-            # Build position info string
-            base_currency = snapshot.symbol.split('/')[0]
-            if current_position != 0:
-                # Calculate actual risk/reward if not provided
-                actual_risk = risk_amount if risk_amount else (abs((entry_price - stop_loss) * current_position) if stop_loss and entry_price else 0)
-                actual_reward = reward_amount if reward_amount else (abs((take_profit - entry_price) * current_position) if take_profit and entry_price else 0)
-                
-                # Build position info with safe formatting
-                entry_str = f"${entry_price:,.2f}" if entry_price else "N/A"
-                sl_str = f"${stop_loss:,.2f} (risk: ${actual_risk:.2f} if hit)" if stop_loss else "Not set"
-                tp_str = f"${take_profit:,.2f} (reward: ${actual_reward:.2f} if hit)" if take_profit else "Not set"
-                rr_str = f"1:{(actual_reward / actual_risk):.2f}" if actual_risk > 0 else "N/A"
-                pnl_pct = (unrealized_pnl / (abs(current_position) * entry_price) * 100) if entry_price and entry_price > 0 else 0
-                
-                position_info = f"""
-CURRENT POSITION:
-- Type: {position_type.upper() if position_type else 'UNKNOWN'}
-- Size: {current_position:.8f} {base_currency} (${abs(current_position) * price:,.2f} notional)
-- Direction: {'LONG' if current_position > 0 else 'SHORT'}
-- Leverage: {leverage:.1f}x
-- Entry Price: {entry_str}
-- Current Price: ${price:,.2f}
-- Unrealized P&L: ${unrealized_pnl:+,.2f} ({pnl_pct:+.2f}%)
-- Stop Loss: {sl_str}
-- Take Profit: {tp_str}
-- Risk:Reward Ratio: {rr_str}"""
+            # Build position info string (ALL positions)
+            if all_positions_info:
+                position_info = f"\nALL OPEN POSITIONS ({len(all_positions_info)}):" + "".join(all_positions_info)
             else:
-                position_info = "\nCURRENT POSITION: NO OPEN POSITION"
+                position_info = "\nCURRENT POSITION: NO OPEN POSITIONS"
             
             context = f"""=== FULL TRADING AGENT STATUS ===
 
@@ -517,15 +568,17 @@ CRITICAL INSTRUCTIONS - FOLLOW EXACTLY:
 4. DO NOT make up, estimate, or recall any prices from memory
 5. If a number is in the context, copy it exactly (with proper formatting)
 6. NEVER reference prices, levels, or data not shown in the context above
-7. **CRITICAL**: If "NO OPEN POSITION" is shown, DO NOT mention any position, entry price, P&L, or gains/losses
-8. **CRITICAL**: If "CURRENT POSITION" shows 0.0 {base_currency}, DO NOT calculate or mention any profit/loss
-9. **CRITICAL**: You are a MULTI-COIN agent. You evaluate BTC, ETH, SOL, DOGE, BNB, and XRP every cycle and trade the best opportunity. DO NOT say you're "BTC-only" or "BTC-focused".
-10. **CRITICAL**: When asked about specific coins (e.g., "what is price for XRP?"), ALWAYS provide the exact price from the "ALL 6 COINS MARKET OVERVIEW" section. For example, if XRP shows "$2.50" in the overview, say "XRP is at $2.50" - DO NOT say "no pricing data is shown".
-11. **CRITICAL**: You have access to ALL 6 coins data in the "ALL 6 COINS MARKET OVERVIEW" section. When users ask about other coins, reference that section and provide the exact prices, trends, and volumes shown there.
+7. **CRITICAL**: If "NO OPEN POSITIONS" is shown, DO NOT mention any position, entry price, P&L, or gains/losses
+8. **CRITICAL**: You are a MULTI-COIN agent. You evaluate BTC, ETH, SOL, DOGE, BNB, and XRP every cycle and trade the best opportunity. DO NOT say you're "BTC-only" or "BTC-focused".
+9. **CRITICAL**: When listing your positions, ALWAYS mention ALL positions shown in the "ALL OPEN POSITIONS" section. Do NOT only mention BTC - list ALL active positions (BTC, ETH, SOL, DOGE, BNB, XRP) that are shown.
+10. **CRITICAL**: Position sizes are shown as positive numbers with direction (LONG/SHORT). For example, "Size: 0.001 BTC" with "Direction: SHORT" means you're shorting 0.001 BTC. NEVER display negative position sizes like "-0.001 BTC".
+11. **CRITICAL**: When asked about specific coins (e.g., "what is price for XRP?"), ALWAYS provide the exact price from the "ALL 6 COINS MARKET OVERVIEW" section. For example, if XRP shows "$2.50" in the overview, say "XRP is at $2.50" - DO NOT say "no pricing data is shown".
+12. **CRITICAL**: You have access to ALL 6 coins data in the "ALL 6 COINS MARKET OVERVIEW" section. When users ask about other coins, reference that section and provide the exact prices, trends, and volumes shown there.
+13. **CRITICAL**: When asked "what are you shorting" or "what positions do you have", list ALL positions from the "ALL OPEN POSITIONS" section, not just BTC. Mention each symbol, direction (LONG/SHORT), size, entry price, and current P&L.
 
 User Question: {user_question}
 
-Answer using ONLY the data from the context above. Quote the exact numbers provided. If asked about specific coins (XRP, DOGE, ETH, etc.), use the exact prices from the "ALL 6 COINS MARKET OVERVIEW" section. If there's no open position, do NOT mention position details, P&L, or gains. Be conversational but factually accurate. If asked about trading other coins, explain that you evaluate all 6 coins every cycle and trade the one with the best setup, and mention what those other coins are doing (from the overview). Under 150 words."""
+Answer using ONLY the data from the context above. Quote the exact numbers provided. If asked about specific coins (XRP, DOGE, ETH, etc.), use the exact prices from the "ALL 6 COINS MARKET OVERVIEW" section. When listing positions, mention ALL open positions shown in the context (not just BTC). Position sizes should be displayed as positive numbers with direction (LONG/SHORT). If there's no open position, do NOT mention position details, P&L, or gains. Be conversational but factually accurate. If asked about trading other coins, explain that you evaluate all 6 coins every cycle and trade the one with the best setup, and mention what those other coins are doing (from the overview). Under 150 words."""
             
             response = client.chat.completions.create(
                 model="deepseek-chat",

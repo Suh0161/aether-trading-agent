@@ -1,10 +1,13 @@
 """Decision provider interface and implementations for the Autonomous Trading Agent."""
 
 import os
+from typing import Dict, Optional
 from abc import ABC, abstractmethod
 from openai import OpenAI
 from dotenv import load_dotenv
 from src.models import MarketSnapshot
+from src.tiered_data import EnhancedMarketSnapshot
+from src.prompt_optimizer import PromptOptimizer
 
 # Load .env file
 load_dotenv()
@@ -41,15 +44,18 @@ class DecisionProvider(ABC):
 class DeepSeekDecisionProvider(DecisionProvider):
     """DeepSeek LLM decision provider implementation."""
     
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, use_tiered_data: bool = True):
         """
         Initialize DeepSeek decision provider.
         
         Args:
             api_key: DeepSeek API key
+            use_tiered_data: Whether to use tiered data system (default: True)
         """
         self.api_key = api_key
         self.client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        self.use_tiered_data = use_tiered_data
+        self.prompt_optimizer = PromptOptimizer() if use_tiered_data else None
     
     def _build_prompt(self, snapshot: MarketSnapshot, position_size: float, equity: float) -> str:
         """
@@ -187,8 +193,13 @@ TRADING STRATEGIES YOU CAN USE:
      * Enter when price bounces FROM VWAP back in trend direction
    - Position size: 1-3% of equity
    - Hold time: 1-5 minutes
-   - Stop: 0.2% of price (tight) or just below/above VWAP
-   - Target: 0.3-0.5% profit (quick)
+   - Stop: 0.3% of price (increased to account for fees/wiggles)
+   - Target: 0.5% profit (gives ~0.4% after fees)
+   - **EXCHANGE FEES (CRITICAL):**
+     * Binance Futures: ~0.045-0.05% per side (taker)
+     * Round trip: ~0.1% (enter + exit)
+     * Scalping needs moves > 0.6% to be profitable after fees
+     * TP of 0.5% = ~0.4% net profit (after ~0.1% fees)
 
 MONEY MANAGEMENT RULES:
 1. ONLY trade with AVAILABLE CASH - don't exceed what you can afford
@@ -257,8 +268,11 @@ Output your decision now:"""
         """
         Get trading decision from DeepSeek API.
         
+        Supports both regular MarketSnapshot and EnhancedMarketSnapshot.
+        If EnhancedMarketSnapshot is provided, uses tiered data system.
+        
         Args:
-            snapshot: Current market snapshot
+            snapshot: Current market snapshot (can be MarketSnapshot or EnhancedMarketSnapshot)
             position_size: Current position size
             equity: Current account equity
             
@@ -266,7 +280,12 @@ Output your decision now:"""
             str: Raw LLM response (JSON string or error message)
         """
         try:
-            prompt = self._build_prompt(snapshot, position_size, equity)
+            # Check if snapshot is EnhancedMarketSnapshot
+            if isinstance(snapshot, EnhancedMarketSnapshot) and self.use_tiered_data:
+                prompt = self._build_tiered_prompt(snapshot, equity)
+            else:
+                # Fallback to regular prompt (backwards compatibility)
+                prompt = self._build_prompt(snapshot, position_size, equity)
             
             response = self.client.chat.completions.create(
                 model="deepseek-chat",
@@ -281,3 +300,89 @@ Output your decision now:"""
             # Return error message that will be handled by parser
             error_msg = f"DeepSeek API error: {str(e)}"
             return error_msg
+    
+    def get_multi_symbol_decision(
+        self,
+        enhanced_snapshots: Dict[str, EnhancedMarketSnapshot],
+        equity: float
+    ) -> Dict[str, str]:
+        """
+        Get trading decisions for multiple symbols in one LLM call.
+        
+        This is more efficient than calling get_decision() multiple times,
+        as it sends all symbols in one prompt and gets all decisions at once.
+        
+        Args:
+            enhanced_snapshots: Dictionary mapping symbol to EnhancedMarketSnapshot
+            equity: Current account equity
+            
+        Returns:
+            Dictionary mapping symbol to LLM response (JSON string or error message)
+        """
+        if not self.use_tiered_data:
+            # Fallback: process one by one
+            results = {}
+            for symbol, enhanced_snapshot in enhanced_snapshots.items():
+                position_size = enhanced_snapshot.tier1.position_size
+                results[symbol] = self.get_decision(enhanced_snapshot.original, position_size, equity)
+            return results
+        
+        try:
+            # Build multi-symbol prompt with tiered data
+            prompt = self.prompt_optimizer.build_multi_symbol_prompt(
+                enhanced_snapshots,
+                equity
+            )
+            
+            response = self.client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                timeout=15.0  # Slightly longer timeout for multi-symbol
+            )
+            
+            raw_response = response.choices[0].message.content
+            
+            # Parse multi-symbol response
+            # For now, return the full response - parsing can be handled by the caller
+            # The response should contain decisions for all symbols
+            return {"_multi_symbol": raw_response}
+            
+        except Exception as e:
+            error_msg = f"DeepSeek API error (multi-symbol): {str(e)}"
+            return {"_error": error_msg}
+    
+    def _build_tiered_prompt(self, enhanced_snapshot: EnhancedMarketSnapshot, equity: float) -> str:
+        """
+        Build optimized prompt using tiered data system.
+        
+        Args:
+            enhanced_snapshot: EnhancedMarketSnapshot with tiered data
+            equity: Current account equity
+            
+        Returns:
+            Optimized prompt string
+        """
+        import os
+        from src.strategy import get_max_equity_usage
+        
+        max_equity_pct = get_max_equity_usage()
+        
+        # Calculate smart max leverage
+        if equity < 500:
+            smart_max_leverage = 1.0
+        elif equity < 1000:
+            smart_max_leverage = 1.5
+        elif equity < 5000:
+            smart_max_leverage = 2.0
+        elif equity < 10000:
+            smart_max_leverage = 2.5
+        else:
+            smart_max_leverage = 3.0
+        
+        # Use prompt optimizer for single symbol
+        return self.prompt_optimizer.build_single_symbol_prompt(
+            enhanced_snapshot,
+            equity,
+            max_equity_pct,
+            smart_max_leverage
+        )

@@ -15,9 +15,42 @@ from src.risk_manager import RiskManager
 from src.trade_executor import TradeExecutor
 from src.logger import Logger
 from src.models import CycleLog
+from src.tiered_data import EnhancedMarketSnapshot
 
 
 logger = logging.getLogger(__name__)
+
+
+def _get_price_from_snapshot(snapshot) -> float:
+    """
+    Helper function to extract price from MarketSnapshot or EnhancedMarketSnapshot.
+    
+    Args:
+        snapshot: MarketSnapshot or EnhancedMarketSnapshot
+        
+    Returns:
+        float: Current price
+    """
+    if isinstance(snapshot, EnhancedMarketSnapshot):
+        return snapshot.tier1.price if snapshot.tier1 else snapshot.original.price
+    else:
+        return snapshot.price
+
+
+def _get_base_snapshot(snapshot):
+    """
+    Helper function to get base MarketSnapshot from EnhancedMarketSnapshot or return as-is.
+    
+    Args:
+        snapshot: MarketSnapshot or EnhancedMarketSnapshot
+        
+    Returns:
+        MarketSnapshot: Base snapshot with indicators, timestamp, symbol
+    """
+    if isinstance(snapshot, EnhancedMarketSnapshot):
+        return snapshot.original
+    else:
+        return snapshot
 
 
 class LoopController:
@@ -69,6 +102,7 @@ class LoopController:
         # Track equity dynamically for demo mode (starts at mock equity from config, updates with realized P&L)
         self.tracked_equity = config.mock_starting_equity  # Starting equity for demo mode (will update with realized P&L)
         self.starting_equity = config.mock_starting_equity  # Track starting equity for daily reset
+        self.current_equity = config.mock_starting_equity  # Current equity (tracked_equity + unrealized P&L, or real equity from exchange)
         # Track stop loss and take profit for automatic monitoring
         self.position_stop_losses = {}  # {symbol: stop_loss_price}
         self.position_take_profits = {}  # {symbol: take_profit_price}
@@ -78,6 +112,10 @@ class LoopController:
         self.position_leverages = {}  # {symbol: leverage_multiplier}
         self.position_risk_amounts = {}  # {symbol: risk_amount_usd}
         self.position_reward_amounts = {}  # {symbol: reward_amount_usd}
+        # Track highest/lowest price for trailing stop (swing trades only)
+        self.position_highest_prices = {}  # {symbol: highest_price} for LONG positions
+        self.position_lowest_prices = {}  # {symbol: lowest_price} for SHORT positions
+        self.position_initial_sl = {}  # {symbol: initial_stop_loss} to calculate R multiples
         
         # Track last agent message to avoid spam
         self.last_message_type = None  # Track last message type sent
@@ -154,12 +192,14 @@ class LoopController:
                 # Use Futures public ping endpoint for demo (works on demo-fapi.binance.com)
                 self.trade_executor.exchange.fapiPublicGetPing()
                 logger.info(f"[OK] Demo Futures API connection successful")
+                balance = None  # Demo mode doesn't have balance endpoint
             else:
                 # For live trading, use fetch_balance()
                 balance = self.trade_executor.exchange.fetch_balance()
                 logger.info(f"[OK] Exchange connection successful")
-                
-                # Log available balance (without exposing exact amounts in production)
+            
+            # Log available balance (without exposing exact amounts in production)
+            if balance:
                 total_balance = balance.get('total', {})
                 if total_balance:
                     logger.info(f"  Available currencies: {list(total_balance.keys())[:5]}")
@@ -226,22 +266,118 @@ class LoopController:
                     self._sleep_until_next_cycle(cycle_start_time)
                     continue
                 
-                # Step 1: Fetch market snapshots for all symbols
-                logger.info("Step 1: Fetching market snapshots for all symbols...")
+                # Step 1: Fetch enhanced market snapshots for all symbols (with Tier 2/Tier 3 data)
+                logger.info("Step 1: Fetching enhanced market snapshots for all symbols...")
                 try:
-                    snapshots = self.data_acquisition.fetch_multi_symbol_snapshots(self.config.symbols)
+                    # Get position sizes for enhanced snapshot fetching
+                    position_sizes = {}
+                    for symbol in self.config.symbols:
+                        position_sizes[symbol] = self.tracked_position_sizes.get(symbol, 0.0)
+                    
+                    snapshots = self.data_acquisition.fetch_multi_symbol_enhanced_snapshots(
+                        self.config.symbols,
+                        position_sizes=position_sizes
+                    )
                     # Store all snapshots for interactive chat (multi-coin support)
                     self.all_snapshots = snapshots
                     # Store first snapshot for interactive chat (backward compatibility)
                     self.last_snapshot = list(snapshots.values())[0] if snapshots else None
                     # Aggregate prices into one line for cleaner output
-                    price_summary = ", ".join([f"{sym}: ${snap.price:,.2f}" for sym, snap in snapshots.items()])
+                    # EnhancedMarketSnapshot has .original.price or .tier1.price
+                    price_summary = ", ".join([
+                        f"{sym}: ${_get_price_from_snapshot(snap):,.2f}"
+                        for sym, snap in snapshots.items()
+                    ])
                     logger.info(f"  Markets: {price_summary}")
                 except Exception as e:
                     logger.error(f"Failed to fetch market snapshots: {e}")
                     logger.info("Skipping this cycle due to data acquisition failure")
                     self._sleep_until_next_cycle(cycle_start_time)
                     continue
+                
+                # Step 1.5: Check for emergency close and process immediately if detected (RIGHT AFTER snapshots)
+                emergency_flag = os.path.join(os.path.dirname(os.path.dirname(__file__)), "emergency_close.flag")
+                if os.path.exists(emergency_flag):
+                    logger.warning("="*60)
+                    logger.warning("EMERGENCY CLOSE FLAG DETECTED - Processing ALL positions immediately")
+                    logger.warning("="*60)
+                    
+                    # Fetch positions first (need current positions to close them)
+                    try:
+                        if self.config.exchange_type.lower() == "binance_demo":
+                            balance, positions_emergency = self._fetch_futures_balance_and_positions()
+                            # Use tracked positions for demo mode
+                            for symbol in self.config.symbols:
+                                if symbol in self.tracked_position_sizes:
+                                    positions_emergency[symbol] = self.tracked_position_sizes[symbol]
+                                else:
+                                    positions_emergency[symbol] = 0.0
+                        else:
+                            balance = self.trade_executor.exchange.fetch_balance()
+                            quote_currency = 'USDT'
+                            positions_emergency = {}
+                            for symbol in self.config.symbols:
+                                base_currency = symbol.split('/')[0]
+                                positions_emergency[symbol] = balance['total'].get(base_currency, 0.0)
+                        
+                        # Process emergency close for ALL symbols with positions
+                        emergency_processed = False
+                        for symbol in self.config.symbols:
+                            position_size = positions_emergency.get(symbol, 0.0)
+                            if position_size != 0 and symbol in snapshots:
+                                logger.warning(f"[EMERGENCY] {symbol}: Closing position {position_size:.8f} immediately...")
+                                snapshot = snapshots[symbol]
+                                
+                                # Force close decision
+                                from backend.src.decision_provider import DecisionObject
+                                emergency_decision = DecisionObject(
+                                    action="close",
+                                    size_pct=1.0,
+                                    reason="Emergency close triggered by user - closing all positions immediately",
+                                    position_type="emergency"
+                                )
+                                
+                                # Execute close immediately
+                                try:
+                                    result = self.trade_executor.execute(
+                                        decision=emergency_decision,
+                                        snapshot=snapshot,
+                                        position_size=position_size,
+                                        equity=self.current_equity if hasattr(self, 'current_equity') else self.tracked_equity
+                                    )
+                                    
+                                    if result.executed:
+                                        logger.warning(f"[OK] {symbol}: Emergency close executed: Order ID {result.order_id}")
+                                        emergency_processed = True
+                                        
+                                        # Update tracked positions
+                                        if symbol in self.tracked_position_sizes:
+                                            self.tracked_position_sizes[symbol] = 0.0
+                                        if symbol in self.position_entry_prices:
+                                            del self.position_entry_prices[symbol]
+                                        if symbol in self.position_stop_losses:
+                                            del self.position_stop_losses[symbol]
+                                        if symbol in self.position_take_profits:
+                                            del self.position_take_profits[symbol]
+                                    else:
+                                        logger.error(f"[ERROR] {symbol}: Emergency close failed: {result.error}")
+                                except Exception as e:
+                                    logger.error(f"[ERROR] {symbol}: Emergency close execution error: {e}")
+                        
+                        if emergency_processed:
+                            logger.warning("Emergency close processing complete. Resuming normal cycle...")
+                        else:
+                            logger.info("No positions to close in emergency mode.")
+                    except Exception as e:
+                        logger.error(f"Error fetching positions for emergency close: {e}")
+                    
+                    # Clear emergency flag after processing
+                    try:
+                        if os.path.exists(emergency_flag):
+                            os.remove(emergency_flag)
+                            logger.info("Emergency close flag cleared")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete emergency close flag: {e}")
                 
                 # Step 2: Fetch current positions and equity for all symbols
                 logger.debug("Step 2: Fetching positions and equity...")
@@ -259,11 +395,11 @@ class LoopController:
                     else:
                         balance = self.trade_executor.exchange.fetch_balance()
                         # Get position sizes for all symbols from balance
-                        positions = {}  # {symbol: position_size}
-                        for symbol in self.config.symbols:
-                            base_currency = symbol.split('/')[0]
-                            pos_size = balance['total'].get(base_currency, 0.0)
-                            positions[symbol] = pos_size
+                    positions = {}  # {symbol: position_size}
+                    for symbol in self.config.symbols:
+                        base_currency = symbol.split('/')[0]
+                        pos_size = balance['total'].get(base_currency, 0.0)
+                        positions[symbol] = pos_size
                     
                     # Get equity (total USDT or quote currency) - assume all pairs use USDT
                     quote_currency = 'USDT'
@@ -277,8 +413,8 @@ class LoopController:
                         for symbol in self.config.symbols:
                             pos_size = positions.get(symbol, 0.0)
                             if pos_size != 0 and symbol in snapshots:
-                                entry_price = self.position_entry_prices.get(symbol, snapshots[symbol].price)
-                                current_price = snapshots[symbol].price
+                                entry_price = self.position_entry_prices.get(symbol, _get_price_from_snapshot(snapshots[symbol]))
+                                current_price = _get_price_from_snapshot(snapshots[symbol])
                                 if pos_size > 0:  # LONG
                                     unrealized_pnl = pos_size * (current_price - entry_price)
                                 else:  # SHORT
@@ -292,12 +428,15 @@ class LoopController:
                         # Use real equity from exchange
                         equity = real_equity
                     
+                    # Store current equity for API access
+                    self.current_equity = equity
+                    
                     # Calculate total position value
                     total_position_value = 0.0
                     for symbol in self.config.symbols:
                         pos_size = positions.get(symbol, 0.0)
                         if pos_size != 0 and symbol in snapshots:
-                            total_position_value += abs(pos_size) * snapshots[symbol].price
+                            total_position_value += abs(pos_size) * _get_price_from_snapshot(snapshots[symbol])
                     
                     # For backward compatibility, use first symbol's position as "position_size"
                     position_size = positions.get(self.config.symbols[0], 0.0)
@@ -424,45 +563,130 @@ class LoopController:
         if position_size != 0:
             stored_stop_loss = self.position_stop_losses.get(symbol)
             stored_take_profit = self.position_take_profits.get(symbol)
-            current_price = snapshot.price
+            current_price = _get_price_from_snapshot(snapshot)
+            entry_price = self.position_entry_prices.get(symbol, current_price)
+            position_type = self.position_types.get(symbol, 'swing')
             
-            # LONG position: SL below entry, TP above entry
-            if position_size > 0:
-                if stored_stop_loss and current_price <= stored_stop_loss:
-                    logger.warning(f"[WARNING] {symbol} LONG STOP LOSS HIT! Price ${current_price:.2f} <= Stop Loss ${stored_stop_loss:.2f}")
-                    raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Long stop loss triggered: price ${current_price:.2f} <= ${stored_stop_loss:.2f}"}}'
-                    # Clear stored stop loss/take profit
-                    if symbol in self.position_stop_losses:
-                        del self.position_stop_losses[symbol]
-                    if symbol in self.position_take_profits:
-                        del self.position_take_profits[symbol]
-                elif stored_take_profit and current_price >= stored_take_profit:
-                    logger.info(f"[OK] {symbol} LONG TAKE PROFIT HIT! Price ${current_price:.2f} >= Take Profit ${stored_take_profit:.2f}")
-                    raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Long take profit triggered: price ${current_price:.2f} >= ${stored_take_profit:.2f}"}}'
-                    # Clear stored stop loss/take profit
-                    if symbol in self.position_stop_losses:
-                        del self.position_stop_losses[symbol]
-                    if symbol in self.position_take_profits:
-                        del self.position_take_profits[symbol]
-            
-            # SHORT position: SL above entry, TP below entry
-            else:  # position_size < 0
-                if stored_stop_loss and current_price >= stored_stop_loss:
-                    logger.warning(f"[WARNING] {symbol} SHORT STOP LOSS HIT! Price ${current_price:.2f} >= Stop Loss ${stored_stop_loss:.2f}")
-                    raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Short stop loss triggered: price ${current_price:.2f} >= ${stored_stop_loss:.2f}"}}'
-                    # Clear stored stop loss/take profit
-                    if symbol in self.position_stop_losses:
-                        del self.position_stop_losses[symbol]
-                    if symbol in self.position_take_profits:
-                        del self.position_take_profits[symbol]
-                elif stored_take_profit and current_price <= stored_take_profit:
-                    logger.info(f"[OK] {symbol} SHORT TAKE PROFIT HIT! Price ${current_price:.2f} <= Take Profit ${stored_take_profit:.2f}")
-                    raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Short take profit triggered: price ${current_price:.2f} <= ${stored_take_profit:.2f}"}}'
-                    # Clear stored stop loss/take profit
-                    if symbol in self.position_stop_losses:
-                        del self.position_stop_losses[symbol]
-                    if symbol in self.position_take_profits:
-                        del self.position_take_profits[symbol]
+            # ====================================================================
+            # TRAILING STOP LOGIC (for swing trades only)
+            # ====================================================================
+            if position_type == 'swing':
+                # Update highest/lowest price tracking
+                if position_size > 0:  # LONG
+                    highest = self.position_highest_prices.get(symbol, entry_price)
+                    if current_price > highest:
+                        self.position_highest_prices[symbol] = current_price
+                        highest = current_price
+                    
+                    # Calculate profit in R multiples (risk distance = initial SL distance)
+                    initial_sl = self.position_initial_sl.get(symbol, entry_price - (entry_price * 0.02))  # Fallback to 2% if not tracked
+                    if initial_sl < entry_price:
+                        risk_distance = entry_price - initial_sl  # Risk distance (1R)
+                        current_profit = current_price - entry_price
+                        profit_in_r = current_profit / risk_distance if risk_distance > 0 else 0
+                        
+                        # Get ATR for trailing calculation
+                        base_snapshot = _get_base_snapshot(snapshot)
+                        atr_14 = base_snapshot.indicators.get('atr_14', risk_distance)
+                        
+                        # Progressive trailing stop logic
+                        if profit_in_r >= 1.5:
+                            # After +1.5R: Trail aggressively at ATR×1 below highest
+                            new_sl = highest - atr_14
+                            if new_sl > stored_stop_loss:
+                                stored_stop_loss = new_sl
+                                self.position_stop_losses[symbol] = new_sl
+                                logger.info(
+                                    f"[TRAILING STOP] {symbol} LONG: Profit {profit_in_r:.2f}R, "
+                                    f"trailing SL to ${new_sl:.2f} (ATR×1 below highest ${highest:.2f})"
+                                )
+                        elif profit_in_r >= 1.0:
+                            # After +1R: Move to breakeven + small buffer (0.1% of entry)
+                            be_plus_buffer = entry_price * 1.001  # Entry + 0.1%
+                            if be_plus_buffer > stored_stop_loss:
+                                stored_stop_loss = be_plus_buffer
+                                self.position_stop_losses[symbol] = be_plus_buffer
+                                logger.info(
+                                    f"[BREAKEVEN+BUFFER] {symbol} LONG: Profit {profit_in_r:.2f}R, "
+                                    f"moved SL to BE+0.1% = ${be_plus_buffer:.2f}"
+                                )
+                        
+                else:  # SHORT position
+                    lowest = self.position_lowest_prices.get(symbol, entry_price)
+                    if current_price < lowest:
+                        self.position_lowest_prices[symbol] = current_price
+                        lowest = current_price
+                    
+                    # Calculate profit in R multiples
+                    initial_sl = self.position_initial_sl.get(symbol, entry_price + (entry_price * 0.02))  # Fallback
+                    if initial_sl > entry_price:
+                        risk_distance = initial_sl - entry_price  # Risk distance (1R)
+                        current_profit = entry_price - current_price
+                        profit_in_r = current_profit / risk_distance if risk_distance > 0 else 0
+                        
+                        # Get ATR for trailing calculation
+                        base_snapshot = _get_base_snapshot(snapshot)
+                        atr_14 = base_snapshot.indicators.get('atr_14', risk_distance)
+                        
+                        # Progressive trailing stop logic
+                        if profit_in_r >= 1.5:
+                            # After +1.5R: Trail aggressively at ATR×1 above lowest
+                            new_sl = lowest + atr_14
+                            if new_sl < stored_stop_loss or stored_stop_loss == 0:
+                                stored_stop_loss = new_sl
+                                self.position_stop_losses[symbol] = new_sl
+                                logger.info(
+                                    f"[TRAILING STOP] {symbol} SHORT: Profit {profit_in_r:.2f}R, "
+                                    f"trailing SL to ${new_sl:.2f} (ATR×1 above lowest ${lowest:.2f})"
+                                )
+                        elif profit_in_r >= 1.0:
+                            # After +1R: Move to breakeven - small buffer (0.1% of entry)
+                            be_minus_buffer = entry_price * 0.999  # Entry - 0.1%
+                            if be_minus_buffer < stored_stop_loss or stored_stop_loss == 0:
+                                stored_stop_loss = be_minus_buffer
+                                self.position_stop_losses[symbol] = be_minus_buffer
+                                logger.info(
+                                    f"[BREAKEVEN+BUFFER] {symbol} SHORT: Profit {profit_in_r:.2f}R, "
+                                    f"moved SL to BE-0.1% = ${be_minus_buffer:.2f}"
+                                )
+                    
+                    # LONG position: SL below entry, TP above entry
+                    if position_size > 0:
+                        if stored_stop_loss and current_price <= stored_stop_loss:
+                            logger.warning(f"[WARNING] {symbol} LONG STOP LOSS HIT! Price ${current_price:.2f} <= Stop Loss ${stored_stop_loss:.2f}")
+                            raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Long stop loss triggered: price ${current_price:.2f} <= ${stored_stop_loss:.2f}"}}'
+                            # Clear stored stop loss/take profit
+                            if symbol in self.position_stop_losses:
+                                del self.position_stop_losses[symbol]
+                            if symbol in self.position_take_profits:
+                                del self.position_take_profits[symbol]
+                        elif stored_take_profit and current_price >= stored_take_profit:
+                            logger.info(f"[OK] {symbol} LONG TAKE PROFIT HIT! Price ${current_price:.2f} >= Take Profit ${stored_take_profit:.2f}")
+                            raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Long take profit triggered: price ${current_price:.2f} >= ${stored_take_profit:.2f}"}}'
+                            # Clear stored stop loss/take profit
+                            if symbol in self.position_stop_losses:
+                                del self.position_stop_losses[symbol]
+                            if symbol in self.position_take_profits:
+                                del self.position_take_profits[symbol]
+                    
+                    # SHORT position: SL above entry, TP below entry
+                    else:  # position_size < 0
+                        if stored_stop_loss and current_price >= stored_stop_loss:
+                            logger.warning(f"[WARNING] {symbol} SHORT STOP LOSS HIT! Price ${current_price:.2f} >= Stop Loss ${stored_stop_loss:.2f}")
+                            raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Short stop loss triggered: price ${current_price:.2f} >= ${stored_stop_loss:.2f}"}}'
+                            # Clear stored stop loss/take profit
+                            if symbol in self.position_stop_losses:
+                                del self.position_stop_losses[symbol]
+                            if symbol in self.position_take_profits:
+                                del self.position_take_profits[symbol]
+                        elif stored_take_profit and current_price <= stored_take_profit:
+                            logger.info(f"[OK] {symbol} SHORT TAKE PROFIT HIT! Price ${current_price:.2f} <= Take Profit ${stored_take_profit:.2f}")
+                            raw_llm_output = f'{{"action": "close", "size_pct": 1.0, "reason": "Short take profit triggered: price ${current_price:.2f} <= ${stored_take_profit:.2f}"}}'
+                            # Clear stored stop loss/take profit
+                            if symbol in self.position_stop_losses:
+                                del self.position_stop_losses[symbol]
+                            if symbol in self.position_take_profits:
+                                del self.position_take_profits[symbol]
         
         # ====================================================================
         # STEP 2: Check for emergency close flag
@@ -476,14 +700,25 @@ class LoopController:
                     raw_llm_output = '{"action": "close", "size_pct": 1.0, "reason": "Emergency close triggered by user - closing all positions immediately"}'
                 else:
                     raw_llm_output = '{"action": "hold", "size_pct": 0.0, "reason": "Emergency close triggered but no position"}'
-                    
-                    # If no position on this symbol, check if all symbols have no positions, then clear flag
-                    # We'll clear the flag in the main loop after processing all symbols
-                
+        
+        # If no position on this symbol, check if all symbols have no positions, then clear flag
+        # We'll clear the flag in the main loop after processing all symbols
+        
         # ====================================================================
         # STEP 3: Get decision from decision provider (if no SL/TP/emergency)
         # ====================================================================
         if raw_llm_output is None:
+            # Inject entry timestamp and price into snapshot indicators for scalping "no move" exit logic
+            if position_size != 0 and symbol in self.position_entry_timestamps:
+                entry_timestamp = self.position_entry_timestamps.get(symbol)
+                entry_price = self.position_entry_prices.get(symbol, _get_price_from_snapshot(snapshot))
+                if isinstance(snapshot, EnhancedMarketSnapshot):
+                    snapshot.original.indicators['position_entry_timestamp'] = entry_timestamp
+                    snapshot.original.indicators['position_entry_price'] = entry_price
+                else:
+                    snapshot.indicators['position_entry_timestamp'] = entry_timestamp
+                    snapshot.indicators['position_entry_price'] = entry_price
+            
             # COST OPTIMIZATION: Skip LLM call if market hasn't changed significantly
             should_skip_llm = self._should_skip_llm_call(symbol, snapshot, position_size, cycle_count)
             
@@ -498,12 +733,13 @@ class LoopController:
                     )
                     
                     # Track this LLM call for future cost optimization
+                    snapshot_for_tracking = snapshot.original if isinstance(snapshot, EnhancedMarketSnapshot) else snapshot
                     self.last_llm_call[symbol] = {
-                        'price': snapshot.price,
+                        'price': _get_price_from_snapshot(snapshot),
                         'cycle': cycle_count,
-                        'timestamp': snapshot.timestamp,
-                        'volume_1h': snapshot.indicators.get('volume_ratio_1h', 1.0),
-                        'volume_5m': snapshot.indicators.get('volume_ratio_5m', 1.0)
+                        'timestamp': snapshot_for_tracking.timestamp,
+                        'volume_1h': snapshot_for_tracking.indicators.get('volume_ratio_1h', 1.0),
+                        'volume_5m': snapshot_for_tracking.indicators.get('volume_ratio_5m', 1.0)
                     }
                     
                     if position_size == 0:
@@ -523,8 +759,11 @@ class LoopController:
         # ====================================================================
         # STEP 5: Validate with risk manager
         # ====================================================================
+        # IMPORTANT: Use the most up-to-date position size from tracked positions
+        # (not the stale position_size from start of cycle)
+        current_position_size = self.tracked_position_sizes.get(symbol, 0.0)
         risk_result = self.risk_manager.validate(
-            decision, snapshot, position_size, equity
+            decision, snapshot, current_position_size, equity
         )
         
         if not risk_result.approved and decision.action in ['long', 'short', 'close', 'sell']:
@@ -537,8 +776,9 @@ class LoopController:
         if risk_result.approved and decision.action != 'hold':
             logger.info(f"  {symbol}: [{decision.action.upper()}] Risk check PASSED")
             try:
+                # Use current_position_size (already calculated above)
                 execution_result = self.trade_executor.execute(
-                    decision, snapshot, position_size, equity
+                    decision, snapshot, current_position_size, equity
                 )
                 if execution_result.executed:
                     logger.info(f"  {symbol}: [OK] EXECUTED {decision.action.upper()} @ ${execution_result.fill_price:.2f}")
@@ -592,8 +832,18 @@ class LoopController:
                 
                 if decision.stop_loss is not None:
                     self.position_stop_losses[symbol] = decision.stop_loss
+                    # Store initial SL for trailing stop calculation (swing trades only)
+                    if position_type == 'swing':
+                        self.position_initial_sl[symbol] = decision.stop_loss
                 if decision.take_profit is not None:
                     self.position_take_profits[symbol] = decision.take_profit
+                
+                # Initialize highest/lowest price tracking for trailing stop (swing only)
+                if position_type == 'swing':
+                    if decision.action == 'long':
+                        self.position_highest_prices[symbol] = execution_result.fill_price
+                    elif decision.action == 'short':
+                        self.position_lowest_prices[symbol] = execution_result.fill_price
                 
                 leverage = getattr(decision, 'leverage', 1.0)
                 self.position_leverages[symbol] = leverage
@@ -655,6 +905,13 @@ class LoopController:
                                 del self.position_risk_amounts[symbol]
                             if symbol in self.position_reward_amounts:
                                 del self.position_reward_amounts[symbol]
+                            # Clear trailing stop tracking
+                            if symbol in self.position_highest_prices:
+                                del self.position_highest_prices[symbol]
+                            if symbol in self.position_lowest_prices:
+                                del self.position_lowest_prices[symbol]
+                            if symbol in self.position_initial_sl:
+                                del self.position_initial_sl[symbol]
                     # For live mode, only update if execution succeeded
                     else:
                         # Execution failed and not demo mode - don't update position
@@ -765,10 +1022,11 @@ class LoopController:
         # ====================================================================
         # STEP 9: Log cycle data for this symbol
         # ====================================================================
+        base_snapshot = _get_base_snapshot(snapshot)
         cycle_log = CycleLog(
-            timestamp=snapshot.timestamp,
-            symbol=snapshot.symbol,
-            market_price=snapshot.price,
+            timestamp=base_snapshot.timestamp,
+            symbol=base_snapshot.symbol,
+            market_price=_get_price_from_snapshot(snapshot),
             position_before=position_size,
             llm_raw_output=raw_llm_output,
             parsed_action=decision.action,
@@ -813,16 +1071,17 @@ class LoopController:
                 if position_size != 0:
                     snapshot = snapshots.get(symbol)
                     if snapshot:
-                        entry_price = self.position_entry_prices.get(symbol, snapshot.price)
+                        entry_price = self.position_entry_prices.get(symbol, _get_price_from_snapshot(snapshot))
+                        current_price = _get_price_from_snapshot(snapshot)
                         
                         # Calculate unrealized P&L
                         was_long = position_size > 0
                         if was_long:
-                            unrealized_pnl = position_size * (snapshot.price - entry_price)
-                            pnl_percentage = ((snapshot.price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                            unrealized_pnl = position_size * (current_price - entry_price)
+                            pnl_percentage = ((current_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
                         else:
-                            unrealized_pnl = abs(position_size) * (entry_price - snapshot.price)
-                            pnl_percentage = ((entry_price - snapshot.price) / entry_price) * 100 if entry_price > 0 else 0
+                            unrealized_pnl = abs(position_size) * (entry_price - current_price)
+                            pnl_percentage = ((entry_price - current_price) / entry_price) * 100 if entry_price > 0 else 0
                         
                         total_unrealized_pnl += unrealized_pnl
                         
@@ -835,10 +1094,10 @@ class LoopController:
                             "side": "LONG" if was_long else "SHORT",
                             "coin": base_currency,
                             "leverage": f"{leverage:.1f}X",
-                            "notional": abs(position_size) * snapshot.price,
+                            "notional": abs(position_size) * _get_price_from_snapshot(snapshot),
                             "unrealPnL": unrealized_pnl,
                             "entryPrice": entry_price,
-                            "currentPrice": snapshot.price,
+                            "currentPrice": _get_price_from_snapshot(snapshot),
                             "pnlPercent": pnl_percentage,
                             "stopLoss": stop_loss,
                             "takeProfit": take_profit
@@ -846,12 +1105,24 @@ class LoopController:
             
             # Sync all positions
             self.api_client.sync_positions(positions_list)
-            
+                        
             # Update balance
-            # Available cash should be the net equity (equity already includes unrealized P&L)
-            # Since equity = base_equity + unrealized_pnl, available_cash should just be equity
-            # This shows the actual cash available after accounting for unrealized gains/losses
-            available_cash = equity  # Equity already includes unrealized P&L, so this is the net available cash
+            # Available cash should be base equity + freshly calculated unrealized P&L
+            # We recalculate total_unrealized_pnl fresh above, so we need to compute available_cash using
+            # the base tracked equity plus this fresh P&L to ensure accuracy
+            # For demo mode: available_cash = tracked_equity + total_unrealized_pnl
+            # For live mode: available_cash = base_equity_from_exchange + total_unrealized_pnl
+            # Since we're inside the class method, we can access self.tracked_equity
+            if self.config.exchange_type.lower() == "binance_demo":
+                # Use tracked base equity + freshly calculated unrealized P&L
+                available_cash = self.tracked_equity + total_unrealized_pnl
+            else:
+                # For live mode, equity passed in already includes unrealized P&L, so use it directly
+                # But recalculate it with fresh P&L to ensure accuracy
+                # Extract base equity by subtracting old unrealized P&L, then add fresh P&L
+                # Actually, for live mode, just use the equity passed in (it's already correct from exchange)
+                available_cash = equity  # Live mode equity already includes unrealized P&L correctly
+            
             self.api_client.update_balance(available_cash, total_unrealized_pnl)
             
             logger.info(f"  Frontend updated: Cash=${available_cash:.2f}, P&L=${total_unrealized_pnl:.2f} (positions: {len(positions_list)})")
@@ -939,16 +1210,17 @@ class LoopController:
             
             logger.info(f"Sleeping for {sleep_time:.1f} seconds until next cycle...")
             
-            # Sleep in 1-second chunks to allow emergency flag to interrupt
+            # Sleep in small chunks (0.2 seconds) to allow emergency flag to interrupt quickly
             remaining_sleep = sleep_time
+            check_interval = 0.2  # Check every 0.2 seconds for faster response
             while remaining_sleep > 0:
-                # Check for emergency flag every second
+                # Check for emergency flag frequently
                 if os.path.exists(emergency_flag):
                     logger.warning("Emergency close flag detected during sleep - interrupting immediately")
                     break
                 
-                # Sleep for 1 second or remaining time, whichever is smaller
-                chunk = min(1.0, remaining_sleep)
+                # Sleep for check_interval or remaining time, whichever is smaller
+                chunk = min(check_interval, remaining_sleep)
                 time.sleep(chunk)
                 remaining_sleep -= chunk
         else:
@@ -983,9 +1255,10 @@ class LoopController:
             position_type = getattr(decision, 'position_type', 'swing')
             
             # Build context for AI
-            indicators = snapshot.indicators
-            price = snapshot.price
-            symbol = snapshot.symbol
+            base_snapshot = _get_base_snapshot(snapshot)
+            indicators = base_snapshot.indicators
+            price = _get_price_from_snapshot(snapshot)
+            symbol = base_snapshot.symbol
             base_currency = symbol.split('/')[0]
             
             # Build ALL COINS market overview (COMPREHENSIVE - ALL INDICATORS)
@@ -994,8 +1267,9 @@ class LoopController:
                 all_coins_context = "\n\nALL 6 COINS MARKET OVERVIEW (COMPLETE DATA):\n"
                 for coin_symbol, coin_snap in all_snapshots.items():
                     coin_name = coin_symbol.split('/')[0]
-                    coin_price = coin_snap.price
-                    coin_ind = coin_snap.indicators
+                    coin_price = _get_price_from_snapshot(coin_snap)
+                    coin_base = _get_base_snapshot(coin_snap)
+                    coin_ind = coin_base.indicators
                     
                     # Multi-timeframe trends
                     coin_trend_1d = coin_ind.get('trend_1d', 'unknown')
@@ -1272,8 +1546,9 @@ Write ONLY the message, nothing else:"""
                     
                     # Build status for this symbol
                     coin_name = symbol.split('/')[0]
-                    price = snapshot.price
-                    indicators = snapshot.indicators
+                    price = _get_price_from_snapshot(snapshot)
+                    base_snapshot = _get_base_snapshot(snapshot)
+                    indicators = base_snapshot.indicators
                     
                     # Get decision details
                     action = decision.action
@@ -1543,7 +1818,7 @@ Write ONLY the message, nothing else (2-3 sentences max):"""
             return False  # First call, need to establish baseline
         
         last_call = self.last_llm_call[symbol]
-        last_price = last_call.get('price', snapshot.price)
+        last_price = last_call.get('price', _get_price_from_snapshot(snapshot))
         last_cycle = last_call.get('cycle', 0)
         last_volume_1h = last_call.get('volume_1h', 1.0)
         last_volume_5m = last_call.get('volume_5m', 1.0)
@@ -1554,7 +1829,7 @@ Write ONLY the message, nothing else (2-3 sentences max):"""
             return False  # Too long, need fresh analysis
         
         # Calculate price change
-        current_price = snapshot.price
+        current_price = _get_price_from_snapshot(snapshot)
         price_change_pct = abs(current_price - last_price) / last_price if last_price > 0 else 1.0
         
         # SAFETY RULE 4: Never skip if price moved > 0.5% (significant movement)
@@ -1562,8 +1837,9 @@ Write ONLY the message, nothing else (2-3 sentences max):"""
             return False  # Significant price movement detected
         
         # Get current volume
-        current_volume_1h = snapshot.indicators.get('volume_ratio_1h', 1.0)
-        current_volume_5m = snapshot.indicators.get('volume_ratio_5m', 1.0)
+        base_snapshot = _get_base_snapshot(snapshot)
+        current_volume_1h = base_snapshot.indicators.get('volume_ratio_1h', 1.0)
+        current_volume_5m = base_snapshot.indicators.get('volume_ratio_5m', 1.0)
         
         # SAFETY RULE 5: Never skip if volume spike detected (> 1.3x)
         if current_volume_1h > 1.3 or current_volume_5m > 1.3:

@@ -4,6 +4,7 @@ import logging
 from openai import OpenAI
 from src.models import MarketSnapshot
 from src.strategy import ATRBreakoutStrategy, SimpleEMAStrategy, ScalpingStrategy, StrategySignal
+from src.strategy import get_max_equity_usage
 
 logger = logging.getLogger(__name__)
 
@@ -82,13 +83,34 @@ class HybridDecisionProvider:
             # Always respect close signals
             return self._format_decision(swing_signal)
         
-        # Step 3: If swing strategy wants to enter, ask AI to filter
+        # Step 3: If swing strategy wants to enter, apply liquidity filters FIRST, then AI filter
         if swing_signal.action in ["long", "short"]:
+            # Apply rule-based liquidity filters FIRST (deterministic, before AI)
+            swing_signal = self._apply_liquidity_filters(snapshot, swing_signal, position_size)
+            
+            # If liquidity filter blocked the trade, skip AI filter
+            if swing_signal.action == "hold":
+                logger.info(f"Liquidity filter blocked swing {swing_signal.action} - distance/OB/sweep check failed")
+                return self._format_decision(swing_signal)
+            
+            # Then apply AI filter
             ai_approved = self._ai_filter(snapshot, swing_signal, position_size, equity)
             
             if not ai_approved:
-                # AI vetoed the swing trade - check scalping as fallback
-                logger.debug("AI filter VETOED swing trade, checking scalping fallback")
+                # AI vetoed the swing trade - check HTF alignment
+                # If HTF lines up (1d/4h aligned), prefer swing over scalp - don't fall back
+                indicators = snapshot.indicators
+                trend_1d = indicators.get("trend_1d", "neutral")
+                trend_4h = indicators.get("trend_4h", "neutral")
+                htf_aligned = (trend_1d == "bullish" and trend_4h == "bullish") or (trend_1d == "bearish" and trend_4h == "bearish")
+                
+                if htf_aligned:
+                    # HTF lines up - prefer swing, don't fall back to scalp
+                    logger.info(f"HTF aligned ({trend_1d}/{trend_4h}) but AI vetoed swing - waiting for better swing setup instead of scalp")
+                    return '{"action": "hold", "size_pct": 0.0, "reason": "HTF aligned but AI vetoed swing setup - waiting for better swing opportunity", "position_type": "swing"}'
+                
+                # HTF unclear - check scalping as fallback
+                logger.debug("AI filter VETOED swing trade (HTF unclear), checking scalping fallback")
                 return self._check_scalping_fallback(snapshot, position_size, equity)
             
             logger.debug("AI filter APPROVED swing trade")
@@ -98,12 +120,24 @@ class HybridDecisionProvider:
         # Only fall back to scalping if:
         # - No current position (position_size == 0)
         # - Swing confidence is very low (0.0) - meaning no swing setup available
-        # - This allows scalping when swing has no opportunities
+        # - HTF is NOT aligned (if HTF aligned, wait for swing)
         
-        if swing_signal.action == "hold" and position_size == 0 and swing_signal.confidence == 0.0:
-            # No swing opportunity - try scalping as fallback
-            logger.info("No swing opportunity detected (confidence=0.0), checking scalping fallback")
-            return self._check_scalping_fallback(snapshot, position_size, equity)
+        if swing_signal.action == "hold" and position_size == 0:
+            # Check HTF alignment - if aligned, prefer waiting for swing over scalp
+            indicators = snapshot.indicators
+            trend_1d = indicators.get("trend_1d", "neutral")
+            trend_4h = indicators.get("trend_4h", "neutral")
+            htf_aligned = (trend_1d == "bullish" and trend_4h == "bullish") or (trend_1d == "bearish" and trend_4h == "bearish")
+            
+            if htf_aligned and swing_signal.confidence > 0.0:
+                # HTF aligned and swing has some confidence - wait for swing, don't scalp
+                logger.debug(f"HTF aligned ({trend_1d}/{trend_4h}) with swing confidence {swing_signal.confidence:.2f} - waiting for swing setup")
+                return self._format_decision(swing_signal)
+            
+            # HTF unclear or swing confidence is 0.0 - try scalping as fallback
+            if swing_signal.confidence == 0.0:
+                logger.info("No swing opportunity detected (confidence=0.0), checking scalping fallback")
+                return self._check_scalping_fallback(snapshot, position_size, equity)
         
         # Step 5: Swing strategy says "hold" but we're in a swing position
         # Or swing strategy has some confidence but no entry yet
@@ -132,8 +166,35 @@ class HybridDecisionProvider:
         if scalp_signal.action == "close":
             return self._format_decision(scalp_signal)
         
-        # If scalping wants to enter, ask AI to filter
+        # If scalping wants to enter, apply liquidity filters FIRST, then session check, then AI filter
         if scalp_signal.action in ["long", "short"]:
+            # Apply rule-based liquidity filters FIRST
+            scalp_signal = self._apply_liquidity_filters(snapshot, scalp_signal, position_size)
+            
+            # If liquidity filter blocked the trade, skip session and AI filters
+            if scalp_signal.action == "hold":
+                logger.info(f"Liquidity filter blocked scalp {scalp_signal.action} - distance/OB/sweep check failed")
+                return self._format_decision(scalp_signal)
+            
+            # Additional filters for scalp entries:
+            # 1. Volatility filter (already in scalping strategy)
+            # 2. Session filter - prefer scalping in high liquidity sessions (NY overlap, London open)
+            
+            # Check session (if available via enhanced snapshot)
+            try:
+                import api_server
+                if hasattr(api_server, 'loop_controller_instance') and api_server.loop_controller_instance:
+                    data_acq = api_server.loop_controller_instance.data_acquisition
+                    if hasattr(data_acq, 'regime_classifier'):
+                        session = data_acq.regime_classifier.get_session_time()
+                        # Prefer scalping in NY overlap and London open (higher liquidity)
+                        if session == "asia":
+                            logger.debug(f"Session is ASIA (low liquidity) - scalping less favorable")
+                            # Still allow but with lower priority
+            except:
+                pass  # Session filter is optional
+            
+            # Ask AI to filter
             ai_approved = self._ai_filter(snapshot, scalp_signal, position_size, equity)
             
             if not ai_approved:
@@ -220,6 +281,49 @@ class HybridDecisionProvider:
         """Build prompt for AI filter."""
         indicators = snapshot.indicators
         
+        # Try to get Tier 2 data (order book + liquidity zones) for better decision making
+        tier2_info = ""
+        try:
+            import api_server
+            if hasattr(api_server, 'loop_controller_instance') and api_server.loop_controller_instance:
+                loop_controller = api_server.loop_controller_instance
+                data_acq = loop_controller.data_acquisition
+                enhanced_snapshot = data_acq.fetch_enhanced_snapshot(snapshot.symbol, position_size)
+                
+                if enhanced_snapshot and enhanced_snapshot.tier2:
+                    tier2 = enhanced_snapshot.tier2
+                    tier2_info = f"""
+ORDER BOOK & LIQUIDITY ANALYSIS (Tier 2 Data):
+- Order Book Imbalance: {tier2.order_book_imbalance:.3f} ({'BUYERS heavier' if tier2.order_book_imbalance > 0.1 else 'SELLERS heavier' if tier2.order_book_imbalance < -0.1 else 'balanced'})
+  → For LONG: {'SUPPORTS' if tier2.order_book_imbalance > 0.2 else 'OPPOSES' if tier2.order_book_imbalance < -0.2 else 'neutral'}
+  → For SHORT: {'SUPPORTS' if tier2.order_book_imbalance < -0.2 else 'OPPOSES' if tier2.order_book_imbalance > 0.2 else 'neutral'}
+- Spread: {tier2.spread_bp:.2f}bp ({'WIDE - thin liquidity, be cautious' if tier2.spread_bp > 5.0 else 'normal'})
+- Bid/Ask Vol Ratio: {tier2.bid_ask_vol_ratio:.2f}x
+
+"""
+                    if tier2.liquidity_zone_type:
+                        tier2_info += f"""- Liquidity Zone: ${tier2.nearest_liquidity_zone_price:,.2f} ({tier2.liquidity_zone_type})
+- Distance to Zone: {tier2.distance_to_liquidity_zone_pct:.2f}%
+"""
+                        if tier2.liquidity_sweep_detected:
+                            tier2_info += f"""- SWEEP DETECTED: YES ({tier2.sweep_direction.upper()}, confidence: {tier2.sweep_confidence:.2f})
+  → For LONG: {'STRONG CONFIRMATION - smart money grabbed buy-side liquidity' if tier2.sweep_direction == 'bullish' else 'OPPOSES - bearish sweep detected, reduce confidence'}
+  → For SHORT: {'STRONG CONFIRMATION - smart money grabbed sell-side liquidity' if tier2.sweep_direction == 'bearish' else 'OPPOSES - bullish sweep detected, reduce confidence'}
+"""
+                        else:
+                            if tier2.distance_to_liquidity_zone_pct > 2.0:
+                                tier2_info += f"""- SWEEP DETECTED: NO - Too far from zone ({tier2.distance_to_liquidity_zone_pct:.2f}%) - WEAK signal
+"""
+                            elif tier2.distance_to_liquidity_zone_pct < 0.5:
+                                tier2_info += f"""- SWEEP DETECTED: NO - Very close to zone ({tier2.distance_to_liquidity_zone_pct:.2f}%) - sweep may be imminent
+"""
+                            else:
+                                tier2_info += f"""- SWEEP DETECTED: NO - Zone nearby ({tier2.distance_to_liquidity_zone_pct:.2f}%) - watch for sweep
+"""
+                    tier2_info += "\n"
+        except Exception as e:
+            logger.debug(f"Could not fetch Tier 2 data for AI filter: {e}")
+        
         # Calculate money management metrics
         position_value = position_size * snapshot.price if position_size > 0 else 0.0
         available_cash = equity - position_value
@@ -274,6 +378,7 @@ VOLUME ANALYSIS (Breakout Confirmation):
 - 5m Volume: {indicators.get('volume_ratio_5m', 1.0):.2f}x average ({'STRONG' if indicators.get('volume_ratio_5m', 1.0) >= 1.5 else 'MODERATE' if indicators.get('volume_ratio_5m', 1.0) >= 1.3 else 'WEAK'})
 - Volume Trend: {indicators.get('volume_trend_1h', 'stable')} (1h), {indicators.get('volume_trend_5m', 'stable')} (5m)
 - OBV (Money Flow): {indicators.get('obv_trend_1h', 'neutral')} (1h), {indicators.get('obv_trend_5m', 'neutral')} (5m)
+{tier2_info}
 
 YOUR JOB:
 You are a RISK FILTER, not a strategy. The rule-based strategy has already identified this opportunity.
@@ -294,6 +399,10 @@ STRONG VETO CONDITIONS (should veto):
 - **For LONGS: Price at/near resistance (R1, R2, R3, swing high) - LIKELY REJECTION**
 - **For SHORTS: Price at/near support (S1, S2, S3, swing low) - LIKELY BOUNCE**
 - **Breakout with WEAK volume (< 1.2x avg for swings, < 1.3x for scalps) - LIKELY FAKE BREAKOUT**
+- **For LONGS: Order book imbalance < -0.2 (sellers heavy) AND no sweep - STRONG OPPOSITION**
+- **For SHORTS: Order book imbalance > +0.2 (buyers heavy) AND no sweep - STRONG OPPOSITION**
+- **Bearish sweep detected for LONG entry OR Bullish sweep for SHORT entry - OPPOSES DIRECTION**
+- **Spread > 5bp (thin liquidity) + opposing order book - HIGH SLIPPAGE RISK**
 - Obvious fake breakout/breakdown pattern (price just rejected) - TRAP
 
 APPROVE CONDITIONS (default to approve):
@@ -305,10 +414,15 @@ APPROVE CONDITIONS (default to approve):
 - **BEST SHORTS: Entry at/near resistance (R1, R2, swing high) WITH VOLUME SPIKE - HIGH PROBABILITY**
 - **STRONG volume (≥ 1.5x) + bullish OBV = EXTRA CONFIDENCE for longs**
 - **STRONG volume (≥ 1.5x) + bearish OBV = EXTRA CONFIDENCE for shorts**
+- **For LONGS: Order book imbalance > +0.2 (buyers heavy) = STRONG SUPPORT**
+- **For SHORTS: Order book imbalance < -0.2 (sellers heavy) = STRONG SUPPORT**
+- **Bullish sweep detected for LONG OR Bearish sweep for SHORT = MAX CONFIDENCE**
+- **Near liquidity zone (< 0.5% away) + volume spike = HIGH PROBABILITY SETUP**
 - Available cash is sufficient
 - Leverage is within limits
 - Position size is reasonable
 - Clean breakout/breakdown with follow-through potential
+- Spread < 5bp (good liquidity) = LOWER SLIPPAGE RISK
 - Even if not perfect, if no critical red flags exist → APPROVE
 
 IMPORTANT:
@@ -341,6 +455,144 @@ Example: "VETO - insufficient cash, need $500 have $100"
 Your decision:"""
         
         return prompt
+    
+    def _apply_liquidity_filters(self, snapshot: MarketSnapshot, signal: StrategySignal, position_size: float = 0.0) -> StrategySignal:
+        """
+        Apply rule-based liquidity filters to strategy signal.
+        
+        Filters:
+        1. Distance check: Only trade when near liquidity zones (< 2.0%) OR sweep detected
+        2. Order book imbalance: Reduce confidence if imbalance opposes direction
+        3. Sweep detection: Boost confidence/sizing when sweep aligns with direction
+        4. Spread check: Reduce confidence if spread > 5bp (thin liquidity)
+        
+        Args:
+            snapshot: Market snapshot
+            signal: Strategy signal to filter
+            position_size: Current position size (for Tier 1 data construction)
+            
+        Returns:
+            Modified StrategySignal (may be changed to "hold" if filtered, or confidence/sizing adjusted)
+        """
+        try:
+            # Get enhanced snapshot with Tier 2 data
+            import api_server
+            if not hasattr(api_server, 'loop_controller_instance') or not api_server.loop_controller_instance:
+                return signal  # Can't access enhanced data, skip filter
+            
+            loop_controller = api_server.loop_controller_instance
+            data_acq = loop_controller.data_acquisition
+            
+            # Fetch enhanced snapshot for this symbol
+            # Use actual position_size from context (will be 0.0 for entry checks)
+            enhanced_snapshot = data_acq.fetch_enhanced_snapshot(snapshot.symbol, position_size)
+            
+            if not enhanced_snapshot or not enhanced_snapshot.tier2:
+                return signal  # No Tier 2 data available, skip filter
+            
+            tier2 = enhanced_snapshot.tier2
+            
+            # FILTER 1: Distance to liquidity zone
+            if tier2.liquidity_zone_type and tier2.distance_to_liquidity_zone_pct is not None:
+                distance = tier2.distance_to_liquidity_zone_pct
+                
+                # Conservative: Only trade when near zone (< 2.0%) OR sweep detected
+                if distance > 2.0 and not tier2.liquidity_sweep_detected:
+                    # Too far from liquidity zone and no sweep - skip trade
+                    logger.info(
+                        f"  |-- [LIQUIDITY FILTER] {snapshot.symbol} {signal.action.upper()}: "
+                        f"Too far from zone ({distance:.2f}%), no sweep - BLOCKED"
+                    )
+                    return StrategySignal(
+                        action="hold",
+                        size_pct=0.0,
+                        reason=f"Too far from liquidity zone ({distance:.2f}%), waiting for zone approach or sweep",
+                        confidence=0.0,
+                        symbol=snapshot.symbol,
+                        position_type=signal.position_type
+                    )
+                elif distance < 0.5:
+                    # Very close to zone - boost confidence slightly
+                    logger.debug(f"  |-- [LIQUIDITY FILTER] Near zone ({distance:.2f}%) - slight boost")
+                    signal.confidence = min(0.95, signal.confidence + 0.05)
+            
+            # FILTER 2: Order book imbalance check
+            if signal.action == "long" and tier2.order_book_imbalance < -0.2:
+                # Want to long but sellers are heavy (imbalance < -0.2)
+                logger.info(
+                    f"  |-- [LIQUIDITY FILTER] Order book opposes LONG "
+                    f"(imbalance={tier2.order_book_imbalance:.3f}) - reducing confidence"
+                )
+                # Don't block, but reduce confidence
+                signal.confidence = max(0.3, signal.confidence - 0.15)
+                signal.reason += f" | OB opposes (imbalance={tier2.order_book_imbalance:.3f})"
+            
+            elif signal.action == "short" and tier2.order_book_imbalance > 0.2:
+                # Want to short but buyers are heavy (imbalance > 0.2)
+                logger.info(
+                    f"  |-- [LIQUIDITY FILTER] Order book opposes SHORT "
+                    f"(imbalance={tier2.order_book_imbalance:.3f}) - reducing confidence"
+                )
+                # Don't block, but reduce confidence
+                signal.confidence = max(0.3, signal.confidence - 0.15)
+                signal.reason += f" | OB opposes (imbalance={tier2.order_book_imbalance:.3f})"
+            
+            elif signal.action == "long" and tier2.order_book_imbalance > 0.2:
+                # Long with buyers heavy - boost confidence
+                logger.debug(f"  |-- [LIQUIDITY FILTER] Order book supports LONG (imbalance={tier2.order_book_imbalance:.3f})")
+                signal.confidence = min(0.95, signal.confidence + 0.05)
+            
+            elif signal.action == "short" and tier2.order_book_imbalance < -0.2:
+                # Short with sellers heavy - boost confidence
+                logger.debug(f"  |-- [LIQUIDITY FILTER] Order book supports SHORT (imbalance={tier2.order_book_imbalance:.3f})")
+                signal.confidence = min(0.95, signal.confidence + 0.05)
+            
+            # FILTER 3: Sweep detection boost/penalty
+            if tier2.liquidity_sweep_detected:
+                sweep_direction = tier2.sweep_direction
+                sweep_confidence = tier2.sweep_confidence
+                
+                # Check if sweep direction aligns with trade direction
+                if (signal.action == "long" and sweep_direction == "bullish") or \
+                   (signal.action == "short" and sweep_direction == "bearish"):
+                    # Sweep aligns with trade - BOOST confidence and sizing
+                    sweep_boost = sweep_confidence * 0.2  # Up to +0.2 confidence boost
+                    signal.confidence = min(0.95, signal.confidence + sweep_boost)
+                    
+                    # Increase position size if confidence boost is significant
+                    if sweep_boost > 0.1:
+                        max_equity_pct = get_max_equity_usage()
+                        signal.size_pct = min(signal.size_pct * 1.15, max_equity_pct)  # Up to 15% size boost
+                    
+                    logger.info(
+                        f"  |-- [LIQUIDITY FILTER] SWEEP DETECTED ({sweep_direction.upper()}, "
+                        f"conf:{sweep_confidence:.2f}) - BOOSTING confidence (+{sweep_boost:.2f})"
+                    )
+                    signal.reason += f" | SWEEP({sweep_direction}, conf:{sweep_confidence:.2f}) BOOST"
+                
+                else:
+                    # Sweep opposes trade - reduce confidence significantly
+                    logger.warning(
+                        f"  |-- [LIQUIDITY FILTER] Sweep {sweep_direction.upper()} OPPOSES "
+                        f"{signal.action.upper()} - reducing confidence"
+                    )
+                    signal.confidence = max(0.3, signal.confidence - 0.2)
+                    signal.reason += f" | Sweep {sweep_direction} opposes"
+            
+            # FILTER 4: Spread check (thin liquidity warning)
+            if tier2.spread_bp > 5.0:  # Spread > 5bp = thin liquidity
+                logger.warning(
+                    f"  |-- [LIQUIDITY FILTER] Wide spread ({tier2.spread_bp:.2f}bp) - "
+                    f"thin liquidity, reducing confidence"
+                )
+                signal.confidence = max(0.3, signal.confidence - 0.1)
+                signal.reason += f" | Wide spread ({tier2.spread_bp:.2f}bp)"
+            
+            return signal
+            
+        except Exception as e:
+            logger.warning(f"Liquidity filter error for {snapshot.symbol}: {e} - skipping filter")
+            return signal  # On error, skip filter and proceed
     
     def _format_decision(self, signal: StrategySignal) -> str:
         """Format strategy signal as JSON decision."""

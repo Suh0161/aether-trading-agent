@@ -797,25 +797,30 @@ class ScalpingStrategy:
     """
     Scalping strategy for quick trades when no swing setup is available.
     
-    Rules:
+    Rules (Updated to account for Binance fees):
     1. Entry: Price momentum on 1m/5m timeframes
-    2. Stop: Very tight (0.1-0.3% of price)
-    3. Target: Quick 0.2-0.5% profit
-    4. Hold time: 1-5 minutes max
-    5. Exit: Quick profit or tight stop
+    2. Stop: 0.3% of price (increased from 0.2% to allow for normal wiggles)
+    3. Target: 0.5% profit (increased from 0.3% to give ~0.4% after fees)
+    4. Hold time: 10 minutes max (increased from 5 min to allow moves to develop)
+    5. Exit: Less sensitive - only exit on strong reversal (not just VWAP cross)
+    6. Volatility filter: Only scalp when 5m ATR/price >= 0.15% (prevents low-vol scratches)
     """
     
-    def __init__(self, profit_target_pct: float = 0.003, stop_loss_pct: float = 0.002):
+    def __init__(self, profit_target_pct: float = 0.005, stop_loss_pct: float = 0.003):
         """
         Initialize scalping strategy.
         
         Args:
-            profit_target_pct: Target profit as percentage of price (default 0.3%)
-            stop_loss_pct: Stop loss as percentage of price (default 0.2%)
+            profit_target_pct: Target profit as percentage of price (default 0.5%)
+            stop_loss_pct: Stop loss as percentage of price (default 0.3%)
+            
+        Note: Updated to account for Binance fees (~0.1% round trip).
+        - TP 0.5% gives ~0.4% after fees (better margin above fees)
+        - SL 0.3% provides room for normal market wiggles
         """
         self.profit_target_pct = profit_target_pct
         self.stop_loss_pct = stop_loss_pct
-        self.max_hold_seconds = 300  # 5 minutes max
+        self.max_hold_seconds = 600  # 10 minutes max (increased from 5 min)
     
     def analyze(self, snapshot: Any, position_size: float, equity: float) -> StrategySignal:
         """
@@ -872,17 +877,51 @@ class ScalpingStrategy:
         
         # If we have a LONG position, check exit conditions
         if position_size > 0:
-            # Exit if BOTH 5m AND 1m trends turn bearish (more conservative)
-            # OR if price drops below VWAP (losing momentum)
-            if (trend_5m == "bearish" and trend_1m == "bearish") or price < vwap_5m:
+            # NEW: "No move" exit - if held > 5 minutes AND profit < 0.3%, exit (weak trade)
+            # This prevents holding dead trades that won't reach TP
+            # Note: entry_timestamp should be passed from loop_controller, but we'll handle it gracefully
+            entry_timestamp = getattr(snapshot, 'entry_timestamp', None)
+            if entry_timestamp is None:
+                # Try to get from indicators if available (fallback)
+                entry_timestamp = indicators.get('position_entry_timestamp', None)
+            
+            current_timestamp = snapshot.timestamp
+            if entry_timestamp and current_timestamp:
+                time_held_seconds = current_timestamp - entry_timestamp
+                entry_price = indicators.get('position_entry_price', price)  # Fallback to current price if not available
+                profit_pct = ((price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                min_hold_seconds = 300  # 5 minutes
+                min_profit_threshold_pct = 0.3  # 0.3% minimum profit expected after 5 min
+                
+                if time_held_seconds >= min_hold_seconds and profit_pct < min_profit_threshold_pct:
+                    return StrategySignal(
+                        action="close",
+                        size_pct=1.0,
+                        reason=f"Scalp long exit: No move after {time_held_seconds/60:.1f}min (profit {profit_pct:.2f}% < {min_profit_threshold_pct}% threshold) - weak trade, exiting",
+                        confidence=0.7,
+                        position_type="scalp",
+                        symbol=snapshot.symbol
+                    )
+            
+            # Less sensitive exit: Only exit if BOTH trends reverse AND price significantly below VWAP
+            # OR if price drops significantly below entry (using ATR for normal wiggle room)
+            atr_5m = indicators.get("atr_14", 0.0)
+            if atr_5m == 0:
+                # Fallback: use 1h ATR if 5m not available
+                atr_5m = indicators.get("atr_14", price * 0.002)  # Default 0.2% if no ATR
+            
+            # Exit only if strong reversal signal (both trends bearish AND price dropped significantly)
+            price_below_vwap_significant = price < (vwap_5m * 0.998)  # At least 0.2% below VWAP
+            strong_reversal = (trend_5m == "bearish" and trend_1m == "bearish") and price_below_vwap_significant
+            
+            if strong_reversal:
                 return StrategySignal(
                     action="close",
                     size_pct=1.0,
-                    reason=f"Scalp long exit: Momentum lost (5m={trend_5m}, 1m={trend_1m}, price ${price:.2f} vs VWAP ${vwap_5m:.2f})",
+                    reason=f"Scalp long exit: Strong reversal signal (5m={trend_5m}, 1m={trend_1m}, price ${price:.2f} significantly below VWAP ${vwap_5m:.2f})",
                     confidence=0.8,
-                    position_type="scalp"
-                ,
-                symbol=snapshot.symbol
+                    position_type="scalp",
+                    symbol=snapshot.symbol
                 )
             
             return StrategySignal(
@@ -896,17 +935,48 @@ class ScalpingStrategy:
         
         # If we have a SHORT position, check exit conditions
         elif position_size < 0:
-            # Exit if BOTH 5m AND 1m trends turn bullish (more conservative)
-            # OR if price rises above VWAP (losing momentum)
-            if (trend_5m == "bullish" and trend_1m == "bullish") or price > vwap_5m:
+            # NEW: "No move" exit - if held > 5 minutes AND profit < 0.3%, exit (weak trade)
+            entry_timestamp = getattr(snapshot, 'entry_timestamp', None)
+            if entry_timestamp is None:
+                entry_timestamp = indicators.get('position_entry_timestamp', None)
+            
+            current_timestamp = snapshot.timestamp
+            if entry_timestamp and current_timestamp:
+                time_held_seconds = current_timestamp - entry_timestamp
+                entry_price = indicators.get('position_entry_price', price)
+                profit_pct = ((entry_price - price) / entry_price) * 100 if entry_price > 0 else 0  # For short: profit = entry - current
+                min_hold_seconds = 300  # 5 minutes
+                min_profit_threshold_pct = 0.3  # 0.3% minimum profit expected after 5 min
+                
+                if time_held_seconds >= min_hold_seconds and profit_pct < min_profit_threshold_pct:
+                    return StrategySignal(
+                        action="close",
+                        size_pct=1.0,
+                        reason=f"Scalp short exit: No move after {time_held_seconds/60:.1f}min (profit {profit_pct:.2f}% < {min_profit_threshold_pct}% threshold) - weak trade, exiting",
+                        confidence=0.7,
+                        position_type="scalp",
+                        symbol=snapshot.symbol
+                    )
+            
+            # Less sensitive exit: Only exit if BOTH trends reverse AND price significantly above VWAP
+            # OR if price rises significantly above entry (using ATR for normal wiggle room)
+            atr_5m = indicators.get("atr_14", 0.0)
+            if atr_5m == 0:
+                # Fallback: use 1h ATR if 5m not available
+                atr_5m = indicators.get("atr_14", price * 0.002)  # Default 0.2% if no ATR
+            
+            # Exit only if strong reversal signal (both trends bullish AND price rose significantly)
+            price_above_vwap_significant = price > (vwap_5m * 1.002)  # At least 0.2% above VWAP
+            strong_reversal = (trend_5m == "bullish" and trend_1m == "bullish") and price_above_vwap_significant
+            
+            if strong_reversal:
                 return StrategySignal(
                     action="close",
                     size_pct=1.0,
-                    reason=f"Scalp short exit: Momentum lost (5m={trend_5m}, 1m={trend_1m}, price ${price:.2f} vs VWAP ${vwap_5m:.2f})",
+                    reason=f"Scalp short exit: Strong reversal signal (5m={trend_5m}, 1m={trend_1m}, price ${price:.2f} significantly above VWAP ${vwap_5m:.2f})",
                     confidence=0.8,
-                    position_type="scalp"
-                ,
-                symbol=snapshot.symbol
+                    position_type="scalp",
+                    symbol=snapshot.symbol
                 )
             
             return StrategySignal(
@@ -919,6 +989,35 @@ class ScalpingStrategy:
             )
         
         # No position - look for LONG or SHORT scalping entry
+        # VOLATILITY FILTER: Only scalp in high volatility (prevents death by a thousand scratches)
+        # Check 5m ATR / price ratio - need minimum volatility to overcome fees
+        atr_5m = indicators.get("atr_14", 0.0)
+        if atr_5m == 0:
+            # Fallback to 1h ATR if 5m not available
+            atr_5m = indicators.get("atr_14", price * 0.002)
+        
+        # Minimum volatility threshold: 0.15% (ATR/price must be at least 0.15% for scalping to be viable)
+        # Below this, fees and spread will eat profits
+        min_vol_threshold_pct = 0.0015  # 0.15%
+        atr_to_price_ratio = atr_5m / price if price > 0 else 0
+        
+        if atr_to_price_ratio < min_vol_threshold_pct:
+            return StrategySignal(
+                action="hold",
+                size_pct=0.0,
+                reason=f"Scalp: Low volatility (5m ATR/price={atr_to_price_ratio*100:.2f}% < {min_vol_threshold_pct*100:.2f}%), waiting for higher volatility",
+                confidence=0.0,
+                symbol=snapshot.symbol,
+                position_type="scalp"
+            )
+        
+        # TWEAK 5: Higher timeframe trend check - skip scalps when HTF contradicts
+        # Check 1h/4h trends to avoid scalping against strong higher timeframe moves
+        trend_1h = indicators.get("trend_1h", "neutral")
+        trend_4h = indicators.get("trend_4h", "neutral")
+        strong_htf_up = trend_4h == "bullish" or (trend_1h == "bullish" and trend_4h == "bullish")
+        strong_htf_down = trend_4h == "bearish" or (trend_1h == "bearish" and trend_4h == "bearish")
+        
         # Priority: Check S/R levels FIRST (Support=Buy, Resistance=Sell) - same as swing
         
         # Get S/R levels first
@@ -1031,11 +1130,21 @@ class ScalpingStrategy:
             has_momentum_entry = near_upper_1m and long_momentum_1m  # 1m momentum entry
             
             if (has_breakout or has_momentum_entry) and long_momentum_1m:
+                # TWEAK 1: ATR-based dynamic SL/TP (instead of fixed percentages)
+                # Calculate 5m ATR percentage
+                atr_5m_pct = atr_5m / price if price > 0 else 0.003  # Default to 0.3% if ATR unavailable
+                
+                # Dynamic SL/TP based on ATR, but with minimums to account for fees
+                # SL = max(0.3%, ATR × 0.5) to ensure not too tight when volatility is higher
+                # TP = max(0.5%, ATR × 0.8) to ensure profit after fees
+                dynamic_sl_pct = max(self.stop_loss_pct, atr_5m_pct * 0.5)
+                dynamic_tp_pct = max(self.profit_target_pct, atr_5m_pct * 0.8)
+                
                 # Calculate position size using TWO-LAYER SYSTEM for scalps
-                stop_distance = price * self.stop_loss_pct
+                stop_distance = price * dynamic_sl_pct
                 
                 # Confidence already calculated above (progressive system)
-                logger.info(f"  |-- [SCALP LONG] Confidence: {base_confidence:.2f} | Vol: {active_volume_ratio:.2f}x ({volume_confidence_boost:+.2f}) | OBV: {obv_trend_5m}")
+                logger.info(f"  |-- [SCALP LONG] Confidence: {base_confidence:.2f} | Vol: {active_volume_ratio:.2f}x ({volume_confidence_boost:+.2f}) | OBV: {obv_trend_5m} | ATR-based SL: {dynamic_sl_pct*100:.2f}%, TP: {dynamic_tp_pct*100:.2f}%")
                 
                 # LAYER 1: Capital Allocation (scalps are smaller than swings)
                 # Scale percentages based on MAX_EQUITY_USAGE_PCT from .env
@@ -1066,7 +1175,11 @@ class ScalpingStrategy:
                 position_notional = capital_amount * leverage
                 position_btc = position_notional / price
                 risk_amount = stop_distance * position_btc
-                reward_amount = (price * self.profit_target_pct) * position_btc
+                reward_amount = (price * dynamic_tp_pct) * position_btc
+                
+                # Calculate SL and TP prices using dynamic percentages
+                stop_loss = price - stop_distance
+                take_profit = price + (price * dynamic_tp_pct)
                 
                 # Ensure minimum notional
                 min_notional = 20.0  # Binance Futures minimum notional is $20 USD
@@ -1089,10 +1202,6 @@ class ScalpingStrategy:
                     ,
                     symbol=snapshot.symbol
                     )
-                
-                # Calculate stop loss and take profit for long
-                stop_loss = price - stop_distance
-                take_profit = price + (price * self.profit_target_pct)
                 
                 # Determine entry type for message
                 if long_breakout_1m or long_breakout_5m:
@@ -1141,18 +1250,14 @@ class ScalpingStrategy:
         # 15m: Check bias (direction filter)
         # 5m: Check entry setup (trend + VWAP)
         # 1m: Entry timing (precise entry)
-        elif bias_15m_bearish and trend_5m == "bearish" and price < vwap_5m:
-            # SKIP if price is at support (handled by S/R priority logic above)
-            # Support = buy zone, not short zone
-            if near_support:
-                return StrategySignal(
-                    action="hold",
-                    size_pct=0.0,
-                    reason=f"Scalp: At support ${min(s1 if s1 > 0 else price, s2 if s2 > 0 else price, swing_low if swing_low > 0 else price):.2f} - expecting bounce, not short",
-                    confidence=0.0,
-                    symbol=snapshot.symbol,
-                    position_type="scalp"
-                )
+        # PRIORITY 2: Keltner Band Logic for Scalping (breakout/breakdown on 15m→5m→1m)
+        # === LONG SCALP ENTRY ===
+        # Multi-timeframe scalping: 15m bias → 5m setup → 1m entry
+        # 15m: Check bias (direction filter)
+        # 5m: Check entry setup (trend + VWAP)
+        # 1m: Entry timing (precise entry)
+        # TWEAK 5: Skip long scalp if 4h trend is strongly down (contradicts direction)
+        if bias_15m_bullish and trend_5m == "bullish" and price > vwap_5m and not strong_htf_down:
             # Extract volume indicators for scalping confirmation
             volume_ratio_5m = indicators.get("volume_ratio_5m", 1.0)
             volume_ratio_1m = indicators.get("volume_ratio_1m", 1.0)
@@ -1215,11 +1320,21 @@ class ScalpingStrategy:
             has_momentum_entry = near_lower_1m and short_momentum_1m  # 1m momentum entry
             
             if (has_breakdown or has_momentum_entry) and short_momentum_1m:
+                # TWEAK 1: ATR-based dynamic SL/TP (instead of fixed percentages)
+                # Calculate 5m ATR percentage
+                atr_5m_pct = atr_5m / price if price > 0 else 0.003  # Default to 0.3% if ATR unavailable
+                
+                # Dynamic SL/TP based on ATR, but with minimums to account for fees
+                # SL = max(0.3%, ATR × 0.5) to ensure not too tight when volatility is higher
+                # TP = max(0.5%, ATR × 0.8) to ensure profit after fees
+                dynamic_sl_pct = max(self.stop_loss_pct, atr_5m_pct * 0.5)
+                dynamic_tp_pct = max(self.profit_target_pct, atr_5m_pct * 0.8)
+                
                 # Calculate position size using TWO-LAYER SYSTEM for scalps
-                stop_distance = price * self.stop_loss_pct
+                stop_distance = price * dynamic_sl_pct
                 
                 # Confidence already calculated above (progressive system)
-                logger.info(f"  |-- [SCALP SHORT] Confidence: {base_confidence:.2f} | Vol: {active_volume_ratio:.2f}x ({volume_confidence_boost:+.2f}) | OBV: {obv_trend_5m}")
+                logger.info(f"  |-- [SCALP SHORT] Confidence: {base_confidence:.2f} | Vol: {active_volume_ratio:.2f}x ({volume_confidence_boost:+.2f}) | OBV: {obv_trend_5m} | ATR-based SL: {dynamic_sl_pct*100:.2f}%, TP: {dynamic_tp_pct*100:.2f}%")
                 
                 # LAYER 1: Capital Allocation (scalps are smaller than swings)
                 if base_confidence >= 0.8:
@@ -1244,7 +1359,11 @@ class ScalpingStrategy:
                 position_notional = capital_amount * leverage
                 position_btc = position_notional / price
                 risk_amount = stop_distance * position_btc
-                reward_amount = (price * self.profit_target_pct) * position_btc
+                reward_amount = (price * dynamic_tp_pct) * position_btc
+                
+                # Calculate SL and TP prices using dynamic percentages
+                stop_loss = price + stop_distance
+                take_profit = price - (price * dynamic_tp_pct)
                 
                 # Ensure minimum notional
                 min_notional = 20.0  # Binance Futures minimum notional is $20 USD
@@ -1268,10 +1387,6 @@ class ScalpingStrategy:
                     ,
                     symbol=snapshot.symbol
                     )
-                
-                # Calculate stop loss and take profit for short
-                stop_loss = price + stop_distance
-                take_profit = price - (price * self.profit_target_pct)
                 
                 # Determine entry type for message
                 if short_breakdown_1m or short_breakdown_5m:
@@ -1376,16 +1491,22 @@ class ScalpingStrategy:
             capital_allocation_pct = max_equity_pct * 0.167
             leverage = 1.0
         
+        # TWEAK 1: ATR-based dynamic SL/TP for S/R scalps
+        atr_5m = indicators.get("atr_14", price * 0.002)
+        atr_5m_pct = atr_5m / price if price > 0 else 0.003
+        dynamic_sl_pct = max(self.stop_loss_pct, atr_5m_pct * 0.5)
+        dynamic_tp_pct = max(self.profit_target_pct, atr_5m_pct * 0.8)
+        
         # Calculate risk/reward (scalps have tight stops)
-        stop_distance = price * self.stop_loss_pct
+        stop_distance = price * dynamic_sl_pct
         capital_amount = equity * capital_allocation_pct
         position_notional = capital_amount * leverage
         position_btc = position_notional / price
         risk_amount = stop_distance * position_btc
-        reward_amount = (price * self.profit_target_pct) * position_btc
+        reward_amount = (price * dynamic_tp_pct) * position_btc
         
         stop_loss = price - stop_distance
-        take_profit = price + (price * self.profit_target_pct)
+        take_profit = price + (price * dynamic_tp_pct)
         
         return StrategySignal(
             action="long",
@@ -1451,16 +1572,22 @@ class ScalpingStrategy:
             capital_allocation_pct = max_equity_pct * 0.167
             leverage = 1.0
         
+        # TWEAK 1: ATR-based dynamic SL/TP for S/R scalps
+        atr_5m = indicators.get("atr_14", price * 0.002)
+        atr_5m_pct = atr_5m / price if price > 0 else 0.003
+        dynamic_sl_pct = max(self.stop_loss_pct, atr_5m_pct * 0.5)
+        dynamic_tp_pct = max(self.profit_target_pct, atr_5m_pct * 0.8)
+        
         # Calculate risk/reward (scalps have tight stops)
-        stop_distance = price * self.stop_loss_pct
+        stop_distance = price * dynamic_sl_pct
         capital_amount = equity * capital_allocation_pct
         position_notional = capital_amount * leverage
         position_btc = position_notional / price
         risk_amount = stop_distance * position_btc
-        reward_amount = (price * self.profit_target_pct) * position_btc
+        reward_amount = (price * dynamic_tp_pct) * position_btc
         
         stop_loss = price + stop_distance
-        take_profit = price - (price * self.profit_target_pct)
+        take_profit = price - (price * dynamic_tp_pct)
         
         return StrategySignal(
             action="short",
