@@ -55,15 +55,14 @@ class OrderBookAnalyzer:
                 }
             })
             
-            # Copy URL configuration from original exchange (including demo URLs if applicable)
+            # ALWAYS use LIVE Binance public API for order book data
+            # Order book is public data (no authentication needed) and demo API doesn't support it
+            # This is safe - we're only READING public market data, not trading
             if is_demo:
-                self.public_exchange.urls['api'].update({
-                    'public': 'https://demo.binance.com/api',
-                    'private': 'https://demo.binance.com/api',
-                    'fapiPublic': 'https://demo-fapi.binance.com/fapi/v1',
-                    'fapiPrivate': 'https://demo-fapi.binance.com/fapi/v1',
-                })
-                logger.debug("Created public exchange instance for demo order book fetching")
+                logger.info(
+                    "Using LIVE Binance public API for order book data "
+                    "(public data, no authentication - safe for demo mode)"
+                )
             else:
                 logger.debug("Created public exchange instance for order book fetching")
                 

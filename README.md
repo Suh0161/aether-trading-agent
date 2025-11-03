@@ -605,7 +605,7 @@ Each cycle is logged as a JSON object with:
 |-----|-------------|
 | **Duplicate Position Prevention** | Fixed critical bug where duplicate positions could be opened in the same cycle. Risk manager now uses real-time position size from tracked positions instead of stale cycle-start data. This ensures only one position per symbol at any time. |
 | **Position Tracking Accuracy** | Improved position tracking to use current `tracked_position_sizes` for all risk checks and trade executions, preventing race conditions where multiple trades execute before position updates. |
-| **Order Book Warnings Suppressed** | Changed order book fetch warnings from WARNING to DEBUG level. Order book is optional and failures are expected in demo mode - they don't affect trading functionality. Logs are now cleaner and more readable. |
+| **Order Book Data Fixed** | Order book now uses LIVE Binance public API (public data, no authentication required) instead of demo API. Demo API doesn't support order book endpoints. This provides real market depth data for better trade timing, even in demo mode. Safe because it's read-only public data. |
 
 ### November 2, 2025 - Feature Updates
 
