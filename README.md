@@ -81,7 +81,7 @@ AETHER operates in a continuous 30-second cycle, analyzing markets and making de
 4. **Position Sizing** - Two-layer system calculates capital allocation (6-25%) and leverage multiplier (1-3x) based on confidence, fully respecting `MAX_EQUITY_USAGE_PCT`
 5. **Cost Optimization** - Intelligent LLM call skipping based on market change detection to reduce API costs by 50-70%
 6. **AI Validation** - DeepSeek AI reviews the signal and market context, approving or vetoing the trade
-7. **Risk Check** - Risk manager validates position size, leverage, and portfolio limits (prevents duplicate positions)
+7. **Risk Check** - Risk manager validates position size, leverage, and portfolio limits (ensures only one position per symbol using real-time position tracking)
 8. **Execution** - If approved, order is placed on Binance Futures with automatic stop-loss/take-profit for both LONG and SHORT positions
 9. **P&L Tracking** - Real-time calculation of realized and unrealized P&L with accurate reporting in agent messages
 10. **Monitoring** - Position is tracked every cycle for exit conditions (SL/TP hit, trend reversal, etc.)
@@ -273,7 +273,14 @@ Open your browser and navigate to `http://localhost:3000`
 
 > **Note**: The trading agent now automatically starts the API server in a background thread. You no longer need to run `api_server.py` separately!
 
-> **Demo Mode with MOCK_STARTING_EQUITY**: When using `RUN_MODE=demo` with `EXCHANGE_TYPE=binance_demo`, the agent uses `MOCK_STARTING_EQUITY` as the initial account balance. All trades update this equity based on realized P&L. This allows you to test the trading system without needing a real exchange account or risking real funds. The UI will show your starting equity (from `MOCK_STARTING_EQUITY`) plus any realized profits/losses from completed trades. Unrealized P&L is also tracked and displayed in real-time.
+> **Demo Mode with MOCK_STARTING_EQUITY**: When using `RUN_MODE=demo` with `EXCHANGE_TYPE=binance_demo`, the agent uses `MOCK_STARTING_EQUITY` as the initial account balance. All trades update this equity based on realized P&L. This allows you to test the trading system without needing a real exchange account or risking real funds. 
+> 
+> **How Available Cash Works**: 
+> - **Base Equity** (`tracked_equity`): Starts at `MOCK_STARTING_EQUITY` (e.g., $100), increases/decreases when positions close with profit/loss
+> - **Unrealized P&L**: Current profit/loss from all open positions (calculated fresh each cycle)
+> - **Available Cash** = Base Equity + Total Unrealized P&L
+> 
+> **Example**: Start with $100, open BTC SHORT that's +$5 unrealized → Available Cash = $105. Close it → Base Equity becomes $105, Available Cash = $105. Open ETH SHORT that's -$2 unrealized → Available Cash = $103 (but Base Equity stays $105 until you close the position).
 
 ## Position Sizing System
 
@@ -590,7 +597,17 @@ Each cycle is logged as a JSON object with:
 - Components: Modify React components in `frontend/src/components/`
 - API calls: Update `App.jsx` fetch endpoints
 
-## Recent Updates (November 2, 2025)
+## Recent Updates
+
+### November 3, 2025 - Critical Bug Fixes
+
+| Fix | Description |
+|-----|-------------|
+| **Duplicate Position Prevention** | Fixed critical bug where duplicate positions could be opened in the same cycle. Risk manager now uses real-time position size from tracked positions instead of stale cycle-start data. This ensures only one position per symbol at any time. |
+| **Position Tracking Accuracy** | Improved position tracking to use current `tracked_position_sizes` for all risk checks and trade executions, preventing race conditions where multiple trades execute before position updates. |
+| **Order Book Warnings Suppressed** | Changed order book fetch warnings from WARNING to DEBUG level. Order book is optional and failures are expected in demo mode - they don't affect trading functionality. Logs are now cleaner and more readable. |
+
+### November 2, 2025 - Feature Updates
 
 | Feature | Description |
 |---------|-------------|
@@ -614,7 +631,7 @@ Apache License 2.0
 
 Copyright 2025 AETHER Trading Agent Contributors
 
-**Last Updated: November 2, 2025**
+**Last Updated: November 3, 2025**
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
