@@ -124,7 +124,7 @@ class LiquidityAnalyzer:
         
         Args:
             current_price: Current price
-            recent_candles: List of recent candles (1m or 5m)
+            recent_candles: List of recent candles (1m, 5m, or 15m)
             liquidity_zone_price: Price of liquidity zone
             zone_type: "swing_high" | "swing_low" | "resistance" | "support"
             volume_ratio: Current volume / average volume
@@ -256,7 +256,8 @@ class LiquidityAnalyzer:
         price: float,
         indicators: Dict,
         recent_1m_candles: Optional[List[List[float]]] = None,
-        recent_5m_candles: Optional[List[List[float]]] = None
+        recent_5m_candles: Optional[List[List[float]]] = None,
+        recent_15m_candles: Optional[List[List[float]]] = None
     ) -> Dict:
         """
         Compute complete Tier 2 liquidity features.
@@ -267,6 +268,7 @@ class LiquidityAnalyzer:
             indicators: Dictionary of indicators (from MarketSnapshot)
             recent_1m_candles: Recent 1m candles for sweep detection
             recent_5m_candles: Recent 5m candles for sweep detection
+            recent_15m_candles: Recent 15m candles for sweep detection (for swing trading)
             
         Returns:
             Dictionary with liquidity zone fields:
@@ -307,11 +309,20 @@ class LiquidityAnalyzer:
         # Get volume ratio for sweep detection
         volume_ratio_1m = indicators.get('volume_ratio_1m', 1.0)
         volume_ratio_5m = indicators.get('volume_ratio_5m', 1.0)
-        active_volume_ratio = max(volume_ratio_1m, volume_ratio_5m)
+        volume_ratio_15m = indicators.get('volume_ratio_15m', indicators.get('volume_ratio', 1.0))
+        active_volume_ratio = max(volume_ratio_1m, volume_ratio_5m, volume_ratio_15m)
         
-        # Detect sweep using 5m candles (more reliable than 1m)
-        # Fallback to 1m if 5m not available
-        recent_candles_for_sweep = recent_5m_candles if recent_5m_candles else recent_1m_candles
+        # Detect sweep using multiple timeframes (prioritize 15m for swing, then 5m, then 1m)
+        # 15m sweeps are more significant for swing trading
+        # 5m sweeps are good for scalping
+        # 1m sweeps are the most granular but can be noisy
+        recent_candles_for_sweep = None
+        if recent_15m_candles and len(recent_15m_candles) >= 2:
+            recent_candles_for_sweep = recent_15m_candles  # Prefer 15m for swing trading
+        elif recent_5m_candles and len(recent_5m_candles) >= 2:
+            recent_candles_for_sweep = recent_5m_candles  # Fallback to 5m
+        elif recent_1m_candles and len(recent_1m_candles) >= 2:
+            recent_candles_for_sweep = recent_1m_candles  # Fallback to 1m
         
         sweep_info = self.detect_liquidity_sweep(
             current_price=price,

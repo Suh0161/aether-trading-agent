@@ -137,16 +137,18 @@ class MarketSnapshotBuilder:
     def _compute_liquidity_features(self, symbol: str, price: float, indicators: Dict[str, float]) -> Dict:
         """Compute liquidity zone features."""
         try:
-            # Get recent candles for sweep detection
+            # Get recent candles for sweep detection (1m, 5m, and 15m for swing trading)
             ohlcv_1m = []
             ohlcv_5m = []
+            ohlcv_15m = []
             
             if self.data_fetcher:
                 try:
                     # Fetch last 10 candles for sweep detection (need recent wicks)
                     ohlcv_1m = self.data_fetcher.fetch_ohlcv_data(symbol, '1m', limit=10)
                     ohlcv_5m = self.data_fetcher.fetch_ohlcv_data(symbol, '5m', limit=10)
-                    logger.debug(f"Fetched {len(ohlcv_1m)} 1m candles and {len(ohlcv_5m)} 5m candles for sweep detection")
+                    ohlcv_15m = self.data_fetcher.fetch_ohlcv_data(symbol, '15m', limit=10)
+                    logger.debug(f"Fetched {len(ohlcv_1m)} 1m, {len(ohlcv_5m)} 5m, and {len(ohlcv_15m)} 15m candles for sweep detection")
                 except Exception as e:
                     logger.warning(f"Failed to fetch candles for sweep detection: {e}")
 
@@ -157,7 +159,8 @@ class MarketSnapshotBuilder:
                     price=price,
                     indicators=indicators,
                     recent_1m_candles=ohlcv_1m,
-                    recent_5m_candles=ohlcv_5m
+                    recent_5m_candles=ohlcv_5m,
+                    recent_15m_candles=ohlcv_15m
                 )
         except Exception as e:
             logger.warning(f"Failed to compute liquidity features for {symbol}: {e}")
