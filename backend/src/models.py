@@ -20,7 +20,7 @@ class MarketSnapshot:
 @dataclass
 class DecisionObject:
     """Structured trading decision from LLM."""
-    
+
     action: str  # "long" | "short" | "close" | "hold"
     size_pct: float  # 0.0 to 1.0
     reason: str
@@ -28,6 +28,7 @@ class DecisionObject:
     stop_loss: Optional[float] = None  # Stop loss price for position monitoring
     take_profit: Optional[float] = None  # Take profit price for position monitoring
     position_type: str = "swing"  # "swing" | "scalp" - indicates trade duration style
+    confidence: float = 0.0  # Confidence level 0.0 to 1.0
 
 
 @dataclass

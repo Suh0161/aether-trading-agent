@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # In-memory storage (replace with database later)
 positions_data = []
-trades_data = []
+trades_data = []  # Empty - will be populated by actual trades from the trading loop
 agent_messages_data = []
 balance_data = {"cash": 0.00, "unrealizedPnL": 0.00}
 
@@ -202,6 +202,137 @@ async def get_agent_status():
     return {"paused": is_paused}
 
 
+def _process_position_for_chat(
+    loop_controller_instance, symbol, base_currency, position_size,
+    abs_position_size, is_long, position_direction, position_type,
+    all_snapshots, snapshot, price, all_positions_info, total_unrealized_pnl
+):
+    """Helper method to process a single position (swing or scalp) for chat context."""
+    # Get position details for this symbol and type
+    entry_price = None
+    stop_loss = None
+    take_profit = None
+    leverage = 1.0
+    risk_amount = None
+    reward_amount = None
+    
+    # Get entry price (per-type)
+    if hasattr(loop_controller_instance, 'position_entry_prices'):
+        entry_dict = loop_controller_instance.position_entry_prices.get(symbol, {})
+        if isinstance(entry_dict, dict):
+            entry_price = entry_dict.get(position_type)
+        else:
+            # Backward compatibility
+            entry_price = entry_dict if position_type == 'swing' else None
+    
+    # Get stop loss (per-type)
+    if hasattr(loop_controller_instance, 'position_stop_losses'):
+        sl_dict = loop_controller_instance.position_stop_losses.get(symbol, {})
+        if isinstance(sl_dict, dict):
+            stop_loss = sl_dict.get(position_type)
+        else:
+            # Backward compatibility
+            stop_loss = sl_dict if position_type == 'swing' else None
+    
+    # Get take profit (per-type)
+    if hasattr(loop_controller_instance, 'position_take_profits'):
+        tp_dict = loop_controller_instance.position_take_profits.get(symbol, {})
+        if isinstance(tp_dict, dict):
+            take_profit = tp_dict.get(position_type)
+        else:
+            # Backward compatibility
+            take_profit = tp_dict if position_type == 'swing' else None
+    
+    # Get leverage (per-type)
+    if hasattr(loop_controller_instance, 'position_leverages'):
+        lev_dict = loop_controller_instance.position_leverages.get(symbol, {})
+        if isinstance(lev_dict, dict):
+            leverage = lev_dict.get(position_type, 1.0)
+        else:
+            # Backward compatibility
+            leverage = lev_dict if position_type == 'swing' else 1.0
+    
+    # Get risk/reward (per-type)
+    if hasattr(loop_controller_instance, 'position_risk_amounts'):
+        risk_dict = loop_controller_instance.position_risk_amounts.get(symbol, {})
+        if isinstance(risk_dict, dict):
+            risk_amount = risk_dict.get(position_type)
+        else:
+            risk_amount = risk_dict if position_type == 'swing' else None
+    
+    if hasattr(loop_controller_instance, 'position_reward_amounts'):
+        reward_dict = loop_controller_instance.position_reward_amounts.get(symbol, {})
+        if isinstance(reward_dict, dict):
+            reward_amount = reward_dict.get(position_type)
+        else:
+            reward_amount = reward_dict if position_type == 'swing' else None
+    
+    # Get current price for this symbol
+    current_price = price  # Default to snapshot price
+    if all_snapshots and symbol in all_snapshots:
+        current_price = all_snapshots[symbol].price
+    elif snapshot and snapshot.symbol == symbol:
+        current_price = snapshot.price
+    
+    # Calculate unrealized P&L
+    unrealized_pnl = 0.0
+    if entry_price and entry_price > 0:
+        if is_long:  # LONG
+            unrealized_pnl = (current_price - entry_price) * abs_position_size
+        else:  # SHORT
+            unrealized_pnl = (entry_price - current_price) * abs_position_size
+        total_unrealized_pnl[0] += unrealized_pnl  # Use list to modify in place
+    
+    # Calculate risk/reward
+    actual_risk = risk_amount
+    actual_reward = reward_amount
+    if not actual_risk and stop_loss and entry_price:
+        if is_long:
+            actual_risk = abs((entry_price - stop_loss) * abs_position_size)
+        else:
+            actual_risk = abs((stop_loss - entry_price) * abs_position_size)
+    if not actual_reward and take_profit and entry_price:
+        if is_long:
+            actual_reward = abs((take_profit - entry_price) * abs_position_size)
+        else:
+            actual_reward = abs((entry_price - take_profit) * abs_position_size)
+    
+    # Calculate notional value
+    notional_value = abs_position_size * current_price
+    
+    # Calculate P&L percentage
+    pnl_pct = (unrealized_pnl / (abs_position_size * entry_price) * 100) if entry_price and entry_price > 0 else 0
+    
+    # Format strings
+    entry_str = f"${entry_price:,.2f}" if entry_price else "N/A"
+    sl_str = f"${stop_loss:,.2f} (risk: ${actual_risk:.2f} if hit)" if stop_loss and actual_risk else ("Not set" if not stop_loss else f"${stop_loss:,.2f}")
+    tp_str = f"${take_profit:,.2f} (reward: ${actual_reward:.2f} if hit)" if take_profit and actual_reward else ("Not set" if not take_profit else f"${take_profit:,.2f}")
+    rr_str = f"1:{(actual_reward / actual_risk):.2f}" if actual_risk and actual_risk > 0 else "N/A"
+    
+    # Format position size based on magnitude
+    if abs_position_size >= 1:
+        size_str = f"{abs_position_size:.2f}"
+    elif abs_position_size >= 0.01:
+        size_str = f"{abs_position_size:.4f}"
+    else:
+        size_str = f"{abs_position_size:.8f}"
+    
+    # Build position info for this symbol
+    pos_info = f"""
+{symbol} - {position_direction} POSITION ({position_type.upper()}):
+- Size: {size_str} {base_currency} (${notional_value:,.2f} notional)
+- Direction: {position_direction}
+- Leverage: {leverage:.1f}x
+- Entry Price: {entry_str}
+- Current Price: ${current_price:,.2f}
+- Unrealized P&L: ${unrealized_pnl:+,.2f} ({pnl_pct:+.2f}%)
+- Stop Loss: {sl_str}
+- Take Profit: {tp_str}
+- Risk:Reward Ratio: {rr_str}"""
+    
+    all_positions_info.append(pos_info)
+
+
 @app.post("/api/agent-chat")
 async def agent_chat(request: ChatRequest):
     """
@@ -226,21 +357,22 @@ async def agent_chat(request: ChatRequest):
         snapshot = None
         all_snapshots = {}
         if loop_controller_instance:
-            logger.info(f"[DEBUG] loop_controller_instance exists: {loop_controller_instance is not None}")
-            # Get ALL snapshots for multi-coin context
-            if hasattr(loop_controller_instance, 'all_snapshots'):
-                all_snapshots = loop_controller_instance.all_snapshots or {}
-                logger.info(f"[DEBUG] all_snapshots exists: {len(all_snapshots)} coins")
-            # Get first snapshot for backward compatibility (BTC)
-            if hasattr(loop_controller_instance, 'last_snapshot'):
-                snapshot = loop_controller_instance.last_snapshot
-                logger.info(f"[DEBUG] last_snapshot exists: {snapshot is not None}")
-                if snapshot:
-                    logger.info(f"[DEBUG] snapshot price: {snapshot.price}")
+            # Access snapshots through cycle_controller
+            cycle_controller = loop_controller_instance.cycle_controller
+            if cycle_controller:
+                # Get ALL snapshots for multi-coin context
+                if hasattr(cycle_controller, 'all_snapshots'):
+                    all_snapshots = cycle_controller.all_snapshots or {}
+                    logger.debug(f"Loaded {len(all_snapshots)} market snapshots for chat AI")
+                # Get first snapshot for backward compatibility (BTC)
+                if hasattr(cycle_controller, 'last_snapshot'):
+                    snapshot = cycle_controller.last_snapshot
+                    if snapshot:
+                        logger.debug(f"Primary snapshot: {snapshot.symbol} @ ${snapshot.price:,.2f}")
             else:
-                logger.warning("[DEBUG] loop_controller_instance has no 'last_snapshot' attribute")
+                logger.warning("cycle_controller is None - chat AI may not have market data")
         else:
-            logger.error("[DEBUG] loop_controller_instance is None! API server not connected to trading loop.")
+            logger.warning("loop_controller_instance is None - API server not connected to trading loop")
         
         # Build COMPREHENSIVE context for AI (with ALL 6 COINS data)
         if snapshot or all_snapshots:
@@ -302,108 +434,54 @@ async def agent_chat(request: ChatRequest):
                 if hasattr(loop_controller_instance, 'tracked_position_sizes'):
                     tracked_positions = loop_controller_instance.tracked_position_sizes
                     
-                    # Build info for EACH position
-                    for symbol, position_size in tracked_positions.items():
-                        if position_size == 0.0:
-                            continue
-                        
-                        # Get base currency
-                        base_currency = symbol.split('/')[0]
-                        
-                        # Determine direction (positive = LONG, negative = SHORT)
-                        is_long = position_size > 0
-                        position_direction = "LONG" if is_long else "SHORT"
-                        abs_position_size = abs(position_size)
-                        
-                        # Get position details for this symbol
-                        position_type = None
-                        entry_price = None
-                        stop_loss = None
-                        take_profit = None
-                        leverage = 1.0
-                        risk_amount = None
-                        reward_amount = None
-                        
-                        if hasattr(loop_controller_instance, 'position_types'):
-                            position_type = loop_controller_instance.position_types.get(symbol)
-                        if hasattr(loop_controller_instance, 'position_entry_prices'):
-                            entry_price = loop_controller_instance.position_entry_prices.get(symbol)
-                        if hasattr(loop_controller_instance, 'position_stop_losses'):
-                            stop_loss = loop_controller_instance.position_stop_losses.get(symbol)
-                        if hasattr(loop_controller_instance, 'position_take_profits'):
-                            take_profit = loop_controller_instance.position_take_profits.get(symbol)
-                        if hasattr(loop_controller_instance, 'position_leverages'):
-                            leverage = loop_controller_instance.position_leverages.get(symbol, 1.0)
-                        if hasattr(loop_controller_instance, 'position_risk_amounts'):
-                            risk_amount = loop_controller_instance.position_risk_amounts.get(symbol)
-                        if hasattr(loop_controller_instance, 'position_reward_amounts'):
-                            reward_amount = loop_controller_instance.position_reward_amounts.get(symbol)
-                        
-                        # Get current price for this symbol
-                        current_price = price  # Default to snapshot price
-                        if all_snapshots and symbol in all_snapshots:
-                            current_price = all_snapshots[symbol].price
-                        elif snapshot and snapshot.symbol == symbol:
-                            current_price = snapshot.price
-                        
-                        # Calculate unrealized P&L
-                        unrealized_pnl = 0.0
-                        if entry_price and entry_price > 0:
-                            if is_long:  # LONG
-                                unrealized_pnl = (current_price - entry_price) * abs_position_size
-                            else:  # SHORT
-                                unrealized_pnl = (entry_price - current_price) * abs_position_size
-                            total_unrealized_pnl += unrealized_pnl
-                        
-                        # Calculate risk/reward
-                        actual_risk = risk_amount
-                        actual_reward = reward_amount
-                        if not actual_risk and stop_loss and entry_price:
-                            if is_long:
-                                actual_risk = abs((entry_price - stop_loss) * abs_position_size)
-                            else:
-                                actual_risk = abs((stop_loss - entry_price) * abs_position_size)
-                        if not actual_reward and take_profit and entry_price:
-                            if is_long:
-                                actual_reward = abs((take_profit - entry_price) * abs_position_size)
-                            else:
-                                actual_reward = abs((entry_price - take_profit) * abs_position_size)
-                        
-                        # Calculate notional value
-                        notional_value = abs_position_size * current_price
-                        
-                        # Calculate P&L percentage
-                        pnl_pct = (unrealized_pnl / (abs_position_size * entry_price) * 100) if entry_price and entry_price > 0 else 0
-                        
-                        # Format strings
-                        entry_str = f"${entry_price:,.2f}" if entry_price else "N/A"
-                        sl_str = f"${stop_loss:,.2f} (risk: ${actual_risk:.2f} if hit)" if stop_loss and actual_risk else ("Not set" if not stop_loss else f"${stop_loss:,.2f}")
-                        tp_str = f"${take_profit:,.2f} (reward: ${actual_reward:.2f} if hit)" if take_profit and actual_reward else ("Not set" if not take_profit else f"${take_profit:,.2f}")
-                        rr_str = f"1:{(actual_reward / actual_risk):.2f}" if actual_risk and actual_risk > 0 else "N/A"
-                        
-                        # Format position size based on magnitude
-                        if abs_position_size >= 1:
-                            size_str = f"{abs_position_size:.2f}"
-                        elif abs_position_size >= 0.01:
-                            size_str = f"{abs_position_size:.4f}"
+                    # Build info for EACH position (handle both swing and scalp separately)
+                    for symbol, position_data in tracked_positions.items():
+                        # Handle new dictionary format: {symbol: {'swing': size, 'scalp': size}}
+                        if isinstance(position_data, dict):
+                            # Process swing and scalp positions separately
+                            for position_type in ['swing', 'scalp']:
+                                position_size = position_data.get(position_type, 0.0)
+                                if abs(position_size) < 0.0001:  # Skip zero positions
+                                    continue
+                                
+                                # Get base currency
+                                base_currency = symbol.split('/')[0]
+                                
+                                # Determine direction (positive = LONG, negative = SHORT)
+                                is_long = position_size > 0
+                                position_direction = "LONG" if is_long else "SHORT"
+                                abs_position_size = abs(position_size)
+                                
+                                # Process this position (swing or scalp)
+                                pnl_list = [total_unrealized_pnl]  # Use list for in-place modification
+                                _process_position_for_chat(
+                                    loop_controller_instance, symbol, base_currency, position_size,
+                                    abs_position_size, is_long, position_direction, position_type,
+                                    all_snapshots, snapshot, price, all_positions_info, pnl_list
+                                )
+                                total_unrealized_pnl = pnl_list[0]  # Update after processing
                         else:
-                            size_str = f"{abs_position_size:.8f}"
-                        
-                        # Build position info for this symbol
-                        pos_info = f"""
-{symbol} - {position_direction} POSITION:
-- Type: {position_type.upper() if position_type else 'UNKNOWN'}
-- Size: {size_str} {base_currency} (${notional_value:,.2f} notional)
-- Direction: {position_direction}
-- Leverage: {leverage:.1f}x
-- Entry Price: {entry_str}
-- Current Price: ${current_price:,.2f}
-- Unrealized P&L: ${unrealized_pnl:+,.2f} ({pnl_pct:+.2f}%)
-- Stop Loss: {sl_str}
-- Take Profit: {tp_str}
-- Risk:Reward Ratio: {rr_str}"""
-                        
-                        all_positions_info.append(pos_info)
+                            # Backward compatibility: old format (single float value)
+                            position_size = position_data
+                            if abs(position_size) < 0.0001:
+                                continue
+                            
+                            # Get base currency
+                            base_currency = symbol.split('/')[0]
+                            
+                            # Determine direction (positive = LONG, negative = SHORT)
+                            is_long = position_size > 0
+                            position_direction = "LONG" if is_long else "SHORT"
+                            abs_position_size = abs(position_size)
+                            
+                            # Process as swing position (default for old format)
+                            pnl_list = [total_unrealized_pnl]  # Use list for in-place modification
+                            _process_position_for_chat(
+                                loop_controller_instance, symbol, base_currency, position_size,
+                                abs_position_size, is_long, position_direction, 'swing',
+                                all_snapshots, snapshot, price, all_positions_info, pnl_list
+                            )
+                            total_unrealized_pnl = pnl_list[0]  # Update after processing
                 
                 # Get current equity from loop controller
                 if hasattr(loop_controller_instance, 'current_equity'):
@@ -557,36 +635,52 @@ AGENT CAPABILITIES:
                 base_url="https://api.deepseek.com"
             )
             
-            prompt = f"""You are an AUTONOMOUS MULTI-COIN TRADING AGENT actively monitoring and trading 6 cryptocurrencies (BTC, ETH, SOL, DOGE, BNB, XRP) in REAL-TIME. You make decisions every 30 seconds, evaluating ALL 6 coins and trading the one with the best opportunity.
+            prompt = f"""You are Aether, an autonomous trading assistant. You're fully aware of your capabilities:
+
+YOUR CAPABILITIES:
+- You monitor 6 cryptocurrencies (BTC, ETH, SOL, DOGE, BNB, XRP) every 30 seconds
+- You can hold SIMULTANEOUS swing AND scalp positions on the same coin (even opposite directions!)
+- For example: You can hold a swing LONG position while scalping SHORT on the same coin
+- You use ATR Breakout Strategy + AI filter for swing trades, and Scalping Strategy for quick trades
+- When your confidence is high (>=0.7), you can adjust TP/SL to hit S/R levels instead of default strategy values
+- You use critical thinking: question opposite direction, explain reasoning, identify concerns before deciding
+- You evaluate all 6 coins each cycle and trade the one with the best opportunity
+- You make decisions every 30 seconds in a continuous loop
+
+You're monitoring and trading these 6 cryptocurrencies in real-time, making decisions every 30 seconds by evaluating all coins and trading the one with the best opportunity.
 
 {context}
 
-CRITICAL INSTRUCTIONS - FOLLOW EXACTLY:
-1. You MUST use ONLY the data shown in the context above
-2. The CURRENT PRICE is explicitly stated in the context - use that exact number
-3. ALL resistance/support levels are provided - use those exact numbers
-4. DO NOT make up, estimate, or recall any prices from memory
-5. If a number is in the context, copy it exactly (with proper formatting)
-6. NEVER reference prices, levels, or data not shown in the context above
-7. **CRITICAL**: If "NO OPEN POSITIONS" is shown, DO NOT mention any position, entry price, P&L, or gains/losses
-8. **CRITICAL**: You are a MULTI-COIN agent. You evaluate BTC, ETH, SOL, DOGE, BNB, and XRP every cycle and trade the best opportunity. DO NOT say you're "BTC-only" or "BTC-focused".
-9. **CRITICAL**: When listing your positions, ALWAYS mention ALL positions shown in the "ALL OPEN POSITIONS" section. Do NOT only mention BTC - list ALL active positions (BTC, ETH, SOL, DOGE, BNB, XRP) that are shown.
-10. **CRITICAL**: Position sizes are shown as positive numbers with direction (LONG/SHORT). For example, "Size: 0.001 BTC" with "Direction: SHORT" means you're shorting 0.001 BTC. NEVER display negative position sizes like "-0.001 BTC".
-11. **CRITICAL**: When asked about specific coins (e.g., "what is price for XRP?"), ALWAYS provide the exact price from the "ALL 6 COINS MARKET OVERVIEW" section. For example, if XRP shows "$2.50" in the overview, say "XRP is at $2.50" - DO NOT say "no pricing data is shown".
-12. **CRITICAL**: You have access to ALL 6 coins data in the "ALL 6 COINS MARKET OVERVIEW" section. When users ask about other coins, reference that section and provide the exact prices, trends, and volumes shown there.
-13. **CRITICAL**: When asked "what are you shorting" or "what positions do you have", list ALL positions from the "ALL OPEN POSITIONS" section, not just BTC. Mention each symbol, direction (LONG/SHORT), size, entry price, and current P&L.
+IMPORTANT GUIDELINES:
+1. Use ONLY the data shown in the context above - don't make up or estimate numbers
+2. Use exact prices and levels from the context
+3. If "NO OPEN POSITIONS" is shown, don't mention any positions, P&L, or gains/losses
+4. You're a multi-coin trader - you evaluate BTC, ETH, SOL, DOGE, BNB, and XRP every cycle and trade the best opportunity
+5. When listing positions, mention ALL positions from the "ALL OPEN POSITIONS" section, not just BTC
+6. Position sizes are positive numbers with direction (LONG/SHORT). For example, "Size: 0.001 BTC" with "Direction: SHORT" means shorting 0.001 BTC
+7. Positions show their TYPE (SWING or SCALP) - you can have both types on the same coin simultaneously
+8. When asked about specific coins, provide exact prices from the "ALL 6 COINS MARKET OVERVIEW" section
+9. You have access to all 6 coins data - reference that section when users ask about other coins
+
+TONE & STYLE:
+- Be friendly, conversational, and natural - like chatting with a friend
+- Avoid robotic phrases like "based on", "according to", "data indicates"
+- Instead, say things naturally: "I'm seeing...", "It looks like...", "Right now...", "I notice..."
+- Be confident but not arrogant
+- Explain things simply without jargon overload
+- Show personality - you're Aether, not a robot
 
 User Question: {user_question}
 
-Answer using ONLY the data from the context above. Quote the exact numbers provided. If asked about specific coins (XRP, DOGE, ETH, etc.), use the exact prices from the "ALL 6 COINS MARKET OVERVIEW" section. When listing positions, mention ALL open positions shown in the context (not just BTC). Position sizes should be displayed as positive numbers with direction (LONG/SHORT). If there's no open position, do NOT mention position details, P&L, or gains. Be conversational but factually accurate. If asked about trading other coins, explain that you evaluate all 6 coins every cycle and trade the one with the best setup, and mention what those other coins are doing (from the overview). Under 150 words."""
+Answer naturally and conversationally using ONLY the data from the context above. Use exact numbers when available. If asked about specific coins (XRP, DOGE, ETH, etc.), use the exact prices from the overview section. When listing positions, mention ALL open positions (not just BTC). Position sizes should be positive numbers with direction (LONG/SHORT). If there's no open position, don't mention position details or P&L. Be friendly and natural - like you're explaining to a friend. Keep it under 150 words."""
             
             response = client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[
-                    {"role": "system", "content": "You are a factual trading agent. You ONLY use data provided in the user's message. You NEVER make up numbers or recall prices from training data. You copy numbers exactly as shown in the context."},
+                    {"role": "system", "content": "You are Aether, a friendly and intelligent trading assistant. You use only the data provided in the user's message. You never make up numbers or recall prices from training data. You speak naturally and conversationally, avoiding robotic phrases like 'based on' or 'according to'."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.1,
+                temperature=0.7,
                 max_tokens=300
             )
             
@@ -612,13 +706,13 @@ Answer using ONLY the data from the context above. Quote the exact numbers provi
                     if "xrp" in user_lower:
                         xrp_snap = all_snapshots.get("XRP/USDT")
                         if xrp_snap:
-                            ai_response = f"XRP is currently at ${xrp_snap.price:,.2f}. I'm monitoring all 6 coins (BTC, ETH, SOL, DOGE, BNB, XRP) every cycle and will trade whichever shows the strongest setup. Right now, I'm waiting for clearer signals across all coins."
+                            ai_response = f"XRP is at ${xrp_snap.price:,.2f} right now. I'm watching all 6 coins (BTC, ETH, SOL, DOGE, BNB, XRP) every cycle and I'll trade whichever one has the best setup. Still waiting for clearer signals across all coins - I'll keep you updated!"
                     elif "doge" in user_lower:
                         doge_snap = all_snapshots.get("DOGE/USDT")
                         if doge_snap:
-                            ai_response = f"DOGE is currently at ${doge_snap.price:,.4f}. I'm monitoring all 6 coins (BTC, ETH, SOL, DOGE, BNB, XRP) every cycle and will trade whichever shows the strongest setup. Right now, I'm waiting for clearer signals across all coins."
+                            ai_response = f"DOGE is sitting at ${doge_snap.price:,.4f}. I'm monitoring all 6 coins every cycle and I'll trade whichever shows the strongest setup. Right now I'm waiting for clearer signals - I'll let you know when I see something interesting!"
                     else:
-                        ai_response = f"I'm monitoring all 6 coins: {coins_str}. I evaluate all of them every 30 seconds and trade the one with the best setup. Currently waiting for clearer signals across all coins. Check my automatic updates above for real-time reasoning."
+                        ai_response = f"I'm watching all 6 coins: {coins_str}. I check them every 30 seconds and trade whichever one has the best opportunity. Still waiting for clearer signals across all coins - I'll keep you posted when I see something worth trading!"
                 elif snapshot:
                     price = snapshot.price
                     indicators = snapshot.indicators
@@ -628,17 +722,17 @@ Answer using ONLY the data from the context above. Quote the exact numbers provi
                     volume_ratio_1h = indicators.get('volume_ratio_1h', 1.0)
                     
                     if "when" in user_question.lower() and "trade" in user_question.lower():
-                        ai_response = f"I'm actively monitoring BTC/USDT at ${price:,.2f}. Currently waiting for a clear breakout above ${r1:,.2f} resistance or a bounce off ${s1:,.2f} support with strong volume (need >1.2x avg, currently {volume_ratio_1h:.2f}x). Check my automatic updates above for real-time reasoning."
+                        ai_response = f"Hey! I'm Aether, and I'm watching BTC right now at ${price:,.2f}. I'm waiting for a clear breakout above ${r1:,.2f} resistance or a bounce off ${s1:,.2f} support with strong volume - need more than 1.2x average, currently at {volume_ratio_1h:.2f}x. I'll let you know when I see something worth trading!"
                     elif "why" in user_question.lower() and ("not" in user_question.lower() or "no" in user_question.lower()):
-                        ai_response = f"Right now at ${price:,.2f}, I'm seeing mixed signals - RSI at {rsi_1h:.1f}, volume at {volume_ratio_1h:.2f}x average. I need clearer confirmation before entering. I'm watching for breakouts, strong volume, and multi-timeframe alignment. Stay tuned!"
+                        ai_response = f"Right now at ${price:,.2f}, I'm seeing mixed signals - RSI at {rsi_1h:.1f}, volume at {volume_ratio_1h:.2f}x average. I need clearer confirmation before jumping in. I'm watching for breakouts, strong volume, and multi-timeframe alignment. I'll keep you posted!"
                     else:
-                        ai_response = f"I'm your autonomous trading agent, actively monitoring BTC/USDT 24/7. Current price: ${price:,.2f}. I analyze multi-timeframe trends, volume, VWAP, and support/resistance to find high-probability setups. Check my automatic updates above for my latest analysis!"
+                        ai_response = f"Hi! I'm Aether, your trading assistant. I'm monitoring BTC/USDT 24/7, and right now it's at ${price:,.2f}. I analyze multi-timeframe trends, volume, VWAP, and support/resistance to find the best setups. Check my updates above to see what I'm thinking!"
             else:
-                ai_response = "I'm having trouble accessing market data right now. Please try again in a moment or check my automatic updates above."
+                ai_response = "Hey, I'm having trouble accessing market data right now. Give me a moment and try again, or check my updates above!"
         
         # Add AI response to chat history
         ai_msg = {
-            "sender": "DEEPSEEK",
+            "sender": "AETHER",
             "text": ai_response,
             "timestamp": datetime.now().strftime("%d/%m %H:%M"),
             "id": f"ai_{len(agent_messages_data)}"

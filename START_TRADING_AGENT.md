@@ -1,4 +1,4 @@
-# Start Your AI Trading Agent with Live Frontend
+# Start AETHER Trading Agent with Live Frontend
 
 ## Prerequisites
 
@@ -44,17 +44,17 @@ BINANCE_TESTNET=true
 DEEPSEEK_API_KEY=your_deepseek_api_key
 
 # Trading Config
-SYMBOL=BTC/USDT
+SYMBOLS=BTC/USDT,ETH/USDT,SOL/USDT,DOGE/USDT,BNB/USDT,XRP/USDT  # 6 coins monitored
 RUN_MODE=testnet
 STRATEGY_MODE=hybrid_atr
 LOOP_INTERVAL_SECONDS=30
 
-# Virtual Equity (for testing with small balance)
-VIRTUAL_STARTING_EQUITY=100
+# Demo mode starting equity (only used for binance_demo exchange type)
+MOCK_STARTING_EQUITY=100
 
 # Risk Management
 MAX_DAILY_LOSS_PCT=10
-MAX_LEVERAGE=3
+MAX_LEVERAGE=3  # Scales automatically based on account size
 ```
 
 ## Start Everything
@@ -95,19 +95,26 @@ npm run dev
 
 1. **Trading Agent + API Server** (single process)
    - Fetches multi-timeframe market data every 30 seconds
-   - Analyzes 6 timeframes (1D, 4H, 1H, 15m, 5m, 1m)
-   - Calculates 20+ indicators (EMA, RSI, ATR, VWAP, S/R, Volume, OBV)
-   - AI makes trading decisions (swing/scalp, long/short)
-   - Executes trades on Binance Testnet
+   - **Monitors 6 cryptocurrencies**: BTC, ETH, SOL, DOGE, BNB, XRP
+   - Analyzes 6 timeframes per coin (1D, 4H, 1H, 15m, 5m, 1m)
+   - Calculates 20+ indicators (EMA, RSI, ATR, VWAP, S/R, Volume, OBV, Order Book)
+   - **Simultaneous swing + scalp trading** on same coins
+   - AI makes trading decisions with detailed reasoning (long/short/close/hold)
+   - **Confidence-based trailing stops** (10-15% based on setup quality)
+   - Executes trades on Binance Testnet or Demo mode
    - API server runs in background thread on http://localhost:8000
+   - **JSON logging** for AI memory and audit trail
 
 2. **Frontend** displays everything live on http://localhost:5173
-   - Real-time chart with BTC price
-   - Trade markers showing entry/exit points
-   - Current positions with live P&L
-   - Completed trades history
-   - Interactive agent chat
-   - Balance and leverage monitoring
+   - **Multi-coin dashboard**: Switch between BTC, ETH, SOL, DOGE, BNB, XRP
+   - Real-time charts with trade markers (LONG/SHORT/SWING/SCALP indicators)
+   - Multiple timeframe views (1D, 5D, 1M, 3M, 6M, 1Y)
+   - **Current positions**: Separate SWING/SCALP tabs with live P&L
+   - **Trailing stop indicators** on charts
+   - Completed trades history with strategy type
+   - **Interactive agent chat** with detailed AI reasoning
+   - Balance, leverage, and risk monitoring
+   - **Real-time agent status** and cycle summaries
 
 ## Watch It Work!
 
@@ -134,11 +141,14 @@ Open http://localhost:5173 and you'll see:
   - Timestamp
 
 ### Agent Chat Tab
-- Real-time agent reasoning:
+- Real-time agent reasoning with detailed AI analysis:
   - "Swing long setup detected on 1H breakout above $110.5k with 1.5x volume"
-  - "AI filter APPROVED: Clean breakout above R1 resistance"
-  - "Holding: Waiting for volume confirmation"
+  - "AI APPROVED: Clean breakout above R1 resistance, 1D bullish trend intact, volume confirms momentum"
+  - "AI VETOED: Price testing R1 with weak volume (0.8x avg), RSI overbought at 75, risk of rejection"
+  - "Trailing stop: LONG position moved SL to $111.2k (10% trail, conf: 0.85)"
+  - "Cycle summary: All 6 coins holding - mixed market sentiment, waiting for clearer signals"
 - **Interactive chat**: Ask the agent questions!
+- AI reasoning includes: current conditions, why the action, what would change the decision, risk levels, key triggers
   - "Why not trading?"
   - "What's the current setup?"
   - "Should I be worried?"
@@ -150,8 +160,13 @@ Open http://localhost:5173 and you'll see:
 - Monitor the agent closely for the first 24-48 hours
 - Check terminal logs for decision reasoning and position sizing details
 - Use emergency controls in the header (PAUSE AI, CLOSE ALL)
-- **Understand position sizing**: High-confidence trades can use up to 25% capital with 3x leverage (= 75% of account)
-- **Start conservative**: The agent will be more aggressive than before - monitor closely!
+- **Understand position sizing**: Three-tier leverage system (account size → confidence → final leverage)
+  - Small accounts ($100): Conservative 1.0x leverage
+  - Medium accounts ($2k): Moderate 2.0x leverage
+  - Large accounts ($10k+): Full 3.0x leverage capability
+- **Simultaneous trading**: Agent can run swing + scalp positions on same coin
+- **Trailing stops**: Automatic profit protection (10-15% based on confidence)
+- **Start conservative**: Monitor the first few trades closely!
 
 ## Troubleshooting
 
@@ -195,6 +210,12 @@ Open http://localhost:5173 and you'll see:
 - Refresh the page
 - Check if the trade was actually executed (look at Binance Testnet)
 - Verify the agent didn't immediately close the position
+- Check for separate SWING/SCALP position tabs
+
+**Want to see AI decision logs?**
+- Check `backend/agent_log.jsonl` for detailed JSON logs of all decisions
+- Each cycle includes: market data, AI reasoning, risk assessment, execution status
+- Useful for analyzing AI decision patterns and audit trails
 
 **Virtual equity suddenly changed?**
 - If you started with an existing position, the agent pauses virtual equity tracking

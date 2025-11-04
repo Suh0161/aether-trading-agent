@@ -1,0 +1,104 @@
+.chart-controls {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  padding: 16px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  margin-bottom: 16px;
+}
+
+.timeframe-controls,
+.chart-type-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.control-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.timeframe-buttons,
+.chart-type-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+.timeframe-btn,
+.chart-type-btn {
+  padding: 6px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.timeframe-btn:hover,
+.chart-type-btn:hover {
+  background: #f8fafc;
+  border-color: rgba(0, 0, 0, 0.12);
+  color: #374151;
+}
+
+.timeframe-btn.active,
+.chart-type-btn.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+  box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
+}
+
+.chart-type-icon {
+  font-size: 14px;
+}
+
+.chart-type-label {
+  font-size: 13px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .chart-controls {
+    flex-direction: column;
+    gap: 16px;
+    align-items: stretch;
+  }
+
+  .timeframe-controls,
+  .chart-type-controls {
+    justify-content: center;
+  }
+
+  .timeframe-buttons,
+  .chart-type-buttons {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .timeframe-buttons,
+  .chart-type-buttons {
+    gap: 2px;
+  }
+
+  .timeframe-btn,
+  .chart-type-btn {
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+
+  .control-label {
+    font-size: 13px;
+  }
+}

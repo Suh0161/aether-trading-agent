@@ -4,3 +4,7 @@ openai
 pandas
 fastapi
 uvicorn[standard]
+requests
+websockets
+numpy
+scipy

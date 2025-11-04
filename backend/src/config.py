@@ -34,6 +34,9 @@ class Config:
     # Demo mode (only used for binance_demo exchange type)
     mock_starting_equity: float  # Starting equity for demo mode (default: 100.0)
     
+    # Scalp profit threshold (default: 0.3%)
+    scalp_profit_threshold_pct: float  # Minimum profit % to keep scalp position open after 5 min
+    
     # LLM
     decision_provider: str
     strategy_mode: str  # "hybrid_atr", "hybrid_ema", "ai_only"
@@ -139,6 +142,15 @@ class Config:
         if mock_starting_equity <= 0:
             raise ValueError("MOCK_STARTING_EQUITY must be greater than 0")
         
+        # Load optional scalp profit threshold (default 0.3%)
+        try:
+            scalp_profit_threshold_pct = float(os.getenv("SCALP_PROFIT_THRESHOLD_PCT", "0.3"))
+        except ValueError:
+            raise ValueError("SCALP_PROFIT_THRESHOLD_PCT must be a valid float")
+        
+        if scalp_profit_threshold_pct < 0:
+            raise ValueError("SCALP_PROFIT_THRESHOLD_PCT must be non-negative")
+        
         # Validate run mode
         if run_mode not in ["testnet", "live", "demo"]:
             raise ValueError("RUN_MODE must be either 'testnet', 'live', or 'demo'")
@@ -158,4 +170,5 @@ class Config:
             mock_starting_equity=mock_starting_equity,
             decision_provider=decision_provider,
             strategy_mode=strategy_mode,
+            scalp_profit_threshold_pct=scalp_profit_threshold_pct,
         )

@@ -96,13 +96,40 @@ class DecisionParser:
         if position_type not in ["swing", "scalp"]:
             logger.warning(f"Invalid position_type '{position_type}', defaulting to 'swing'. Raw response: {raw_response}")
             position_type = "swing"
-        
+
+        # Extract confidence (optional, defaults to 0.0)
+        confidence = data.get("confidence", 0.0)
+        if not isinstance(confidence, (int, float)):
+            logger.warning(f"Invalid confidence type, defaulting to 0.0. Raw response: {raw_response}")
+            confidence = 0.0
+        elif not (0.0 <= confidence <= 1.0):
+            logger.warning(f"Confidence {confidence} out of range [0.0, 1.0], defaulting to 0.0. Raw response: {raw_response}")
+            confidence = 0.0
+
+        # Extract leverage (optional, defaults to 1.0)
+        leverage = data.get("leverage", 1.0)
+        if leverage is not None:
+            try:
+                leverage = float(leverage)
+                if leverage <= 0:
+                    logger.warning(f"Invalid leverage {leverage}, defaulting to 1.0. Raw response: {raw_response}")
+                    leverage = 1.0
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid leverage type, defaulting to 1.0. Raw response: {raw_response}")
+                leverage = 1.0
+        else:
+            leverage = 1.0
+
         # All validations passed
-        return DecisionObject(
+        decision_obj = DecisionObject(
             action=action,
             size_pct=float(size_pct),
             reason=reason,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            position_type=position_type
+            position_type=position_type,
+            confidence=float(confidence)
         )
+        # Set leverage as attribute (not in DecisionObject dataclass, but used by trade executor)
+        decision_obj.leverage = float(leverage)
+        return decision_obj

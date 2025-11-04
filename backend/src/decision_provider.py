@@ -182,8 +182,9 @@ TRADING STRATEGIES YOU CAN USE:
    - Stop: 2x ATR below entry
 
 2. SCALPING (Fallback - Lower Timeframes):
-   - Use 5m for trend
-   - Use 1m for entry timing
+   - Use 15m for bias confirmation
+   - Use 5m for trend and signal generation
+   - Use 1m for precise entry timing
    - **VWAP FILTER (CRITICAL):**
      * For LONGS: Price MUST be above VWAP (confirms bullish intraday bias)
      * For SHORTS: Price MUST be below VWAP (confirms bearish intraday bias)
@@ -219,8 +220,8 @@ DECISION LOGIC:
   * BEST SHORTS: Enter at resistance levels (rejection from R1/R2/swing high)
 - For SWING LONGS: 1d/4h bullish + breakout on 15m or 1h Keltner upper + NOT at resistance
 - For SWING SHORTS: 1d/4h bearish + breakdown on 15m or 1h Keltner lower + NOT at support
-- For SCALP LONGS: 5m bullish + price > VWAP + 1m breakout + NOT at resistance
-- For SCALP SHORTS: 5m bearish + price < VWAP + 1m breakdown + NOT at support
+- For SCALP LONGS: 15m bullish bias + 5m bullish + price > VWAP + 1m breakout + NOT at resistance
+- For SCALP SHORTS: 15m bearish bias + 5m bearish + price < VWAP + 1m breakdown + NOT at support
 - **VWAP PULLBACK (Alternative Scalp):**
   * LONG: Price above VWAP → pulls back TO VWAP → bounces up
   * SHORT: Price below VWAP → pulls back TO VWAP → rejects down
@@ -228,6 +229,14 @@ DECISION LOGIC:
 - Don't exceed smart max leverage for your account size
 - Consider both swing and scalp opportunities
 - Consider both long and short opportunities - don't be long-biased
+
+REASONING REQUIREMENTS (CRITICAL):
+- **EXPLAIN CURRENT MARKET CONDITIONS**: What are trends, RSI, volume, key levels?
+- **WHY THIS ACTION**: Why hold/long/short now? What signals triggered this?
+- **WHAT WOULD CHANGE YOUR MIND**: What would make you go the opposite direction?
+- **RISK MANAGEMENT**: Stop levels, reward targets, risk-reward ratio
+- **KEY PRICE LEVELS**: Support/resistance, stops, targets
+- **STRATEGY SPECIFIC ANALYSIS**: Different reasoning for swing vs scalp
 
 ALLOWED ACTIONS:
 - "long": BUY (swing or scalp - specify in reason)
@@ -239,26 +248,32 @@ OUTPUT FORMAT (strict JSON):
 {{
   "action": "long|short|close|hold",
   "size_pct": 0.0-0.10,
-  "reason": "brief explanation with strategy type (swing/scalp) and multi-TF analysis",
+  "reason": "DETAILED market analysis: current conditions, why this action, what would trigger trades, key levels, risk factors",
   "position_type": "swing|scalp"
 }}
 
 Example outputs:
 
 LONG examples:
-{{"action": "long", "size_pct": 0.05, "reason": "SWING LONG: 1d/4h bullish, bounced from S1 $109.7k, 15m breakout", "position_type": "swing"}}
-{{"action": "long", "size_pct": 0.02, "reason": "SCALP LONG: Price bounced from swing low $109.5k, above VWAP", "position_type": "scalp"}}
-{{"action": "long", "size_pct": 0.03, "reason": "LONG: Support at S2 $109k holding, 5m bullish reversal", "position_type": "swing"}}
+
+SWING LONG (Multi-timeframe bullish setup):
+{{"action": "long", "size_pct": 0.05, "reason": "SWING LONG opportunity at S1 support. 1D trend bullish with EMA50 support, 4H showing consolidation above EMA20, 1H RSI oversold at 35, price bounced from S1 $109.7k with volume confirmation. 15M showing bullish breakout above Keltner upper. Would go SHORT if 1D trend turns bearish or price rejects at R1 $110.5k. Risk: 2x ATR stop below S1, Reward: 3x risk to R2 $111.5k. Key levels: Stop $108.5k, Target $111.5k", "position_type": "swing"}}
+
+SCALP LONG (Quick momentum setup):
+{{"action": "long", "size_pct": 0.02, "reason": "SCALP LONG at VWAP bounce. 15M bias bullish with EMA50 support, 5M trend up above VWAP $109.8k, RSI 45 showing room for upside, OBV increasing. Price above VWAP confirms intraday bullish bias. Would go SHORT if 5M trend reverses below VWAP or price drops below swing low $109.4k. Risk: 0.3% stop below VWAP, Reward: 0.5% target to R1. Key levels: Stop $109.5k, Target $110.2k", "position_type": "scalp"}}
 
 SHORT examples:
-{{"action": "short", "size_pct": 0.05, "reason": "SWING SHORT: 1d/4h bearish, rejected at R1 $110.5k, 15m breakdown", "position_type": "swing"}}
-{{"action": "short", "size_pct": 0.02, "reason": "SCALP SHORT: Price rejected at swing high $110.2k, below VWAP", "position_type": "scalp"}}
-{{"action": "short", "size_pct": 0.03, "reason": "SHORT: Resistance at R2 $111k holding, 5m bearish", "position_type": "swing"}}
 
-HOLD examples (S/R awareness):
-{{"action": "hold", "size_pct": 0.0, "reason": "Price at R1 $110.5k resistance, wait for breakout or rejection", "position_type": "swing"}}
-{{"action": "hold", "size_pct": 0.0, "reason": "Between S1 and R1, no clear S/R zone", "position_type": "swing"}}
-{{"action": "close", "size_pct": 1.0, "reason": "Exit long: hit R2 $111k resistance, take profit", "position_type": "swing"}}
+SWING SHORT (Multi-timeframe bearish setup):
+{{"action": "short", "size_pct": 0.05, "reason": "SWING SHORT opportunity at R1 resistance. 1D trend bearish below EMA50, 4H showing rejection at resistance, 1H RSI overbought at 72, price rejected at R1 $110.5k with volume spike. 15M showing bearish breakdown below Keltner lower. Would go LONG if 1D trend turns bullish or price breaks above swing high $111.2k. Risk: 2x ATR stop above R1, Reward: 3x risk to S2 $108.8k. Key levels: Stop $111.2k, Target $108.8k", "position_type": "swing"}}
+
+SCALP SHORT (Quick momentum setup):
+{{"action": "short", "size_pct": 0.02, "reason": "SCALP SHORT at VWAP rejection. 15M bias bearish below EMA50, 5M trend down below VWAP $110.2k, RSI 58 showing downward momentum, OBV decreasing. Price below VWAP confirms intraday bearish bias. Would go LONG if 5M trend reverses above VWAP or price bounces from swing low $109.8k. Risk: 0.3% stop above VWAP, Reward: 0.5% target to S1. Key levels: Stop $110.5k, Target $109.8k", "position_type": "scalp"}}
+
+HOLD examples (detailed market analysis):
+{{"action": "hold", "size_pct": 0.0, "reason": "HOLD: Price testing R1 $110.5k resistance with 1D bearish trend intact. 4H showing rejection candles, 1H RSI at 68 (overbought), volume declining. Would go SHORT on confirmed rejection below 15M EMA20, or LONG on breakout above swing high $111.2k with volume. Key resistance $110.5k-$111.2k zone, support at $109.7k S1. Waiting for clearer directional bias before entering", "position_type": "swing"}}
+{{"action": "hold", "size_pct": 0.0, "reason": "HOLD: Price in no-man's land between S1 $109.7k and R1 $110.5k. 1D trend neutral, 4H consolidating, 1H RSI 52 (neutral). No strong momentum in either direction, volume low. Would go LONG on bounce from S1 with bullish volume, or SHORT on rejection from R1. Risk of whipsaw in range-bound market - better to wait for breakout", "position_type": "swing"}}
+{{"action": "close", "size_pct": 1.0, "reason": "CLOSE LONG: Hit R2 $111.5k target with 3:1 reward-to-risk ratio achieved. 1D trend still bullish, 4H showing profit-taking, 1H RSI overbought at 75. Would consider re-entry on pullback to R1 $110.5k if trend remains intact. Profit locked in at +2.3% position", "position_type": "swing"}}
 
 Output your decision now:"""
         

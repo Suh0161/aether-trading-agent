@@ -1,19 +1,25 @@
-import { useEffect, useRef, useState } from 'react'
-import { createChart } from 'lightweight-charts'
+import { useEffect, useState, useRef } from 'react'
+import { createChart, ColorType } from 'lightweight-charts'
+import CoinInfo from './CoinInfo'
+import { CoinSelector, ChartControls, PriceDisplay } from './chart/components'
 import './Chart.css'
 
-function Chart({ symbol, trades = [] }) {
-    const chartContainerRef = useRef()
-    const chartRef = useRef()
-    const seriesRef = useRef()
-    const [currentPrice, setCurrentPrice] = useState(0)
+function Chart({ symbol, trades = [], positions = [] }) {
+    const [currentPrice, setCurrentPrice] = useState(null) // null = not loaded yet
     const [priceChange, setPriceChange] = useState(0)
     const [chartType, setChartType] = useState('candlestick') // 'candlestick' or 'area'
-    const [timeframe, setTimeframe] = useState('1h') // Selected candle interval
+    const [timeframe, setTimeframe] = useState('1h')
     const [isUpdating, setIsUpdating] = useState(false)
-    const [selectedCoin, setSelectedCoin] = useState('BTC/USDT')
-    const [showCoinDropdown, setShowCoinDropdown] = useState(false)
-    
+    const [selectedCoin, setSelectedCoin] = useState(symbol || 'BTC/USDT')
+    const [chartData, setChartData] = useState([])
+
+    const chartContainerRef = useRef(null)
+    const chartRef = useRef(null)
+    const seriesRef = useRef(null)
+    const fetchingRef = useRef(false)
+    const abortControllerRef = useRef(null)
+    const debounceTimeoutRef = useRef(null)
+
     // Available coins
     const availableCoins = [
         { symbol: 'BTC/USDT', name: 'Bitcoin', icon: '/image/Bitcoin.svg.webp' },
@@ -24,29 +30,100 @@ function Chart({ symbol, trades = [] }) {
         { symbol: 'XRP/USDT', name: 'Ripple', icon: '/image/ripple-xrp-crypto.svg' },
     ]
 
-    // Create chart once
+    // Map timeframe to Binance interval and data limit (reduced for faster loading)
+    const getInterval = () => {
+        const intervalMap = {
+            '5m': { interval: '5m', limit: 50 },  // Reduced from 100
+            '15m': { interval: '15m', limit: 50 }, // Reduced from 100
+            '1h': { interval: '1h', limit: 100 },  // Reduced from 200
+            '4h': { interval: '4h', limit: 75 },   // Reduced from 150
+            '1d': { interval: '1d', limit: 50 },   // Reduced from 100
+            '1w': { interval: '1w', limit: 26 },   // Reduced from 52
+        }
+        return intervalMap[timeframe] || { interval: '1h', limit: 100 }
+    }
+
+    // Real-time price update every 2 seconds (always fetch fresh from Binance)
+    useEffect(() => {
+        if (!selectedCoin || isUpdating || chartData.length === 0) return // Don't update during loading or if no data
+
+        let isMounted = true
+        let updateInterval = null
+        const currentCoin = selectedCoin // Capture current coin to prevent stale closures
+
+        const updatePrice = async () => {
+            // Only update if still the same coin (prevent mixing data)
+            if (!isMounted || currentCoin !== selectedCoin) return
+
+            try {
+                // Fetch fresh price from Binance API (no caching for price updates)
+                const response = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${selectedCoin.replace('/', '')}`)
+                if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+                const data = await response.json()
+                const newPrice = parseFloat(data.price)
+
+                if (!isMounted || currentCoin !== selectedCoin) return
+
+                // Calculate price change percentage
+                const oldPrice = currentPrice
+                if (oldPrice && oldPrice > 0) {
+                    const change = ((newPrice - oldPrice) / oldPrice) * 100
+                    setPriceChange(change)
+                }
+
+                setCurrentPrice(newPrice)
+
+            } catch (error) {
+                if (isMounted) {
+                    console.error('Price update failed:', error)
+                }
+            }
+        }
+
+        // Initial price fetch
+        updatePrice()
+
+        // Set up interval for real-time updates
+        updateInterval = setInterval(updatePrice, 2000) // Update every 2 seconds
+
+        return () => {
+            isMounted = false
+            if (updateInterval) {
+                clearInterval(updateInterval)
+            }
+        }
+    }, [selectedCoin, chartData, isUpdating])
+
+    // Initialize chart - recreate when coin or chartType changes
     useEffect(() => {
         if (!chartContainerRef.current) return
 
+        // Clear all state when recreating chart
+        setChartData([])
+        setCurrentPrice(null)
+        setPriceChange(0)
+
         const chart = createChart(chartContainerRef.current, {
             layout: {
-                background: { color: '#fafaf9' },
-                textColor: '#78716c',
+                background: { type: ColorType.Solid, color: 'white' },
+                textColor: '#333',
             },
             grid: {
                 vertLines: { color: '#f5f5f4' },
                 horzLines: { color: '#f5f5f4' },
             },
-            crosshair: {
-                mode: 1,
-            },
-            rightPriceScale: {
-                borderColor: '#e7e5e4',
-            },
+            width: chartContainerRef.current.clientWidth,
+            height: 400,
             timeScale: {
-                borderColor: '#e7e5e4',
                 timeVisible: true,
                 secondsVisible: false,
+            },
+            rightPriceScale: {
+                borderColor: '#D6DCDE',
+            },
+            crosshair: {
+                mode: 1, // Normal crosshair
             },
         })
 
@@ -54,7 +131,14 @@ function Chart({ symbol, trades = [] }) {
 
         // Create series based on chart type
         let series
-        if (chartType === 'candlestick') {
+        if (chartType === 'area') {
+            series = chart.addAreaSeries({
+                topColor: 'rgba(37, 99, 235, 0.56)',
+                bottomColor: 'rgba(37, 99, 235, 0.04)',
+                lineColor: 'rgba(37, 99, 235, 1)',
+                lineWidth: 2,
+            })
+        } else {
             series = chart.addCandlestickSeries({
                 upColor: '#16a34a',
                 downColor: '#dc2626',
@@ -62,410 +146,169 @@ function Chart({ symbol, trades = [] }) {
                 wickUpColor: '#16a34a',
                 wickDownColor: '#dc2626',
             })
-        } else {
-            series = chart.addAreaSeries({
-                lineColor: '#2563eb',
-                topColor: 'rgba(37, 99, 235, 0.4)',
-                bottomColor: 'rgba(37, 99, 235, 0.0)',
-                lineWidth: 2,
-            })
         }
-
         seriesRef.current = series
 
-        // Map timeframe button to Binance interval and data limit
-        const getInterval = () => {
-            const intervalMap = {
-                '5m': { interval: '5m', limit: 288 },    // 5-min candles, ~1 day of data
-                '15m': { interval: '15m', limit: 480 },  // 15-min candles, ~5 days of data
-                '1h': { interval: '1h', limit: 720 },    // 1-hour candles, ~1 month of data
-                '4h': { interval: '4h', limit: 540 },    // 4-hour candles, ~3 months of data
-                '1d': { interval: '1d', limit: 180 },    // Daily candles, ~6 months of data
-                '1w': { interval: '1w', limit: 104 },    // Weekly candles, ~2 years of data
-            }
-            return intervalMap[timeframe] || { interval: '1h', limit: 500 }
-        }
-
-        // Fetch real data from Binance
-        const fetchChartData = async () => {
-            try {
-                const symbolFormatted = selectedCoin.replace('/', '')
-                const { interval, limit } = getInterval()
-                const response = await fetch(
-                    `https://api.binance.com/api/v3/klines?symbol=${symbolFormatted}&interval=${interval}&limit=${limit}`
-                )
-                const data = await response.json()
-
-                if (chartType === 'candlestick') {
-                    const chartData = data.map(candle => ({
-                        time: candle[0] / 1000,
-                        open: parseFloat(candle[1]),
-                        high: parseFloat(candle[2]),
-                        low: parseFloat(candle[3]),
-                        close: parseFloat(candle[4]),
-                    }))
-                    series.setData(chartData)
-
-                    if (chartData.length > 0) {
-                        const latest = chartData[chartData.length - 1]
-                        const first = chartData[0]
-                        setCurrentPrice(latest.close)
-                        const change = ((latest.close - first.open) / first.open) * 100
-                        setPriceChange(change)
-                    }
-                } else {
-                    // Area chart uses close prices
-                    const chartData = data.map(candle => ({
-                        time: candle[0] / 1000,
-                        value: parseFloat(candle[4]),
-                    }))
-                    series.setData(chartData)
-
-                    if (chartData.length > 0) {
-                        const latest = chartData[chartData.length - 1]
-                        const first = chartData[0]
-                        setCurrentPrice(latest.value)
-                        const change = ((latest.value - first.value) / first.value) * 100
-                        setPriceChange(change)
-                    }
-                }
-
-                // Add trade markers
-                addTradeMarkers(series, data)
-            } catch (error) {
-                console.error('Error fetching chart data:', error)
-            }
-        }
-
-        // Function to add trade markers
-        const addTradeMarkers = (series, chartData) => {
-            if (!trades || trades.length === 0) return
-
-            const markers = []
-            const chartStartTime = chartData[0]?.[0] / 1000 || 0
-            const chartEndTime = chartData[chartData.length - 1]?.[0] / 1000 || 0
-
-            trades
-                .filter(trade => trade.coin === selectedCoin.split('/')[0])
-                .forEach((trade) => {
-                    // Use actual timestamps if available, otherwise fallback to estimated positions
-                    let entryTime, exitTime
-
-                    if (trade.entryTimestamp && trade.exitTimestamp) {
-                        // Use real timestamps from trade data
-                        entryTime = trade.entryTimestamp
-                        exitTime = trade.exitTimestamp
-                    } else {
-                        // Fallback: estimate position on chart (for backwards compatibility)
-                        const timeRange = chartEndTime - chartStartTime
-                        exitTime = chartEndTime - (timeRange * 0.2)
-                        entryTime = exitTime - (timeRange * 0.05)
-                    }
-
-                    // Only show markers if they're within the chart's time range
-                    if (entryTime >= chartStartTime && entryTime <= chartEndTime) {
-                        // Entry marker (BUY)
-                        markers.push({
-                            time: entryTime,
-                            position: trade.side === 'LONG' ? 'belowBar' : 'aboveBar',
-                            color: trade.side === 'LONG' ? '#16a34a' : '#dc2626',
-                            shape: trade.side === 'LONG' ? 'arrowUp' : 'arrowDown',
-                            text: `${trade.side === 'LONG' ? '↑' : '↓'} $${trade.entryPrice.toFixed(2)}`,
-                            size: 1,
-                        })
-                    }
-
-                    if (exitTime >= chartStartTime && exitTime <= chartEndTime) {
-                        // Exit marker (SELL)
-                        markers.push({
-                            time: exitTime,
-                            position: trade.side === 'LONG' ? 'aboveBar' : 'belowBar',
-                            color: trade.pnl >= 0 ? '#16a34a' : '#dc2626',
-                            shape: 'circle',
-                            text: `$${trade.exitPrice.toFixed(2)} ${trade.pnl >= 0 ? '✅' : '❌'}`,
-                            size: 1,
-                        })
-                    }
-                })
-
-            if (markers.length > 0) {
-                series.setMarkers(markers)
-            }
-        }
-
-        fetchChartData()
-        const interval = setInterval(fetchChartData, 30000)
-
+        // Handle resize
         const handleResize = () => {
-            chart.applyOptions({
-                width: chartContainerRef.current.clientWidth,
-                height: chartContainerRef.current.clientHeight,
-            })
+            if (chartContainerRef.current && chartRef.current) {
+                chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth })
+            }
         }
 
         window.addEventListener('resize', handleResize)
-        handleResize()
 
+        // Cleanup function
         return () => {
             window.removeEventListener('resize', handleResize)
-            chart.remove()
-        }
-    }, [chartType])
-
-    // Update data when dependencies change
-    useEffect(() => {
-        if (!chartRef.current || !seriesRef.current) return
-
-        const series = seriesRef.current
-
-        // Map timeframe button to Binance interval and data limit
-        const getInterval = () => {
-            const intervalMap = {
-                '5m': { interval: '5m', limit: 288 },    // 5-min candles, ~1 day of data
-                '15m': { interval: '15m', limit: 480 },  // 15-min candles, ~5 days of data
-                '1h': { interval: '1h', limit: 720 },    // 1-hour candles, ~1 month of data
-                '4h': { interval: '4h', limit: 540 },    // 4-hour candles, ~3 months of data
-                '1d': { interval: '1d', limit: 180 },    // Daily candles, ~6 months of data
-                '1w': { interval: '1w', limit: 104 },    // Weekly candles, ~2 years of data
+            if (chartRef.current) {
+                chartRef.current.remove()
+                chartRef.current = null
+                seriesRef.current = null
             }
-            return intervalMap[timeframe] || { interval: '1h', limit: 500 }
         }
+    }, [selectedCoin, chartType])
 
-        // Fetch real data from Binance
+    // Fetch chart data when coin or timeframe changes
+    useEffect(() => {
+        if (!selectedCoin || !seriesRef.current) return
+
         const fetchChartData = async () => {
+            if (fetchingRef.current) return // Prevent concurrent fetches
+
+            fetchingRef.current = true
+            setIsUpdating(true)
+
             try {
-                const symbolFormatted = selectedCoin.replace('/', '')
+                // Abort any existing request
+                if (abortControllerRef.current) {
+                    abortControllerRef.current.abort()
+                }
+                abortControllerRef.current = new AbortController()
+
                 const { interval, limit } = getInterval()
+
+                // Fetch data from Binance API
                 const response = await fetch(
-                    `https://api.binance.com/api/v3/klines?symbol=${symbolFormatted}&interval=${interval}&limit=${limit}`
+                    `https://api.binance.com/api/v3/klines?symbol=${selectedCoin.replace('/', '')}&interval=${interval}&limit=${limit}`,
+                    { signal: abortControllerRef.current.signal }
                 )
-                const data = await response.json()
 
-                if (chartType === 'candlestick') {
-                    const chartData = data.map(candle => ({
-                        time: candle[0] / 1000,
-                        open: parseFloat(candle[1]),
-                        high: parseFloat(candle[2]),
-                        low: parseFloat(candle[3]),
-                        close: parseFloat(candle[4]),
-                    }))
-                    series.setData(chartData)
+                if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
-                    if (chartData.length > 0) {
-                        const latest = chartData[chartData.length - 1]
-                        const first = chartData[0]
-                        setCurrentPrice(latest.close)
-                        const change = ((latest.close - first.open) / first.open) * 100
-                        setPriceChange(change)
+                const rawData = await response.json()
+
+                // Transform to lightweight-charts format
+                const transformedData = rawData.map(item => ({
+                    time: Math.floor(item[0] / 1000), // Convert ms to seconds
+                    open: parseFloat(item[1]),
+                    high: parseFloat(item[2]),
+                    low: parseFloat(item[3]),
+                    close: parseFloat(item[4]),
+                    volume: parseFloat(item[5])
+                }))
+
+                // Update chart data
+                if (seriesRef.current && transformedData.length > 0) {
+                    if (chartType === 'area') {
+                        seriesRef.current.setData(transformedData.map(d => ({
+                            time: d.time,
+                            value: d.close
+                        })))
+                    } else {
+                        seriesRef.current.setData(transformedData)
                     }
-                } else {
-                    // Area chart uses close prices
-                    const chartData = data.map(candle => ({
-                        time: candle[0] / 1000,
-                        value: parseFloat(candle[4]),
-                    }))
-                    series.setData(chartData)
 
-                    if (chartData.length > 0) {
-                        const latest = chartData[chartData.length - 1]
-                        const first = chartData[0]
-                        setCurrentPrice(latest.value)
-                        const change = ((latest.value - first.value) / first.value) * 100
-                        setPriceChange(change)
+                    setChartData(transformedData)
+
+                    // Fit content to show all data
+                    if (chartRef.current) {
+                        chartRef.current.timeScale().fitContent()
                     }
                 }
 
-                // Add trade markers
-                addTradeMarkers(series, data)
             } catch (error) {
-                console.error('Error fetching chart data:', error)
+                if (error.name !== 'AbortError') {
+                    console.error('Chart data fetch failed:', error)
+                }
+            } finally {
+                fetchingRef.current = false
+                setIsUpdating(false)
             }
         }
 
-        // Function to add trade markers
-        const addTradeMarkers = (series, chartData) => {
-            if (!trades || trades.length === 0) return
-
-            const markers = []
-            const chartStartTime = chartData[0]?.[0] / 1000 || 0
-            const chartEndTime = chartData[chartData.length - 1]?.[0] / 1000 || 0
-
-            trades
-                .filter(trade => trade.coin === selectedCoin.split('/')[0])
-                .forEach((trade) => {
-                    // Use actual timestamps if available, otherwise fallback to estimated positions
-                    let entryTime, exitTime
-
-                    if (trade.entryTimestamp && trade.exitTimestamp) {
-                        // Use real timestamps from trade data
-                        entryTime = trade.entryTimestamp
-                        exitTime = trade.exitTimestamp
-                    } else {
-                        // Fallback: estimate position on chart (for backwards compatibility)
-                        const timeRange = chartEndTime - chartStartTime
-                        exitTime = chartEndTime - (timeRange * 0.2)
-                        entryTime = exitTime - (timeRange * 0.05)
-                    }
-
-                    // Only show markers if they're within the chart's time range
-                    if (entryTime >= chartStartTime && entryTime <= chartEndTime) {
-                        // Entry marker (BUY)
-                        markers.push({
-                            time: entryTime,
-                            position: trade.side === 'LONG' ? 'belowBar' : 'aboveBar',
-                            color: trade.side === 'LONG' ? '#16a34a' : '#dc2626',
-                            shape: trade.side === 'LONG' ? 'arrowUp' : 'arrowDown',
-                            text: `${trade.side === 'LONG' ? '↑' : '↓'} $${trade.entryPrice.toFixed(2)}`,
-                            size: 1,
-                        })
-                    }
-
-                    if (exitTime >= chartStartTime && exitTime <= chartEndTime) {
-                        // Exit marker (SELL)
-                        markers.push({
-                            time: exitTime,
-                            position: trade.side === 'LONG' ? 'aboveBar' : 'belowBar',
-                            color: trade.pnl >= 0 ? '#16a34a' : '#dc2626',
-                            shape: 'circle',
-                            text: `$${trade.exitPrice.toFixed(2)} ${trade.pnl >= 0 ? '✅' : '❌'}`,
-                            size: 1,
-                        })
-                    }
-                })
-
-            if (markers.length > 0) {
-                series.setMarkers(markers)
-            }
+        // Debounce rapid changes (coin/timeframe switches)
+        if (debounceTimeoutRef.current) {
+            clearTimeout(debounceTimeoutRef.current)
         }
 
-        fetchChartData()
-        const interval = setInterval(fetchChartData, 30000)
+        debounceTimeoutRef.current = setTimeout(fetchChartData, 300) // 300ms debounce
 
         return () => {
-            clearInterval(interval)
+            if (debounceTimeoutRef.current) {
+                clearTimeout(debounceTimeoutRef.current)
+            }
         }
-    }, [selectedCoin, trades, chartType, timeframe])
+    }, [selectedCoin, timeframe, chartType])
 
-    const timeframes = ['5m', '15m', '1h', '4h', '1d', '1w']
+    // Handle trade markers on chart
+    useEffect(() => {
+        if (!seriesRef.current || !trades.length) return
+
+        // Add trade markers (buy/sell points)
+        const markers = trades.map(trade => ({
+            time: trade.timestamp,
+            position: trade.side === 'buy' ? 'belowBar' : 'aboveBar',
+            color: trade.side === 'buy' ? '#16a34a' : '#dc2626',
+            shape: trade.side === 'buy' ? 'arrowUp' : 'arrowDown',
+            text: `${trade.side.toUpperCase()} ${trade.size.toFixed(4)}`
+        }))
+
+        seriesRef.current.setMarkers(markers)
+    }, [trades])
+
+    // Find position for selected coin
+    const coinPosition = positions.find(pos => pos.coin === selectedCoin)
 
     return (
         <div className="chart-container">
-            <div className="chart-header">
-                <div className="coin-selector-wrapper">
-                    <h2 
-                        className="chart-title clickable" 
-                        onClick={() => setShowCoinDropdown(!showCoinDropdown)}
-                    >
-                        <img 
-                            src={availableCoins.find(c => c.symbol === selectedCoin)?.icon} 
-                            alt={selectedCoin}
-                            className="chart-title-icon"
-                        />
-                        {selectedCoin}
-                        <svg 
-                            className={`dropdown-arrow ${showCoinDropdown ? 'open' : ''}`}
-                            width="16" 
-                            height="16" 
-                            viewBox="0 0 16 16" 
-                            fill="none"
-                        >
-                            <path 
-                                d="M4 6L8 10L12 6" 
-                                stroke="currentColor" 
-                                strokeWidth="2" 
-                                strokeLinecap="round" 
-                                strokeLinejoin="round"
-                            />
-                        </svg>
-                    </h2>
-                    {showCoinDropdown && (
-                        <div className="coin-dropdown">
-                            {availableCoins.map(coin => (
-                                <div
-                                    key={coin.symbol}
-                                    className={`coin-option ${selectedCoin === coin.symbol ? 'active' : ''}`}
-                                    onClick={() => {
-                                        setSelectedCoin(coin.symbol)
-                                        setShowCoinDropdown(false)
-                                    }}
-                                >
-                                    <img 
-                                        src={coin.icon} 
-                                        alt={coin.name}
-                                        className="coin-icon"
-                                    />
-                                    <div className="coin-info">
-                                        <span className="coin-symbol">{coin.symbol}</span>
-                                        <span className="coin-name">{coin.name}</span>
-                                    </div>
-                                    {selectedCoin === coin.symbol && (
-                                        <svg 
-                                            width="18" 
-                                            height="18" 
-                                            viewBox="0 0 20 20" 
-                                            fill="none"
-                                            className="coin-checkmark"
-                                        >
-                                            <circle 
-                                                cx="10" 
-                                                cy="10" 
-                                                r="9" 
-                                                fill="#16a34a"
-                                                opacity="0.15"
-                                            />
-                                            <path 
-                                                d="M6 10L8.5 12.5L14 7" 
-                                                stroke="#16a34a" 
-                                                strokeWidth="2.5" 
-                                                strokeLinecap="round" 
-                                                strokeLinejoin="round"
-                                            />
-                                        </svg>
-                                    )}
+            <div className="chart-layout">
+                <div className="chart-main">
+                    <CoinSelector
+                        selectedCoin={selectedCoin}
+                        onCoinChange={setSelectedCoin}
+                        availableCoins={availableCoins}
+                    />
+
+                    <PriceDisplay
+                        currentPrice={currentPrice}
+                        priceChange={priceChange}
+                        symbol={selectedCoin}
+                        isUpdating={isUpdating}
+                    />
+
+                    <ChartControls
+                        timeframe={timeframe}
+                        chartType={chartType}
+                        onTimeframeChange={setTimeframe}
+                        onChartTypeChange={setChartType}
+                    />
+
+                    <div className="chart-content">
+                        <div className={`chart-wrapper ${isUpdating ? 'updating' : ''}`}>
+                            <div ref={chartContainerRef} className="chart-canvas" />
+                            {isUpdating && (
+                                <div className="chart-loading">
+                                    <div className="loading-spinner"></div>
+                                    <p>Updating chart data...</p>
                                 </div>
-                            ))}
+                            )}
                         </div>
-                    )}
-                </div>
-                <div className="chart-controls">
-                    <div className="chart-type-toggle">
-                        <button
-                            className={`chart-type-btn ${chartType === 'candlestick' ? 'active' : ''}`}
-                            onClick={() => setChartType('candlestick')}
-                        >
-                            Candles
-                        </button>
-                        <button
-                            className={`chart-type-btn ${chartType === 'area' ? 'active' : ''}`}
-                            onClick={() => setChartType('area')}
-                        >
-                            Area
-                        </button>
-                    </div>
-                    <div className="chart-info">
-                        <span className="chart-price">
-                            ${currentPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </span>
-                        <span className={`chart-change ${priceChange >= 0 ? 'positive' : 'negative'}`}>
-                            {priceChange >= 0 ? '+' : ''}{priceChange.toFixed(2)}%
-                        </span>
+
+                        <CoinInfo selectedCoin={selectedCoin} position={coinPosition} />
                     </div>
                 </div>
             </div>
-
-            <div className="timeframe-selector">
-                {timeframes.map(tf => (
-                    <button
-                        key={tf}
-                        className={`timeframe-btn ${timeframe === tf ? 'active' : ''}`}
-                        onClick={() => setTimeframe(tf)}
-                    >
-                        {tf}
-                    </button>
-                ))}
-            </div>
-
-            <div ref={chartContainerRef} className={`chart ${isUpdating ? 'updating' : ''}`} />
         </div>
     )
 }

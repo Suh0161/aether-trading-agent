@@ -1,0 +1,30 @@
+[33mcommit 0fee45fd15ced5db639a075331f6b78f1d6b413f[m
+Author: suh016 <afifsabrin25@gmail.com>
+Date:   Mon Nov 3 15:41:38 2025 +0000
+
+    Fix: Prevent duplicate position entries and suppress order book warnings
+    
+    - Fix critical bug where duplicate positions could be opened in same cycle
+      * Changed risk manager to use real-time position size from tracked_position_sizes
+      * Previously used stale position_size from cycle start, allowing duplicates
+    
+    - Suppress order book fetch warnings (expected in demo mode)
+      * Changed from WARNING to DEBUG level in orderbook_analyzer.py
+      * Order book is optional; bot works fine without it
+    
+    - Improved position tracking accuracy
+      * Risk manager now checks against current tracked positions
+      * Prevents opening multiple positions on same symbol
+
+ORDER_BOOK_LIQUIDITY_TRADING_GUIDE.md
+backend/api_server.py
+backend/src/data_acquisition.py
+backend/src/decision_provider.py
+backend/src/hybrid_decision_provider.py
+backend/src/liquidity_analyzer.py
+backend/src/loop_controller.py
+backend/src/orderbook_analyzer.py
+backend/src/prompt_optimizer.py
+backend/src/regime_classifier.py
+backend/src/strategy.py
+backend/src/tiered_data.py

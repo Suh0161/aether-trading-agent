@@ -1,0 +1,130 @@
+.price-display {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  margin-bottom: 16px;
+}
+
+.price-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.price-symbol {
+  font-size: 12px;
+  font-weight: 500;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.price-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #1f2937;
+  transition: opacity 0.3s ease;
+}
+
+.price-value.updating {
+  opacity: 0.6;
+}
+
+.price-change {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.price-change.positive {
+  color: #16a34a;
+}
+
+.price-change.negative {
+  color: #dc2626;
+}
+
+.price-change.neutral {
+  color: #6b7280;
+}
+
+.price-change-value {
+  font-size: 16px;
+}
+
+.price-change-indicator {
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.price-change.positive .price-change-indicator {
+  background: rgba(22, 163, 74, 0.1);
+  border-color: rgba(22, 163, 74, 0.2);
+}
+
+.price-change.negative .price-change-indicator {
+  background: rgba(220, 38, 38, 0.1);
+  border-color: rgba(220, 38, 38, 0.2);
+}
+
+.price-change.neutral .price-change-indicator {
+  background: rgba(107, 114, 128, 0.1);
+  border-color: rgba(107, 114, 128, 0.2);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .price-display {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .price-main {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .price-symbol {
+    font-size: 11px;
+  }
+
+  .price-value {
+    font-size: 24px;
+  }
+
+  .price-change-value {
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 480px) {
+  .price-value {
+    font-size: 20px;
+  }
+
+  .price-change {
+    gap: 6px;
+  }
+
+  .price-change-value {
+    font-size: 13px;
+  }
+
+  .price-change-indicator {
+    width: 20px;
+    height: 20px;
+    font-size: 16px;
+  }
+}

@@ -1,0 +1,310 @@
+.market-data-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+}
+
+/* Market Stats Grid */
+.market-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+}
+
+.stat-card {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: border-color 0.2s;
+}
+
+.stat-card:hover {
+    border-color: #cbd5e1;
+}
+
+.stat-label {
+    font-size: 10px;
+    font-weight: 500;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.stat-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: #111827;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+.stat-value.positive {
+    color: #059669;
+}
+
+.stat-value.negative {
+    color: #dc2626;
+}
+
+/* Data Split Layout */
+.data-split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #ffffff;
+    overflow: hidden;
+}
+
+.data-split > * {
+    border-right: 1px solid #e5e7eb;
+}
+
+.data-split > *:last-child {
+    border-right: none;
+}
+
+@media (max-width: 1200px) {
+    .data-split {
+        grid-template-columns: 1fr;
+    }
+    
+    .data-split > * {
+        border-right: none;
+        border-bottom: 1px solid #e5e7eb;
+    }
+    
+    .data-split > *:last-child {
+        border-bottom: none;
+    }
+}
+
+/* Panel Styles */
+.orderbook-panel,
+.trades-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    max-height: 500px;
+    overflow: hidden;
+}
+
+.panel-title {
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #111827;
+    background: #f9fafb;
+    border-bottom: 1px solid #e5e7eb;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Order Book Content */
+.orderbook-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    background: #ffffff;
+}
+
+.orderbook-side {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.orderbook-side.asks-side {
+    order: 1;
+}
+
+.orderbook-side.bids-side {
+    order: 3;
+}
+
+.orderbook-header {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    padding: 6px 12px;
+    font-size: 9px;
+    font-weight: 600;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    background: #f9fafb;
+    border-bottom: 1px solid #e5e7eb;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+.orderbook-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    padding: 4px 12px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.1s;
+    font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+    line-height: 1.4;
+}
+
+.orderbook-row:hover {
+    background: #f9fafb;
+}
+
+.orderbook-row.ask .price {
+    color: #dc2626;
+    font-weight: 500;
+}
+
+.orderbook-row.bid .price {
+    color: #059669;
+    font-weight: 500;
+}
+
+.orderbook-row .price,
+.orderbook-row .qty,
+.orderbook-row .total {
+    color: #374151;
+}
+
+/* Mid Price Section */
+.orderbook-mid {
+    order: 2;
+    padding: 6px 12px;
+    background: #f9fafb;
+    border-top: 1px solid #e5e7eb;
+    border-bottom: 1px solid #e5e7eb;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.mid-price {
+    font-size: 12px;
+    font-weight: 600;
+    color: #111827;
+    font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+}
+
+.mid-spread {
+    font-size: 9px;
+    color: #6b7280;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+/* Trades Content */
+.trades-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    background: #ffffff;
+}
+
+.trades-header {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    padding: 6px 12px;
+    font-size: 9px;
+    font-weight: 600;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    background: #f9fafb;
+    border-bottom: 1px solid #e5e7eb;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+.trades-list {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow-y: auto;
+}
+
+.trade-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    padding: 4px 12px;
+    font-size: 11px;
+    transition: background 0.1s;
+    font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+    line-height: 1.4;
+    cursor: pointer;
+}
+
+.trade-row:hover {
+    background: #f9fafb;
+}
+
+.trade-row.buy .trade-price {
+    color: #059669;
+    font-weight: 500;
+}
+
+.trade-row.sell .trade-price {
+    color: #dc2626;
+    font-weight: 500;
+}
+
+.trade-price,
+.trade-qty,
+.trade-time {
+    color: #374151;
+}
+
+.trade-time {
+    color: #6b7280;
+    font-size: 10px;
+}
+
+/* Loading & Empty States */
+.loading-state,
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: #9ca3af;
+    font-size: 13px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+/* Native Scrollbars */
+.orderbook-side::-webkit-scrollbar,
+.trades-list::-webkit-scrollbar {
+    width: 8px;
+}
+
+.orderbook-side::-webkit-scrollbar-track,
+.trades-list::-webkit-scrollbar-track {
+    background: #f9fafb;
+}
+
+.orderbook-side::-webkit-scrollbar-thumb,
+.trades-list::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 4px;
+}
+
+.orderbook-side::-webkit-scrollbar-thumb:hover,
+.trades-list::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+}

@@ -194,7 +194,7 @@ When you start the agent, you'll see output like this:
 **Testnet Mode**:
 ```
 ================================================================================
-AUTONOMOUS TRADING AGENT
+AETHER TRADING AGENT
 ================================================================================
 2024-10-31 10:30:00 - __main__ - INFO - Loading configuration from: .env
 2024-10-31 10:30:00 - __main__ - INFO - ✓ Configuration loaded successfully
@@ -215,7 +215,7 @@ TESTNET MODE - Safe testing environment
 **Live Mode** (with 5-second warning):
 ```
 ================================================================================
-AUTONOMOUS TRADING AGENT
+AETHER TRADING AGENT
 ================================================================================
 2024-10-31 10:30:00 - __main__ - INFO - Loading configuration from: .env
 2024-10-31 10:30:00 - __main__ - INFO - ✓ Configuration loaded successfully

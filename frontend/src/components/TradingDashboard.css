@@ -1,0 +1,176 @@
+.trading-dashboard {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: #fafaf9;
+    padding: 20px;
+    gap: 20px;
+}
+
+.dashboard-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.dashboard-title {
+    font-size: 24px;
+    font-weight: 600;
+    color: #1c1917;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    transition: color 0.2s;
+}
+
+.dashboard-title:hover {
+    color: #2563eb;
+}
+
+.coin-selector-wrapper {
+    position: relative;
+}
+
+.coin-icon-small {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+}
+
+.dropdown-arrow {
+    transition: transform 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+    color: #6b7280;
+}
+
+.dropdown-arrow.open {
+    transform: rotate(180deg);
+    color: #2563eb;
+}
+
+.coin-dropdown {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    background: linear-gradient(135deg, #ffffff 0%, #fafafa 100%);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 12px;
+    box-shadow:
+        0 20px 60px rgba(0, 0, 0, 0.12),
+        0 8px 16px rgba(0, 0, 0, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    z-index: 1000;
+    min-width: 280px;
+    max-height: 400px;
+    overflow-y: auto;
+    animation: dropdownFadeIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    padding: 6px;
+}
+
+.coin-option {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border-radius: 6px;
+    min-height: 48px;
+    border: 1px solid transparent;
+}
+
+.coin-option:hover {
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.08) 0%, rgba(37, 99, 235, 0.04) 100%);
+    border: 1px solid rgba(37, 99, 235, 0.1);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.15);
+    transition: all 0.2s ease;
+}
+
+.coin-option.active {
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.12) 0%, rgba(37, 99, 235, 0.08) 100%);
+    border: 1px solid rgba(37, 99, 235, 0.2);
+    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.15);
+}
+
+.coin-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+}
+
+.coin-checkmark {
+    color: #16a34a;
+    flex-shrink: 0;
+}
+
+.coin-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+}
+
+.coin-symbol {
+    font-size: 14px;
+    font-weight: 600;
+    color: #111827;
+    display: block;
+}
+
+.coin-name {
+    font-size: 12px;
+    color: #6b7280;
+    display: block;
+}
+
+.coin-checkmark {
+    margin-left: auto;
+}
+
+.dashboard-price-info {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.price-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.price-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: #111827;
+}
+
+.price-change {
+    font-size: 18px;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 6px;
+}
+
+.price-change.positive {
+    color: #059669;
+    background: #d1fae5;
+}
+
+.price-change.negative {
+    color: #dc2626;
+    background: #fee2e2;
+}
+
+.dashboard-content {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+}
+
+

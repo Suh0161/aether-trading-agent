@@ -105,7 +105,7 @@ def main() -> int:
     logger = logging.getLogger(__name__)
     
     logger.info("=" * 80)
-    logger.info("AUTONOMOUS TRADING AGENT")
+    logger.info("AETHER TRADING AGENT")
     logger.info("=" * 80)
     
     # Load configuration

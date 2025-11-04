@@ -24,13 +24,16 @@
 
 ### Trading Intelligence
 - **Multi-Coin Trading** - Simultaneously monitors 6 cryptocurrencies (BTC, ETH, SOL, DOGE, BNB, XRP) and automatically trades the coin with the highest confidence setup each cycle
+- **Simultaneous Swing + Scalp** - Can hold both swing (multi-day) and scalp (quick) positions simultaneously on the same coin for maximum opportunity capture
 - **Adaptive Strategy System** - Automatically switches between swing trading (multi-day holds) and scalping (quick in-and-out) based on market conditions
 - **Bidirectional Trading** - Supports both LONG (buy low, sell high) and SHORT (sell high, buy low) positions with proper stop-loss/take-profit for each direction
 - **AI Risk Filter** - DeepSeek AI validates every trade, vetoing risky entries and approving high-confidence setups
 - **Multi-Timeframe Analysis** - Analyzes 6 timeframes simultaneously (1D → 1m) for comprehensive market view
+- **Advanced Market Data** - Access to liquidity analysis, smart money concepts, order blocks, support/resistance, and institutional order flow
 - **Volume Confirmation** - Requires strong volume (1.2x-1.5x average) to confirm breakouts and avoid fake moves
 - **Support/Resistance Detection** - Automatically calculates pivot points, swing highs/lows, and key price levels
 - **VWAP Filtering** - Uses Volume-Weighted Average Price to identify institutional order flow
+- **Order Book Analysis** - Real-time order book imbalance, bid/ask ratios, and liquidity zone detection
 
 ### Risk Management
 - **Two-Layer Position Sizing** - Layer 1: Capital allocation based on confidence (6-25% of equity). Layer 2: Leverage multiplier (1-3x) for amplification
@@ -48,9 +51,9 @@
 - **Real-Time P&L Tracking** - Monitor unrealized P&L, leverage, and position details live. Positions tab shows SIDE (LONG/SHORT), coin, leverage, notional value, and unrealized P&L
 - **Complete Trade History** - Audit trail with entry/exit prices, holding times, P&L, and trade direction (LONG/SHORT)
 - **Emergency Controls** - One-click kill switch to close all positions + pause/resume agent
-- **Agent Messages** - Intelligent filtering shows only key decisions and market analysis with detailed reasoning
+- **Smart Message System** - Consolidated cycle summaries instead of spam, with individual trade notifications and cost-optimized idle messages
 
-### Technical Indicators
+### Technical Indicators & Advanced Data
 - **EMA** (50-period) - Trend direction
 - **RSI** (14-period) - Momentum and overbought/oversold
 - **ATR** (14-period) - Volatility measurement
@@ -58,6 +61,15 @@
 - **VWAP** (1h, 5m) - Institutional order flow
 - **Pivot Points** (R1-R3, S1-S3) - Support/resistance levels
 - **OBV** (On-Balance Volume) - Volume trend confirmation
+
+### Advanced Market Analysis (AI Access)
+- **Order Book Analysis** - Real-time bid/ask imbalance, spread analysis, liquidity depth
+- **Liquidity Zones** - Swing highs/lows as smart money target zones
+- **Liquidity Sweeps** - Detection of institutional order flow grabbing stops
+- **Smart Money Concepts** - Institutional accumulation/distribution patterns
+- **Order Block Detection** - Previous swing points as potential reversal zones
+- **Multi-Regime Awareness** - Volatility-based (LOW/NORMAL/HIGH) and session-based (LONDON/NY/ASIA) adjustments
+- **Volume Confirmation** - OBV trends, volume ratios, and institutional participation
 
 ## Trading Concepts
 
@@ -99,19 +111,19 @@ Market Data → Strategy Signal → AI Filter → Risk Manager → Execute
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      Frontend (React)                        │
+┌───────────────────────────────────────────────────────────┐
+│                      Frontend (React)                     │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
 │  │  Header  │  │  Chart   │  │ Sidebar  │  │  Modal   │   │
 │  │ (Balance)│  │(Candles) │  │(Positions│  │ (Exit    │   │
 │  │(Controls)│  │  Trades) │  │ Trades   │  │  Plans)  │   │
 │  └────┬─────┘  └────┬─────┘  │Messages) │  └──────────┘   │
-└───────┼──────────────┼────────┼──────────┼─────────────────┘
+└───────┼──────────────┼────────┼──────────┼────────────────┘
         │              │        │          │
         └──────────────┴────────┴──────────┘
                        │ HTTP (REST API)
-        ┌──────────────┴──────────────────────────────┐
-        │         FastAPI Server (Port 8000)          │
+        ┌──────────────┴─────────────────────────────┐
+        │         FastAPI Server (Port 8000)         │
         │  ┌──────────────────────────────────────┐  │
         │  │ /api/balance                         │  │
         │  │ /api/positions                       │  │
@@ -120,29 +132,32 @@ Market Data → Strategy Signal → AI Filter → Risk Manager → Execute
         │  │ /api/emergency-close                 │  │
         │  │ /api/agent/pause|resume|status       │  │
         │  └──────────────────────────────────────┘  │
-        └──────────────────┬──────────────────────────┘
+        └──────────────────┬─────────────────────────┘
                            │
-        ┌──────────────────┴──────────────────────────┐
-        │      Trading Agent Backend (Python)         │
+        ┌──────────────────┴─────────────────────────┐
+        │      Trading Agent Backend (Python)        │
         │  ┌──────────────────────────────────────┐  │
         │  │  Loop Controller                     │  │
-        │  │  ├─ Data Acquisition (CCXT)          │  │
-        │  │  ├─ Strategy Engine                  │  │
+        │  │  ├─ Data Acquisition (Tier 1-3)      │  │
+        │  │  │  ├─ Indicators (RSI, ATR, EMAs)   │  │
+        │  │  │  ├─ Order Book (Liquidity)        │  │
+        │  │  │  └─ Regime (Vol/Session)          │  │
+        │  │  ├─ Strategy Engine (Swing + Scalp)  │  │
         │  │  ├─ Hybrid Decision Provider         │  │
         │  │  ├─ Risk Manager                     │  │
         │  │  ├─ Trade Executor                   │  │
         │  │  └─ API Client → FastAPI             │  │
         │  └──────────────────────────────────────┘  │
-        └──────────────────┬──────────────────────────┘
+        └──────────────────┬─────────────────────────┘
                            │
-        ┌──────────────────┴──────────────────────────┐
-        │           External Services                  │
+        ┌──────────────────┴─────────────────────────┐
+        │           External Services                │
         │  ┌──────────────┐  ┌──────────────────┐    │
         │  │  Exchange    │  │   DeepSeek API   │    │
         │  │  (Binance/   │  │   (LLM)          │    │
         │  │  Hyperliquid)│  │                  │    │
         │  └──────────────┘  └──────────────────┘    │
-        └──────────────────────────────────────────────┘
+        └────────────────────────────────────────────┘
 ```
 
 ## Prerequisites
@@ -621,9 +636,22 @@ Each cycle is logged as a JSON object with:
 | **Configurable Equity Limits** | `MAX_EQUITY_USAGE_PCT` now fully respected across all strategy components |
 | **Testing Phase Disclaimer** | Added clear warnings about testing status and demo-only usage |
 
+### November 4, 2025 - Advanced Features & Optimizations
+
+| Enhancement | Description |
+|-------------|-------------|
+| **Simultaneous Swing + Scalp** | Agent can now hold both swing (multi-day) and scalp (quick) positions simultaneously on the same coin for maximum opportunity capture |
+| **Advanced AI Data Access** | AI now has complete access to institutional-grade market data: liquidity analysis, smart money concepts, order blocks, multi-regime awareness, and order book analysis |
+| **Smart Message Consolidation** | Eliminated message spam with consolidated cycle summaries. Individual trade notifications remain, but hold messages are consolidated to reduce API costs and improve UX |
+| **Cost-Optimized Idle Messages** | When idle, agent sends simple hardcoded messages instead of expensive AI calls, reducing costs by up to 90% during quiet periods |
+| **Enhanced Decision Architecture** | Improved hybrid decision provider to evaluate both swing and scalp strategies independently, selecting optimal signals based on current positions |
+| **Professional Market Analysis** | AI can now analyze order book imbalance, liquidity zones, smart money sweeps, volatility regimes, and trading sessions for institutional-quality decisions |
+
 ### Future Improvements
 
 - **UI Enhancements** - Planned improvements to the dashboard interface for better user experience and functionality
+- **Additional Exchanges** - Support for more cryptocurrency exchanges beyond Binance
+- **Advanced Risk Models** - Machine learning-based risk assessment and dynamic position sizing
 
 ## License
 
@@ -631,7 +659,7 @@ Apache License 2.0
 
 Copyright 2025 AETHER Trading Agent Contributors
 
-**Last Updated: November 3, 2025**
+**Last Updated: November 4, 2025**
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

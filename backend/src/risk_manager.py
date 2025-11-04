@@ -32,24 +32,26 @@ class RiskManager:
         self.current_day: Optional[int] = None
         self.consecutive_100pct_count: int = 0
     
-    def validate(
+    def validate_decision(
         self,
         decision: DecisionObject,
         snapshot: MarketSnapshot,
         position_size: float,
-        equity: float
-    ) -> RiskResult:
+        equity: float,
+        symbol: str
+    ) -> tuple[bool, str]:
         """
         Run all risk checks and return approval or denial.
-        
+
         Args:
             decision: Parsed trading decision from LLM
             snapshot: Current market data
             position_size: Current position size (positive for long, negative for short)
             equity: Current account equity
-            
+            symbol: Trading symbol (e.g., 'BTC/USDT')
+
         Returns:
-            RiskResult with approval status and reason
+            Tuple of (approved: bool, reason: str)
         """
         # Track starting equity for daily loss cap
         self._update_daily_equity(equity)
@@ -57,7 +59,7 @@ class RiskManager:
         # Rule 1: Hold auto-approve
         if decision.action == "hold":
             logger.info("Risk check: hold action auto-approved")
-            return RiskResult(approved=True, reason="")
+            return True, ""
         
         # Rule 2: Prevent new entries if position already exists (same direction)
         # Allow adding to position ONLY if it's the same direction (long+long or short+short)
@@ -66,31 +68,31 @@ class RiskManager:
             # Check if we already have a position in the OPPOSITE direction
             if decision.action == "long" and position_size < 0:
                 logger.warning("Risk check: denied - cannot open LONG while SHORT position exists")
-                return RiskResult(approved=False, reason="opposite position exists")
+                return False, "opposite position exists"
             elif decision.action == "short" and position_size > 0:
                 logger.warning("Risk check: denied - cannot open SHORT while LONG position exists")
-                return RiskResult(approved=False, reason="opposite position exists")
+                return False, "opposite position exists"
             # If we already have a position in the SAME direction, also prevent (no adding)
             elif decision.action == "long" and position_size > 0:
                 logger.warning("Risk check: denied - LONG position already exists (no position scaling)")
-                return RiskResult(approved=False, reason="position already exists")
+                return False, "position already exists"
             elif decision.action == "short" and position_size < 0:
                 logger.warning("Risk check: denied - SHORT position already exists (no position scaling)")
-                return RiskResult(approved=False, reason="position already exists")
+                return False, "position already exists"
         
         # Rule 3: Close/Sell validation - auto-approve closing positions
         if decision.action in ["close", "sell"]:
             if position_size == 0:
                 logger.warning("Risk check: denied - no position to close")
-                return RiskResult(approved=False, reason="no position to close")
+                return False, "no position to close"
             else:
                 logger.info("Risk check: close/sell action approved (exiting position)")
-                return RiskResult(approved=True, reason="")
+                return True, ""
         
         # Rule 4: Price validity
         if snapshot.price <= 0:
             logger.warning(f"Risk check: denied - invalid price {snapshot.price}")
-            return RiskResult(approved=False, reason="no valid price")
+            return False, "no valid price"
         
         # Rule 5: Position size limit (only for opening new positions)
         proposed_size = (equity * decision.size_pct) / snapshot.price
@@ -101,7 +103,7 @@ class RiskManager:
                 f"Risk check: denied - proposed size {proposed_size:.4f} exceeds "
                 f"max allowed {max_allowed_size:.4f}"
             )
-            return RiskResult(approved=False, reason="exceeds max position size")
+            return False, "exceeds max position size"
         
         # Rule 6: Smart leverage limit (adaptive based on portfolio size)
         proposed_position_value = proposed_size * snapshot.price
@@ -121,14 +123,14 @@ class RiskManager:
                 f"Risk check: denied - proposed leverage {proposed_leverage:.2f}x "
                 f"exceeds smart max leverage {smart_max_leverage:.2f}x (equity: ${equity:,.2f})"
             )
-            return RiskResult(approved=False, reason=f"exceeds smart max leverage ({smart_max_leverage:.2f}x)")
-        
+            return False, f"exceeds smart max leverage ({smart_max_leverage:.2f}x)"
+
         if proposed_position_value > max_leverage_value:
             logger.warning(
                 f"Risk check: denied - proposed position value {proposed_position_value:.2f} "
                 f"exceeds max leverage value {max_leverage_value:.2f} (smart max: {smart_max_leverage:.2f}x)"
             )
-            return RiskResult(approved=False, reason="exceeds max leverage")
+            return False, "exceeds max leverage"
         
         # Rule 7: Daily loss cap
         if self.daily_loss_cap_pct is not None and self.starting_equity is not None:
@@ -139,7 +141,7 @@ class RiskManager:
                     f"Risk check: denied - equity {equity:.2f} below daily loss cap "
                     f"threshold {loss_threshold:.2f}"
                 )
-                return RiskResult(approved=False, reason="daily loss cap reached")
+                return False, "daily loss cap reached"
         
         # Rule 7: Cooldown period
         if self.cooldown_seconds is not None and decision.action in ["long", "short"]:
@@ -152,7 +154,7 @@ class RiskManager:
                         f"Risk check: denied - cooldown active "
                         f"({time_since_open}s < {self.cooldown_seconds}s)"
                     )
-                    return RiskResult(approved=False, reason="cooldown period active")
+                    return False, "cooldown period active"
         
         # Rule 8: LLM sanity check (3 consecutive 100% size requests)
         if decision.size_pct >= 1.0:
@@ -163,7 +165,7 @@ class RiskManager:
                     f"Risk check: denied - LLM requested 100% size "
                     f"{self.consecutive_100pct_count} consecutive times"
                 )
-                return RiskResult(approved=False, reason="LLM sanity check failed")
+                return False, "LLM sanity check failed"
         else:
             # Reset counter if size is less than 100%
             self.consecutive_100pct_count = 0

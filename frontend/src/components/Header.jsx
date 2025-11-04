@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import './Header.css'
 
-function Header({ balance }) {
+function Header({ balance, showPerformance, setShowPerformance }) {
   const totalUnrealizedPnL = balance.unrealizedPnL || 0
   const [agentPaused, setAgentPaused] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -10,7 +10,7 @@ function Header({ balance }) {
 
   useEffect(() => {
     // Check agent status on mount
-    fetch('http://localhost:8000/api/agent/status')
+    fetch('/api/agent/status')
       .then(res => res.json())
       .then(data => setAgentPaused(data.paused))
       .catch(err => console.error('Failed to get agent status:', err))
@@ -28,7 +28,7 @@ function Header({ balance }) {
       async () => {
         setLoading(true)
         try {
-          const res = await fetch('http://localhost:8000/api/emergency-close', { method: 'POST' })
+          const res = await fetch('/api/emergency-close', { method: 'POST' })
           const data = await res.json()
           console.log(data.message)
         } catch (err) {
@@ -43,7 +43,7 @@ function Header({ balance }) {
     setLoading(true)
     try {
       const endpoint = agentPaused ? '/api/agent/resume' : '/api/agent/pause'
-      const res = await fetch(`http://localhost:8000${endpoint}`, { method: 'POST' })
+      const res = await fetch(endpoint, { method: 'POST' })
       const data = await res.json()
       setAgentPaused(!agentPaused)
       console.log(data.message)
@@ -89,6 +89,20 @@ function Header({ balance }) {
             <span className={`balance-value ${totalUnrealizedPnL >= 0 ? 'positive' : 'negative'}`}>
               ${totalUnrealizedPnL.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </span>
+          </div>
+          
+          <div className="header-actions">
+            <button 
+              className="icon-btn"
+              onClick={() => setShowPerformance(!showPerformance)}
+              title="Performance Metrics (Ctrl+P)"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="12" y1="20" x2="12" y2="10"/>
+                <line x1="18" y1="20" x2="18" y2="4"/>
+                <line x1="6" y1="20" x2="6" y2="16"/>
+              </svg>
+            </button>
           </div>
         </div>
       </header>
