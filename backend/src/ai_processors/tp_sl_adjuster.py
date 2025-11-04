@@ -45,11 +45,11 @@ class TPSLAdjuster:
             # Build prompt for TP/SL adjustment
             prompt = self._build_tp_sl_adjustment_prompt(snapshot, signal, position_size, equity)
 
-            # Call AI
+            # Call AI with sufficient timeout for TP/SL analysis
             response = self.client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
-                timeout=10.0
+                timeout=15.0  # Increased timeout for TP/SL analysis
             )
 
             ai_response = response.choices[0].message.content.strip()
@@ -68,7 +68,9 @@ class TPSLAdjuster:
             return (adjusted_tp, adjusted_sl)
 
         except Exception as e:
-            logger.warning(f"AI TP/SL adjustment failed: {e} - using strategy defaults")
+            logger.warning(f"AI TP/SL adjustment failed: {e}")
+            logger.debug(f"AI Response that caused error: {ai_response[:500]}")
+            logger.info("Using strategy defaults for TP/SL")
             return (None, None)
 
     def _parse_tp_sl_adjustment(self, ai_response: str, signal, entry_price: float) -> Tuple[Optional[float], Optional[float]]:
@@ -79,6 +81,7 @@ class TPSLAdjuster:
         - "TP: $108000" or "TP: 108000" or "take_profit: 108000"
         - "SL: $96000" or "SL: 96000" or "stop_loss: 96000"
         - Or JSON format: {"take_profit": 108000, "stop_loss": 96000}
+        - Or "NO_ADJUSTMENT" to keep strategy defaults
 
         Args:
             ai_response: AI response text
@@ -93,17 +96,25 @@ class TPSLAdjuster:
 
         ai_response_lower = ai_response.lower()
 
+        # Check for "NO_ADJUSTMENT" response
+        if "no_adjustment" in ai_response_lower or "no adjustment" in ai_response_lower:
+            logger.debug("AI chose NO_ADJUSTMENT - using strategy defaults")
+            return (None, None)
+
         # Try to parse as JSON first
         try:
             # Look for JSON block in response
             json_match = re.search(r'\{[^}]*"take_profit"[^}]*"stop_loss"[^}]*\}', ai_response, re.IGNORECASE)
             if json_match:
                 json_str = json_match.group()
+                # Clean up any malformed JSON
+                json_str = json_str.replace('", "stop_loss"', '", "stop_loss"')  # Fix malformed quotes
                 parsed = json.loads(json_str)
                 adjusted_tp = parsed.get('take_profit')
                 adjusted_sl = parsed.get('stop_loss')
                 logger.debug(f"Parsed TP/SL from JSON: TP={adjusted_tp}, SL={adjusted_sl}")
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            logger.debug(f"JSON parsing failed: {e}, trying text parsing")
             pass
 
         # If JSON parsing failed, try text parsing

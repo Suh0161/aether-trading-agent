@@ -6,7 +6,7 @@ from typing import Dict, Any, Tuple
 logger = logging.getLogger(__name__)
 
 
-def analyze_trend_alignment(indicators: Dict[str, Any], action: str) -> Tuple[str, str]:
+def analyze_trend_alignment(indicators: Dict[str, Any], action: str, price: float = 0.0) -> Tuple[str, str]:
     """
     Analyze multi-timeframe trend alignment for entry decisions.
 
@@ -31,7 +31,8 @@ def analyze_trend_alignment(indicators: Dict[str, Any], action: str) -> Tuple[st
         # LONG alignment analysis
         higher_tf_bullish = trend_1d == "bullish" and trend_4h == "bullish"
         higher_tf_bullish_partial = trend_4h == "bullish"
-        primary_bullish = indicators.get("ema_50", 0) > 0  # Price > EMA50
+        ema_50 = indicators.get("ema_50", 0)
+        primary_bullish = price > ema_50 and ema_50 > 0  # Price > EMA50
 
         if higher_tf_bullish and primary_bullish:
             alignment = "strong"
@@ -45,7 +46,8 @@ def analyze_trend_alignment(indicators: Dict[str, Any], action: str) -> Tuple[st
         # SHORT alignment analysis
         higher_tf_bearish = trend_1d == "bearish" and trend_4h == "bearish"
         higher_tf_bearish_partial = trend_4h == "bearish"
-        primary_bearish = indicators.get("ema_50", 0) < 0  # Price < EMA50
+        ema_50 = indicators.get("ema_50", 0)
+        primary_bearish = price < ema_50 and ema_50 > 0  # Price < EMA50
 
         if higher_tf_bearish and primary_bearish:
             alignment = "strong"
@@ -271,12 +273,13 @@ def get_scalp_trend_bias(indicators: Dict[str, Any], action: str) -> Tuple[bool,
     return bias_aligned, f"15m bias: {bias_desc}"
 
 
-def check_volatility_filter(indicators: Dict[str, Any]) -> bool:
+def check_volatility_filter(indicators: Dict[str, Any], price: float = 0.0) -> bool:
     """
     Check if volatility is sufficient for scalping.
 
     Args:
         indicators: Indicator dictionary
+        price: Current price (if not provided in indicators)
 
     Returns:
         True if volatility is sufficient, False otherwise
@@ -284,14 +287,14 @@ def check_volatility_filter(indicators: Dict[str, Any]) -> bool:
     # Check 5m ATR / price ratio - need minimum volatility to overcome fees
     # Use 5m timeframe ATR (atr_14_5m) for scalping, fallback to 1h ATR (atr_14) if not available
     atr_5m = indicators.get("atr_14_5m", indicators.get("atr_14", 0.0))
-    price = indicators.get("price", 0)
+    current_price = indicators.get("price", price)
 
-    if price == 0:
+    if current_price == 0:
         return False
 
     # Minimum volatility threshold: 0.15% (ATR/price must be at least 0.15% for scalping to be viable)
     min_vol_threshold_pct = 0.0015  # 0.15%
-    atr_to_price_ratio = atr_5m / price
+    atr_to_price_ratio = atr_5m / current_price
 
     sufficient_volatility = atr_to_price_ratio >= min_vol_threshold_pct
 

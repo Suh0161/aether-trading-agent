@@ -109,3 +109,6 @@ htmlcov/
 *.backup
 *.old
 
+# Old/Backup Directories
+backend_old/
+

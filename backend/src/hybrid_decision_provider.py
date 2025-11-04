@@ -49,13 +49,20 @@ class HybridDecisionProvider:
         try:
             import api_server
             if hasattr(api_server, 'loop_controller_instance') and api_server.loop_controller_instance:
-                positions = api_server.loop_controller_instance.tracked_position_sizes.get(symbol, {})
-                if isinstance(positions, dict):
-                    return positions.get(position_type, 0.0)
-                # Backward compatibility: if old format (single value), return 0 for opposite type
-                return positions if position_type == 'swing' else 0.0
-        except:
-            pass
+                loop_controller = api_server.loop_controller_instance
+                # In new architecture, positions are tracked in cycle_controller.position_manager
+                if hasattr(loop_controller, 'cycle_controller') and loop_controller.cycle_controller:
+                    position_manager = loop_controller.cycle_controller.position_manager
+                    return position_manager.get_position_by_type(symbol, position_type)
+                # Fallback for old architecture (if cycle_controller doesn't exist)
+                elif hasattr(loop_controller, 'tracked_position_sizes'):
+                    positions = loop_controller.tracked_position_sizes.get(symbol, {})
+                    if isinstance(positions, dict):
+                        return positions.get(position_type, 0.0)
+                    # Backward compatibility: if old format (single value), return 0 for opposite type
+                    return positions if position_type == 'swing' else 0.0
+        except Exception as e:
+            logger.debug(f"Could not get position by type: {e}")
         return 0.0
     
     def get_decision(self, snapshot: MarketSnapshot, position_size: float, equity: float) -> str:
@@ -107,7 +114,7 @@ class HybridDecisionProvider:
 
         # Adjust leverage based on confidence and account size
         base_leverage = self.risk_adjuster.get_smart_leverage(equity)
-        logger.info(f"Leverage calculation: Account equity ${equity:,.0f} → Base leverage {base_leverage:.1f}x")
+        logger.info(f"Leverage calculation: Account equity ${equity:,.0f} -> Base leverage {base_leverage:.1f}x")
         final_signal.leverage = self.risk_adjuster.adjust_leverage_by_confidence(base_leverage, final_signal.confidence)
         logger.info(f"Final leverage set: {final_signal.leverage:.1f}x (confidence: {final_signal.confidence:.2f})")
 

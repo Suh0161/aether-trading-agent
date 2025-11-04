@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from src.config import Config
-from src.models import DecisionObject, MarketSnapshot, RiskResult
+from src.models import DecisionObject, MarketSnapshot
 
 
 logger = logging.getLogger(__name__)
@@ -177,7 +177,7 @@ class RiskManager:
         if decision.action in ["long", "short"]:
             self.last_open_time = int(datetime.now(timezone.utc).timestamp())
         
-        return RiskResult(approved=True, reason="")
+        return True, ""
     
     def _calculate_smart_leverage(self, equity: float) -> float:
         """

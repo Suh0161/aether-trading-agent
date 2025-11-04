@@ -1,4 +1,4 @@
-"""AI filtering logic for trading decisions."""
+"""Enhanced AI filtering logic for trading decisions with superior prompt engineering."""
 
 import logging
 from typing import Optional
@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class AIFilter:
-    """AI-powered filtering of trading signals."""
+    """Enhanced AI-powered filtering of trading signals with professional risk management."""
 
     def __init__(self, client):
         """
@@ -20,7 +20,7 @@ class AIFilter:
 
     def filter_signal(self, snapshot, signal, position_size: float, equity: float) -> bool:
         """
-        Use AI to filter/veto strategy signals.
+        Use enhanced AI to filter/veto strategy signals with superior critical thinking.
 
         Args:
             snapshot: Market snapshot
@@ -32,14 +32,14 @@ class AIFilter:
             True if AI approves, False if AI vetoes
         """
         try:
-            # Build prompt for AI filter
-            prompt = self._build_filter_prompt(snapshot, signal, position_size, equity)
+            # Build enhanced prompt for AI filter
+            prompt = self._build_enhanced_filter_prompt(snapshot, signal, position_size, equity)
 
-            # Call AI
+            # Call AI with increased timeout for complex analysis
             response = self.client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
-                timeout=10.0
+                timeout=20.0  # Increased from 10.0 to handle complex prompts
             )
 
             ai_response = response.choices[0].message.content.strip()
@@ -114,8 +114,8 @@ class AIFilter:
             # On error, approve by default (don't block strategy)
             return True
 
-    def _build_filter_prompt(self, snapshot, signal, position_size: float, equity: float) -> str:
-        """Build prompt for AI filter."""
+    def _build_enhanced_filter_prompt(self, snapshot, signal, position_size: float, equity: float) -> str:
+        """Build superior prompt for AI filter with enhanced critical thinking framework."""
         indicators = snapshot.indicators
 
         # Try to get Tier 2 data (order book + liquidity zones) for better decision making
@@ -167,67 +167,100 @@ ORDER BOOK & LIQUIDITY ANALYSIS (Tier 2 Data):
         required_cash = equity * signal.size_pct
         leverage_used = (position_value / equity) if equity > 0 else 0.0
 
-        prompt = f"""You are a risk filter for a crypto trading bot.
+        prompt = f"""You are a CRYPTO TRADING RISK MANAGER for a professional quantitative trading firm.
 
-YOUR ROLE: Act as a CRITICAL THINKER and risk manager. The strategy just generated a signal, but you must question it critically before approving.
+YOUR MISSION: Act as the FINAL DEFENSE against catastrophic trading decisions. Every signal that reaches you has already passed technical analysis and strategy validation. Your job is to be the SKEPTIC - the one who asks "what if this is wrong?" and "what could go wrong?"
 
-STRATEGY SIGNAL TO EVALUATE:
-- Action: {signal.action.upper()}
-- Symbol: {snapshot.symbol}
-- Size: {signal.size_pct*100:.1f}% of equity
-- Confidence: {signal.confidence:.2f}
-- Reason: {signal.reason}
+STRATEGY SIGNAL UNDER REVIEW:
+TARGET Action: {signal.action.upper()} {snapshot.symbol}
+POSITION Size: {signal.size_pct*100:.1f}% of equity (${equity * signal.size_pct:,.0f})
+CONFIDENCE: {signal.confidence:.2f}/1.0
+STRATEGY REASON: {signal.reason}
 
-CURRENT MARKET SITUATION:
-- Price: ${snapshot.price:,.2f}
-- Position: {position_size:.6f} {snapshot.symbol.split('/')[0]} ({'LONG' if position_size > 0 else 'SHORT' if position_size < 0 else 'NONE'})
-- Account: ${equity:,.2f} equity, ${available_cash:,.2f} available, ${position_value:,.2f} position value
-- Required cash: ${required_cash:,.2f} ({'OK' if available_cash >= required_cash else 'INSUFFICIENT'})
+CURRENT PORTFOLIO STATUS:
+Account Equity: ${equity:,.2f}
+Position Value: ${position_value:,.2f} ({'LONG' if position_size > 0 else 'SHORT' if position_size < 0 else 'FLAT'})
+Available Cash: ${available_cash:,.2f}
+Required Cash: ${required_cash:,.2f} ({'SUFFICIENT' if available_cash >= required_cash else 'INSUFFICIENT'})
 
-TECHNICAL ANALYSIS:
-- Daily Trend: {indicators.get('trend_1d', 'unknown')}
-- 4H Trend: {indicators.get('trend_4h', 'unknown')}
-- 1H Trend: {indicators.get('trend_1h', 'unknown')}
-- RSI 14: {indicators.get('rsi_14', 50):.1f}
-- EMA 50: ${indicators.get('ema_50', 0):,.2f}
-- ATR 14: ${indicators.get('atr_14', 0):.2f}
-- Support/Resistance: S1=${indicators.get('support_1', 0):,.2f}, R1=${indicators.get('resistance_1', 0):,.2f}
-- VWAP 5m: ${indicators.get('vwap_5m', 0):,.2f} (price is {'above' if snapshot.price > indicators.get('vwap_5m', snapshot.price) else 'below'})
-- Volume Ratio 1H: {indicators.get('volume_ratio_1h', 1.0):.2f}x ({'HIGH' if indicators.get('volume_ratio_1h', 1.0) >= 1.5 else 'MODERATE' if indicators.get('volume_ratio_1h', 1.0) >= 1.2 else 'LOW'})
-- OBV Trend 1H: {indicators.get('obv_trend_1h', 'neutral')}
+MULTI-TIMEFRAME MARKET ANALYSIS:
+DAILY: {indicators.get('trend_1d', 'unknown')} (EMA50: ${indicators.get('ema_50_1d', 0):,.2f})
+4H: {indicators.get('trend_4h', 'unknown')} (EMA50: ${indicators.get('ema_50_4h', 0):,.2f})
+1H: {indicators.get('trend_1h', 'unknown')} (EMA50: ${indicators.get('ema_50', 0):,.2f}, RSI: {indicators.get('rsi_14', 50):.1f})
+15M ENTRY: {indicators.get('trend_15m', 'unknown')} (Keltner: ${indicators.get('keltner_upper_15m', 0):,.2f})
+VOLATILITY: ATR(14) ${indicators.get('atr_14', 0):,.2f}
+
+KEY PRICE LEVELS (SUPPORT/RESISTANCE):
+Current Price: ${snapshot.price:,.2f}
+Resistance: R1=${indicators.get('resistance_1', 0):,.2f}, R2=${indicators.get('resistance_2', 0):,.2f}
+Support: S1=${indicators.get('support_1', 0):,.2f}, S2=${indicators.get('support_2', 0):,.2f}
+Swing Points: High=${indicators.get('swing_high', 0):,.2f}, Low=${indicators.get('swing_low', 0):,.2f}
+
+VOLUME & MOMENTUM CONFIRMATION:
+1H Volume: {indicators.get('volume_ratio_1h', 1.0):.2f}x avg ({'STRONG' if indicators.get('volume_ratio_1h', 1.0) >= 1.5 else 'MODERATE' if indicators.get('volume_ratio_1h', 1.0) >= 1.2 else 'WEAK'})
+5M Volume: {indicators.get('volume_ratio_5m', 1.0):.2f}x avg ({'STRONG' if indicators.get('volume_ratio_5m', 1.0) >= 1.5 else 'MODERATE' if indicators.get('volume_ratio_5m', 1.0) >= 1.3 else 'WEAK'})
+OBV Trend: {indicators.get('obv_trend_1h', 'neutral')} (money flow direction)
+VWAP 5M: ${indicators.get('vwap_5m', 0):,.2f} (price is {'ABOVE' if snapshot.price > indicators.get('vwap_5m', snapshot.price) else 'BELOW'})
 {tier2_info}
 
-YOUR DECISION FRAMEWORK:
+CRITICAL THINKING RISK ASSESSMENT FRAMEWORK:
 
-1. OPPOSITE CHECK: Force yourself to argue AGAINST this trade. What could go wrong?
-   - Question the strategy's logic: Is this setup really as good as claimed?
-   - Check for counter-signals: Are there opposing indicators?
-   - Consider market context: Is this the right environment for this trade?
+1. OPPOSITE PERSPECTIVE - FORCE CRITICAL ANALYSIS:
+   - What evidence contradicts this trade? What could prove the strategy wrong?
+   - Are there hidden risks or counter-indicators being ignored?
+   - What if the market moves against us immediately after entry?
 
-2. RISK ASSESSMENT:
-   - Position sizing: Is {signal.size_pct*100:.1f}% too aggressive?
-   - Leverage: Will this create excessive risk?
-   - Account impact: What % of equity is at risk?
-   - Cash availability: Can we afford this trade?
+2. RISK EXPOSURE EVALUATION:
+   - Position sizing: Does {signal.size_pct*100:.1f}% risk too much of our capital?
+   - Leverage impact: How much equity is exposed to this single trade?
+   - Cash flow: Can we afford this trade AND potential losses?
+   - Portfolio correlation: Does this add unacceptable concentration risk?
 
-3. MARKET CONTEXT:
-   - Trend alignment: Does this trade align with higher timeframes?
-   - Volume confirmation: Is there sufficient volume to support the move?
-   - Support/Resistance: Are we trading near key levels?
-   - Momentum: Is the market showing conviction in this direction?
+3. MARKET CONTEXT VALIDATION:
+   - Trend alignment: Do higher timeframes support or contradict this entry?
+   - Volume conviction: Is there real institutional participation or just noise?
+   - Level significance: Are we trading at meaningful S/R or random levels?
+   - Momentum sustainability: Is this a genuine trend or short-lived spike?
 
-4. STRATEGY VALIDATION:
-   - Entry logic: Does the setup meet the strategy's criteria?
-   - Timing: Is this the right moment to enter?
-   - Alternatives: Are there better opportunities elsewhere?
+4. STRATEGY INTEGRITY CHECK:
+   - Setup validity: Does this truly match the strategy's core principles?
+   - Timing precision: Is this the optimal entry point or just "good enough"?
+   - Alternative opportunities: Are there clearly better setups available?
+   - Edge quantification: What's the statistical edge here vs. random chance?
 
-DECISION: Respond with ONLY ONE WORD on the first line: "APPROVE" or "VETO"
+RISK WARNINGS (EVALUATE CAREFULLY - YOU CAN OVERRIDE IF TRULY CONFIDENT):
+- Cash insufficient: Need ${required_cash:,.0f}, have ${available_cash:,.0f}
+- Extreme RSI: >80 for LONG, <20 for SHORT (overbought/oversold reversal risk)
+- Wrong direction: LONG when 1D/4H bearish, SHORT when 1D/4H bullish
+- At danger zones: LONG near R1/R2/swing high, SHORT near S1/S2/swing low
+- Volume failure: <1.2x avg for swing trades, <1.3x for scalps
+- Liquidity crisis: Wide spreads (>5bp) + opposing order book
+- Institutional opposition: Heavy sellers for LONG, heavy buyers for SHORT
 
-Then provide structured reasoning in this exact format:
-OPPOSITE CHECK: [Your critical analysis questioning the trade]
-REASONING: [Your balanced assessment]
-CONCERNS: [Any remaining concerns or conditions]
+AI DISCRETION GUIDELINES (WHEN YOU CAN OVERRIDE WARNINGS):
+- If you find COMPELLING EVIDENCE that outweighs the warnings (e.g., strong institutional accumulation, clear reversal patterns, exceptional setup quality)
+- When market context suggests an imminent trend change despite current warnings
+- If the risk/reward ratio remains highly favorable despite red flags
+- When you have strong conviction that this is a high-probability setup despite technical warnings
+- REMEMBER: You are the FINAL DECISION MAKER - use your judgment when evidence is compelling
 
-Be rigorous - you're protecting capital, not trying to be liked by the strategy."""
+APPROVAL CRITERIA (LEAN TOWARD APPROVAL):
+- Multi-TF harmony: 1D/4H trends align with trade direction
+- Volume confirmation: >=1.2x average with supportive OBV flow
+- Strategic positioning: LONG near support, SHORT near resistance
+- Liquidity comfort: Tight spreads, supporting order book
+- No red flags: Clean setup meeting all basic criteria
+- AI Confidence: Your assessment can override technical warnings if evidence is compelling
+
+FINAL DECISION PROTOCOL:
+
+First line: ONLY ONE WORD - "APPROVE" or "VETO"
+
+Then provide structured analysis:
+OPPOSITE CHECK: [Force critical analysis of why this could fail]
+REASONING: [Balanced assessment of risks, rewards, and market context]
+CONCERNS: [Any remaining risk factors or conditions for approval]
+
+You are the last line of defense. Be ruthlessly skeptical but professionally fair. Protect capital without being paralyzed by fear."""
 
         return prompt

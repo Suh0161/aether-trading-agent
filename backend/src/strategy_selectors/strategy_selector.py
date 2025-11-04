@@ -110,15 +110,23 @@ class StrategySelector:
     def _get_position_by_type(self, symbol: str, position_type: str) -> float:
         """
         Helper to get position size by type (swing or scalp).
-        
+
         Accesses the global loop controller to get position tracking.
         """
         try:
             import api_server
             if hasattr(api_server, 'loop_controller_instance') and api_server.loop_controller_instance:
-                cycle_controller = api_server.loop_controller_instance.cycle_controller
-                if cycle_controller and hasattr(cycle_controller, 'position_manager'):
-                    return cycle_controller.position_manager.get_position_by_type(symbol, position_type)
+                loop_controller = api_server.loop_controller_instance
+                # In new architecture, positions are tracked in cycle_controller.position_manager
+                if hasattr(loop_controller, 'cycle_controller') and loop_controller.cycle_controller:
+                    position_manager = loop_controller.cycle_controller.position_manager
+                    return position_manager.get_position_by_type(symbol, position_type)
+                # Fallback for old architecture
+                elif hasattr(loop_controller, 'tracked_position_sizes'):
+                    positions = loop_controller.tracked_position_sizes.get(symbol, {})
+                    if isinstance(positions, dict):
+                        return positions.get(position_type, 0.0)
+                    return positions if position_type == 'swing' else 0.0
         except Exception as e:
             logger.debug(f"Could not get position by type: {e}")
         return 0.0

@@ -53,7 +53,15 @@ class MarketDataFetcher:
                     current_price = float(ticker_price['price'])
                 except Exception as e2:
                     logger.warning(f"Failed to fetch price for {symbol}: {e2}")
-                    current_price = 0.0
+                    # For demo mode, try one more fallback using live API public endpoints
+                    try:
+                        # Last resort: try live API public ticker (works even in demo mode)
+                        live_ticker = self.exchange_adapter.exchange.publicGetTickerPrice({'symbol': sym})
+                        current_price = float(live_ticker['price'])
+                        logger.info(f"Using live API fallback price for {symbol}: ${current_price:.2f}")
+                    except Exception as e3:
+                        logger.error(f"All price fetch methods failed for {symbol}: {e3}")
+                        current_price = 0.0
 
             # Get bid/ask from book ticker
             try:

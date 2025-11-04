@@ -80,7 +80,7 @@ class TradeExecutor:
 
             # Update decision with actual leverage used (may be higher for small accounts)
             if actual_leverage != leverage:
-                logger.info(f"Leverage adjusted: {leverage:.1f}x → {actual_leverage:.1f}x (minimum order size requirement)")
+                logger.info(f"Leverage adjusted: {leverage:.1f}x -> {actual_leverage:.1f}x (minimum order size requirement)")
                 decision.leverage = actual_leverage
             else:
                 logger.info(f"Leverage confirmed: {actual_leverage:.1f}x")

@@ -217,7 +217,16 @@ def _process_position_for_chat(
     reward_amount = None
     
     # Get entry price (per-type)
-    if hasattr(loop_controller_instance, 'position_entry_prices'):
+    # In new architecture, positions are in cycle_controller.position_manager
+    if hasattr(loop_controller_instance, 'cycle_controller') and loop_controller_instance.cycle_controller:
+        entry_dict = loop_controller_instance.cycle_controller.position_manager.position_entry_prices.get(symbol, {})
+        if isinstance(entry_dict, dict):
+            entry_price = entry_dict.get(position_type)
+        else:
+            # Backward compatibility
+            entry_price = entry_dict if position_type == 'swing' else None
+    # Fallback for old architecture
+    elif hasattr(loop_controller_instance, 'position_entry_prices'):
         entry_dict = loop_controller_instance.position_entry_prices.get(symbol, {})
         if isinstance(entry_dict, dict):
             entry_price = entry_dict.get(position_type)
@@ -226,7 +235,16 @@ def _process_position_for_chat(
             entry_price = entry_dict if position_type == 'swing' else None
     
     # Get stop loss (per-type)
-    if hasattr(loop_controller_instance, 'position_stop_losses'):
+    # In new architecture, positions are in cycle_controller.position_manager
+    if hasattr(loop_controller_instance, 'cycle_controller') and loop_controller_instance.cycle_controller:
+        sl_dict = loop_controller_instance.cycle_controller.position_manager.position_stop_losses.get(symbol, {})
+        if isinstance(sl_dict, dict):
+            stop_loss = sl_dict.get(position_type)
+        else:
+            # Backward compatibility
+            stop_loss = sl_dict if position_type == 'swing' else None
+    # Fallback for old architecture
+    elif hasattr(loop_controller_instance, 'position_stop_losses'):
         sl_dict = loop_controller_instance.position_stop_losses.get(symbol, {})
         if isinstance(sl_dict, dict):
             stop_loss = sl_dict.get(position_type)
@@ -235,7 +253,14 @@ def _process_position_for_chat(
             stop_loss = sl_dict if position_type == 'swing' else None
     
     # Get take profit (per-type)
-    if hasattr(loop_controller_instance, 'position_take_profits'):
+    if hasattr(loop_controller_instance, 'cycle_controller') and loop_controller_instance.cycle_controller:
+        tp_dict = loop_controller_instance.cycle_controller.position_manager.position_take_profits.get(symbol, {})
+        if isinstance(tp_dict, dict):
+            take_profit = tp_dict.get(position_type)
+        else:
+            # Backward compatibility
+            take_profit = tp_dict if position_type == 'swing' else None
+    elif hasattr(loop_controller_instance, 'position_take_profits'):
         tp_dict = loop_controller_instance.position_take_profits.get(symbol, {})
         if isinstance(tp_dict, dict):
             take_profit = tp_dict.get(position_type)
@@ -244,7 +269,14 @@ def _process_position_for_chat(
             take_profit = tp_dict if position_type == 'swing' else None
     
     # Get leverage (per-type)
-    if hasattr(loop_controller_instance, 'position_leverages'):
+    if hasattr(loop_controller_instance, 'cycle_controller') and loop_controller_instance.cycle_controller:
+        lev_dict = loop_controller_instance.cycle_controller.position_manager.position_leverages.get(symbol, {})
+        if isinstance(lev_dict, dict):
+            leverage = lev_dict.get(position_type, 1.0)
+        else:
+            # Backward compatibility
+            leverage = lev_dict if position_type == 'swing' else 1.0
+    elif hasattr(loop_controller_instance, 'position_leverages'):
         lev_dict = loop_controller_instance.position_leverages.get(symbol, {})
         if isinstance(lev_dict, dict):
             leverage = lev_dict.get(position_type, 1.0)
@@ -253,14 +285,26 @@ def _process_position_for_chat(
             leverage = lev_dict if position_type == 'swing' else 1.0
     
     # Get risk/reward (per-type)
-    if hasattr(loop_controller_instance, 'position_risk_amounts'):
+    if hasattr(loop_controller_instance, 'cycle_controller') and loop_controller_instance.cycle_controller:
+        risk_dict = loop_controller_instance.cycle_controller.position_manager.position_risk_amounts.get(symbol, {})
+        if isinstance(risk_dict, dict):
+            risk_amount = risk_dict.get(position_type)
+        else:
+            risk_amount = risk_dict if position_type == 'swing' else None
+    elif hasattr(loop_controller_instance, 'position_risk_amounts'):
         risk_dict = loop_controller_instance.position_risk_amounts.get(symbol, {})
         if isinstance(risk_dict, dict):
             risk_amount = risk_dict.get(position_type)
         else:
             risk_amount = risk_dict if position_type == 'swing' else None
-    
-    if hasattr(loop_controller_instance, 'position_reward_amounts'):
+
+    if hasattr(loop_controller_instance, 'cycle_controller') and loop_controller_instance.cycle_controller:
+        reward_dict = loop_controller_instance.cycle_controller.position_manager.position_reward_amounts.get(symbol, {})
+        if isinstance(reward_dict, dict):
+            reward_amount = reward_dict.get(position_type)
+        else:
+            reward_amount = reward_dict if position_type == 'swing' else None
+    elif hasattr(loop_controller_instance, 'position_reward_amounts'):
         reward_dict = loop_controller_instance.position_reward_amounts.get(symbol, {})
         if isinstance(reward_dict, dict):
             reward_amount = reward_dict.get(position_type)
@@ -431,7 +475,11 @@ async def agent_chat(request: ChatRequest):
             
             if loop_controller_instance:
                 # Get ALL positions across all symbols
-                if hasattr(loop_controller_instance, 'tracked_position_sizes'):
+                # In new architecture, positions are in cycle_controller.position_manager
+                if hasattr(loop_controller_instance, 'cycle_controller') and loop_controller_instance.cycle_controller:
+                    tracked_positions = loop_controller_instance.cycle_controller.position_manager.tracked_position_sizes
+                # Fallback for old architecture
+                elif hasattr(loop_controller_instance, 'tracked_position_sizes'):
                     tracked_positions = loop_controller_instance.tracked_position_sizes
                     
                     # Build info for EACH position (handle both swing and scalp separately)
@@ -484,11 +532,22 @@ async def agent_chat(request: ChatRequest):
                             total_unrealized_pnl = pnl_list[0]  # Update after processing
                 
                 # Get current equity from loop controller
-                if hasattr(loop_controller_instance, 'current_equity'):
-                    # Use stored current equity if available
+                if hasattr(loop_controller_instance, 'cycle_controller') and loop_controller_instance.cycle_controller:
+                    # Use position_manager equity in new architecture
+                    position_manager = loop_controller_instance.cycle_controller.position_manager
+                    if hasattr(position_manager, 'current_equity'):
+                        current_equity = position_manager.current_equity
+                    elif hasattr(position_manager, 'tracked_equity'):
+                        # Calculate equity for demo mode: tracked_equity + unrealized P&L
+                        tracked_equity = position_manager.tracked_equity
+                        current_equity = tracked_equity + total_unrealized_pnl
+                    else:
+                        current_equity = default_equity
+                elif hasattr(loop_controller_instance, 'current_equity'):
+                    # Use stored current equity if available (old architecture)
                     current_equity = loop_controller_instance.current_equity
                 elif hasattr(loop_controller_instance, 'tracked_equity'):
-                    # Calculate equity for demo mode: tracked_equity + unrealized P&L
+                    # Calculate equity for demo mode: tracked_equity + unrealized P&L (old architecture)
                     # For live mode, this should come from exchange balance
                     tracked_equity = loop_controller_instance.tracked_equity
                     current_equity = tracked_equity + total_unrealized_pnl

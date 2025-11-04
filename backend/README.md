@@ -1,36 +1,92 @@
-# Autonomous Trading Agent
+# Aether Trading Agent
 
-An LLM-driven autonomous trading system that retrieves live market data, asks DeepSeek for trading decisions, validates decisions against risk rules, executes orders via exchange API, and logs all activity.
+An advanced LLM-driven autonomous trading system with modular architecture, AI-powered risk management, and sophisticated trading strategies. Features multi-symbol support, dynamic TP/SL adjustment, confidence-based trailing stops, and intelligent market analysis.
 
-## ⚠️ Safety Warnings
+## Safety Warnings
 
 **IMPORTANT: Always test on testnet before running in live mode!**
 
 - **Testnet Mode**: Safe testing environment with fake money. Set `RUN_MODE=testnet` in your `.env` file.
 - **Live Mode**: Real money trading. Only use after thorough testing on testnet. The system will display a 5-second warning before starting.
 - **API Key Permissions**: Ensure your exchange API keys have **read and trade permissions only**. **Never enable withdrawal permissions**.
-- **Risk Management**: The system includes built-in risk controls, but you are responsible for monitoring and managing your trading activity.
+- **Risk Management**: The system includes advanced AI-driven risk controls with confidence-based adjustments.
 - **No Guarantees**: This software is provided as-is with no guarantees of profitability or safety. Use at your own risk.
 
 ## Features
 
-- **LLM-Driven Decisions**: Uses DeepSeek to analyze market data and make trading decisions
-- **Risk Management**: Built-in position limits, leverage controls, and optional safeguards
-- **Exchange Support**: Works with Binance (testnet and live) via CCXT
-- **Technical Indicators**: Computes EMA(20), EMA(50), and RSI(14) for market analysis
-- **Comprehensive Logging**: All decisions and executions logged in JSONL format
-- **Graceful Shutdown**: Handles SIGINT/SIGTERM signals to complete current iteration
-- **Extensible**: Pluggable LLM provider architecture (DeepSeek now, others later)
+- **AI-Powered Risk Management**: Intelligent filter that can override warnings when truly confident
+- **Multi-Symbol Support**: Concurrent trading across multiple symbols (BTC, ETH, SOL, DOGE, BNB, XRP)
+- **Dynamic TP/SL Adjustment**: AI optimizes take profit and stop loss levels based on confidence
+- **Confidence-Based Trailing Stops**: Adaptive trailing percentages (10%-15%) based on trade conviction
+- **Dual Strategy Engine**: Simultaneous swing and scalping strategies with independent position management
+- **Advanced Market Analysis**: Multi-timeframe analysis with order book imbalance and liquidity detection
+- **Modular Architecture**: Clean separation of concerns with specialized components
+- **Comprehensive Logging**: Detailed component-level logging and execution tracking
+- **Enhanced Safety**: Multi-layer risk validation with AI discretion capabilities
 
 ## Architecture
 
-The system follows a modular pipeline architecture:
+The system follows an advanced modular orchestrator pattern with specialized components:
 
 ```
-Data Acquisition → Agent Reasoning → Decision Parsing → Risk Validation → Trade Execution → Logging
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          CYCLE CONTROLLER                              │
+│                    (Main Orchestrator Loop)                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐     │
+│  │ SYMBOL      │ │ POSITION    │ │ FRONTEND    │ │ AI MESSAGE  │     │
+│  │ PROCESSOR   │ │ MANAGER     │ │ MANAGER     │ │ SERVICE     │     │
+│  │             │ │             │ │             │ │             │     │
+│  │ ┌─────────┐ │ │ ┌─────────┐ │ │ ┌─────────┐ │ │ ┌─────────┐ │     │
+│  │ │STRATEGY │ │ │ │TRAILING │ │ │ │BALANCE  │ │ │ │STATUS    │ │     │
+│  │ │SELECTOR │ │ │ │STOPS    │ │ │ │UPDATES  │ │ │ │MESSAGES  │ │     │
+│  │ └─────────┘ │ │ └─────────┘ │ │ └─────────┘ │ │ └─────────┘ │     │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘     │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐     │
+│  │ DECISION    │ │ RISK        │ │ TRADE       │ │ DATA        │     │
+│  │ PROVIDER    │ │ MANAGER     │ │ EXECUTOR    │ │ ACQUISITION │     │
+│  │             │ │             │ │             │ │             │     │
+│  │ ┌─────────┐ │ │ ┌─────────┐ │ │ ┌─────────┐ │ │ ┌─────────┐ │     │
+│  │ │HYBRID   │ │ │ │VALIDATE  │ │ │ │ORDER    │ │ │ │ENHANCED │ │     │
+│  │ │DECISION │ │ │ │DECISIONS│ │ │ │EXECUTOR │ │ │ │SNAPSHOTS│ │     │
+│  │ └─────────┘ │ │ └─────────┘ │ │ └─────────┘ │ │ └─────────┘ │     │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘     │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐     │
+│  │ AI FILTER   │ │ TP/SL       │ │ STRATEGY    │ │ DECISION    │     │
+│  │ (Override   │ │ ADJUSTER    │ │ SELECTOR   │ │ FILTER      │     │
+│  │ Capable)    │ │ (AI)        │ │ (Dual)      │ │ (Liquidity) │     │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘     │
+├─────────────────────────────────────────────────────────────────────────┤
+│                         EXCHANGE API LAYER                            │
+│                (Binance Demo/Testnet/Live Support)                   │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-Each component is independent and can be tested/modified separately.
+### Key Components
+
+**Core Orchestration:**
+- **CycleController**: Main trading loop coordinator
+- **SymbolProcessor**: Individual symbol processing logic
+
+**AI & Decision Making:**
+- **HybridDecisionProvider**: Orchestrates strategy + AI filter
+- **StrategySelector**: Chooses between swing/scalp strategies
+- **AIFilter**: Intelligent risk filter with override capabilities
+- **TPSLAdjuster**: AI-powered TP/SL optimization
+- **DecisionFilter**: Liquidity and market condition filtering
+
+**Risk & Position Management:**
+- **PositionManager**: Tracks positions with confidence-based trailing stops
+- **RiskManager**: Validates trades against safety rules
+
+**Execution & Data:**
+- **TradeExecutor**: Handles order placement and fills
+- **DataAcquisition**: Fetches enhanced market snapshots
+- **FrontendManager**: UI updates and balance tracking
+
+Each component is independent, testable, and can be modified without affecting others.
 
 ## Requirements
 
@@ -197,16 +253,16 @@ When you start the agent, you'll see output like this:
 AETHER TRADING AGENT
 ================================================================================
 2024-10-31 10:30:00 - __main__ - INFO - Loading configuration from: .env
-2024-10-31 10:30:00 - __main__ - INFO - ✓ Configuration loaded successfully
+2024-10-31 10:30:00 - __main__ - INFO - Configuration loaded successfully
 ================================================================================
 TESTNET MODE - Safe testing environment
 ================================================================================
 2024-10-31 10:30:00 - __main__ - INFO - Initializing loop controller...
-2024-10-31 10:30:00 - __main__ - INFO - ✓ Loop controller initialized
+2024-10-31 10:30:00 - __main__ - INFO - Loop controller initialized
 2024-10-31 10:30:00 - __main__ - INFO - Running startup connectivity tests...
-2024-10-31 10:30:01 - src.loop_controller - INFO - ✓ Exchange connectivity test passed
-2024-10-31 10:30:02 - src.loop_controller - INFO - ✓ DeepSeek API connectivity test passed
-2024-10-31 10:30:02 - __main__ - INFO - ✓ All startup tests passed
+2024-10-31 10:30:01 - src.loop_controller - INFO - Exchange connectivity test passed
+2024-10-31 10:30:02 - src.loop_controller - INFO - DeepSeek API connectivity test passed
+2024-10-31 10:30:02 - __main__ - INFO - All startup tests passed
 2024-10-31 10:30:02 - __main__ - INFO - Starting main trading loop...
 2024-10-31 10:30:02 - __main__ - INFO - Press Ctrl+C to stop gracefully
 ================================================================================
@@ -218,7 +274,7 @@ TESTNET MODE - Safe testing environment
 AETHER TRADING AGENT
 ================================================================================
 2024-10-31 10:30:00 - __main__ - INFO - Loading configuration from: .env
-2024-10-31 10:30:00 - __main__ - INFO - ✓ Configuration loaded successfully
+2024-10-31 10:30:00 - __main__ - INFO - Configuration loaded successfully
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 !!! LIVE MODE ENABLED !!!
 !!! REAL MONEY WILL BE TRADED !!!
@@ -243,17 +299,33 @@ Agent stopped successfully
 
 ## How It Works
 
-### Agent Cycle
+### Enhanced Agent Cycle
 
-The agent runs in a continuous loop with the following steps:
+The agent runs in a sophisticated continuous loop with advanced multi-symbol processing:
 
-1. **Fetch Market Data**: Retrieves current price, bid/ask, OHLCV candles, and computes technical indicators
-2. **Get LLM Decision**: Constructs a prompt with market context and asks DeepSeek for a trading decision
-3. **Parse Decision**: Validates the LLM output and ensures it's in the correct format
-4. **Risk Validation**: Checks the decision against position limits, leverage constraints, and safety rules
-5. **Execute Trade**: If approved, submits the order to the exchange
-6. **Log Everything**: Records all data, decisions, and results to a JSONL file
-7. **Sleep**: Waits for the configured interval before starting the next cycle
+1. **Multi-Symbol Data Acquisition**: Fetches enhanced market snapshots for all configured symbols (BTC, ETH, SOL, DOGE, BNB, XRP) with order book analysis and liquidity detection
+
+2. **Dual Strategy Analysis**: Runs both swing and scalping strategies simultaneously for each symbol:
+   - **Swing Strategy**: ATR Breakout with multi-timeframe confirmation
+   - **Scalping Strategy**: VWAP-based momentum with 15m-5m-1m precision
+
+3. **Strategy Selection**: Intelligently chooses the most appropriate strategy or allows both to run simultaneously based on market conditions
+
+4. **AI Risk Assessment**: Advanced AI filter evaluates trades with:
+   - Multi-timeframe analysis (1D, 4H, 1H, 15M)
+   - Order book imbalance and liquidity analysis
+   - **Override capability**: Can approve trades despite warnings when truly confident
+
+5. **Dynamic Risk Management**:
+   - **TP/SL Adjustment**: AI optimizes take profit and stop loss levels for high-confidence trades
+   - **Confidence-Based Trailing**: Adaptive trailing stops (10%-15%) based on conviction
+   - **Multi-layer Validation**: Position sizing, leverage limits, and market condition checks
+
+6. **Concurrent Execution**: Processes all symbols simultaneously with proper position isolation
+
+7. **Comprehensive Logging**: Detailed component-level logging with execution tracking, P&L updates, and AI reasoning
+
+8. **Intelligent Sleep**: Adaptive cycle timing based on market conditions and processing load
 
 ### Decision Format
 
@@ -275,20 +347,34 @@ The LLM returns decisions in JSON format:
 
 **Size Percentage**: A value between 0.0 and 1.0 representing what percentage of available equity to use.
 
-### Risk Management
+### Advanced Risk Management
 
-The system includes multiple layers of risk protection:
+The system includes sophisticated multi-layer risk protection with AI-powered decision making:
+
+**AI-Powered Risk Assessment:**
+- **Intelligent Filter**: AI evaluates trades beyond simple rules, considering market context
+- **Override Capability**: Can approve trades despite warnings when evidence is compelling
+- **Multi-Timeframe Analysis**: Considers 1D, 4H, 1H, 15M trends and conditions
+- **Order Book Analysis**: Evaluates market depth and liquidity before execution
+
+**Dynamic Risk Controls:**
+- **TP/SL Optimization**: AI adjusts take profit and stop loss levels based on confidence
+- **Confidence-Based Trailing**: Adaptive trailing stops (10%-15%) based on conviction level
+- **Position Sizing**: Smart leverage allocation based on account equity and risk tolerance
 
 **Core Risk Rules** (always active):
 - Position size cannot exceed `MAX_EQUITY_USAGE_PCT` of account equity
-- Leverage cannot exceed `MAX_LEVERAGE`
-- Cannot close a position that doesn't exist
-- Requires valid market price data
+- Leverage cannot exceed `MAX_LEVERAGE` with smart scaling for small accounts
+- Cannot close positions that don't exist
+- Requires valid market price data and exchange connectivity
+- Multi-symbol position isolation prevents cross-contamination
 
-**Optional Risk Safeguards**:
-- **Daily Loss Cap**: Stops trading (except closing positions) if daily loss exceeds threshold
+**Optional Risk Safeguards:**
+- **Daily Loss Cap**: Stops trading if daily loss exceeds threshold
 - **Cooldown Period**: Enforces minimum time between opening new positions
-- **LLM Sanity Check**: Alerts if LLM repeatedly requests 100% position sizes
+- **Scalp Cooldown**: Prevents immediate re-entry after scalp closures
+- **Emergency Stop**: Manual override capability for immediate position closure
+- **LLM Sanity Check**: Alerts if decisions exceed reasonable parameters
 
 ## Logging
 
@@ -476,26 +562,80 @@ pytest -v tests/
 ## Project Structure
 
 ```
-autonomous-trading-agent/
-├── main.py                 # Entry point
-├── requirements.txt        # Python dependencies
-├── .env.example           # Example environment configuration
-├── .env                   # Your configuration (not in git)
-├── README.md              # This file
-├── logs/                  # Application logs
+aether-trading-agent/
+├── main.py                          # Entry point with startup validation
+├── requirements.txt                 # Python dependencies
+├── .env.example                    # Example environment configuration
+├── .env                            # Your configuration (not in git)
+├── README.md                       # This documentation
+├── logs/                           # Application logs
 │   └── agent.log
-├── agent_log.jsonl        # Cycle logs
-├── src/                   # Source code
-│   ├── config.py          # Configuration loading
-│   ├── data_acquisition.py # Market data fetching
-│   ├── decision_provider.py # LLM integration
-│   ├── decision_parser.py  # Decision validation
-│   ├── risk_manager.py     # Risk rules
-│   ├── trade_executor.py   # Order execution
-│   ├── logger.py           # Cycle logging
-│   ├── loop_controller.py  # Main orchestration
-│   └── models.py           # Data models
-└── tests/                  # Unit tests
+├── agent_log.jsonl                 # Detailed cycle execution logs
+├── src/                            # Modular source code architecture
+│   ├── config.py                   # Configuration management
+│   ├── models.py                   # Data models and structures
+│   ├── logger.py                   # Comprehensive logging system
+│   │
+│   ├── controllers/                # Main orchestration controllers
+│   │   ├── cycle_controller.py     # Main trading loop coordinator
+│   │   └── symbol_processor.py     # Individual symbol processing
+│   │
+│   ├── managers/                   # State and resource management
+│   │   ├── position_manager.py     # Position tracking with trailing stops
+│   │   ├── frontend_manager.py     # UI communication and updates
+│   │   └── services/
+│   │       ├── ai_message_service.py # AI-powered status messaging
+│   │       └── shutdown_service.py   # Graceful shutdown handling
+│   │
+│   ├── data_acquisition.py         # Enhanced market data orchestration
+│   ├── exchange_adapters/          # Exchange connectivity abstraction
+│   │   └── exchange_adapter.py     # Binance API integration
+│   ├── data_fetchers/             # Specialized data fetching
+│   │   └── market_data_fetcher.py # OHLCV and ticker data
+│   ├── indicator_calculators/     # Technical analysis
+│   │   └── technical_indicator_calculator.py # EMA, RSI, ATR, etc.
+│   ├── caches/                     # Performance optimization
+│   │   └── timeframe_cache.py      # Multi-timeframe data caching
+│   ├── snapshot_builders/         # Market snapshot construction
+│   │   └── market_snapshot_builder.py # Enhanced snapshot creation
+│   │
+│   ├── hybrid_decision_provider.py # Strategy orchestration
+│   ├── decision_parser.py          # LLM output validation
+│   ├── risk_manager.py             # Risk rule validation
+│   ├── trade_executor.py           # Order execution orchestration
+│   ├── executors/                  # Specialized execution components
+│   │   └── order_executor.py       # Individual order handling
+│   ├── order_parsers/              # Response parsing
+│   │   └── order_response_parser.py # Exchange response handling
+│   ├── position_calculators/       # Position sizing logic
+│   │   └── order_sizer.py          # Smart position sizing
+│   ├── order_validators/           # Pre-execution validation
+│   │   └── order_validator.py      # Order validation logic
+│   │
+│   ├── strategies/                 # Trading strategy implementations
+│   │   ├── atr_breakout_strategy.py # Swing trading strategy
+│   │   └── scalping_strategy.py    # Scalping strategy
+│   ├── strategy_selectors/         # Strategy selection logic
+│   │   └── strategy_selector.py    # Dual strategy orchestration
+│   │
+│   ├── ai_processors/              # AI-powered components
+│   │   ├── ai_filter.py            # Intelligent risk filtering
+│   │   └── tp_sl_adjuster.py       # AI TP/SL optimization
+│   ├── decision_filters/           # Pre-AI filtering
+│   │   └── decision_filter.py      # Liquidity and market filters
+│   ├── risk_adjusters/             # Risk parameter adjustment
+│   │   └── risk_adjuster.py        # Leverage and sizing optimization
+│   │
+│   ├── indicators/                 # Technical indicator utilities
+│   │   └── technical_indicators.py # Indicator calculations
+│   ├── strategy_utils/             # Strategy helper utilities
+│   │   ├── confidence_calculators/ # Confidence scoring
+│   │   └── position_sizing/        # Position sizing utilities
+│   │
+│   └── utils/                      # General utilities
+│       └── snapshot_utils.py       # Snapshot manipulation helpers
+│
+└── tests/                          # Unit tests
     ├── test_decision_parser.py
     └── test_logger.py
 ```
@@ -565,16 +705,38 @@ class AliveDecisionProvider(DecisionProvider):
 
 [Add your license here]
 
+## Version Information
+
+**Current Version**: Aether Trading Agent v2.0 (Modular Architecture)
+**Last Updated**: November 4, 2025
+**Key Improvements**: AI-powered risk management, multi-symbol support, dynamic TP/SL adjustment, confidence-based trailing stops
+
 ## Disclaimer
 
-This software is provided for educational and research purposes only. Trading cryptocurrencies carries significant risk of loss. The authors and contributors are not responsible for any financial losses incurred through the use of this software. Always test thoroughly on testnet before using real funds, and never trade with money you cannot afford to lose.
+This software is provided for educational and research purposes only. Trading cryptocurrencies carries significant risk of loss. The authors and contributors are not responsible for any financial losses incurred through the use of this software.
 
-## Support
+**Important Safety Measures:**
+- Always test thoroughly on testnet before using real funds
+- Never trade with money you cannot afford to lose
+- Monitor the system closely, especially during market volatility
+- The AI components can make unexpected decisions - human oversight is essential
+- System includes multiple safeguards but cannot eliminate all trading risks
 
-For issues, questions, or contributions, please [open an issue](link-to-issues) or submit a pull request.
+## Support & Development
+
+For issues, questions, or contributions:
+- Review the comprehensive logging output for debugging
+- Check the modular architecture documentation for customization
+- Monitor AI decision reasoning in logs for transparency
+- Test all modifications on testnet before production use
 
 ## Acknowledgments
 
-- Built with [CCXT](https://github.com/ccxt/ccxt) for exchange connectivity
-- Powered by [DeepSeek](https://www.deepseek.com/) for LLM reasoning
+- Built with [CCXT](https://github.com/ccxt/ccxt) for robust exchange connectivity
+- Powered by [DeepSeek](https://www.deepseek.com/) for advanced LLM reasoning
 - Technical indicators via [pandas-ta](https://github.com/twopirllc/pandas-ta)
+- Modular architecture inspired by enterprise software design patterns
+
+---
+
+**Happy Trading! Remember: Risk management first, profits second.**

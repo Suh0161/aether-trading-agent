@@ -50,22 +50,22 @@ class RiskAdjuster:
 
         if confidence >= 0.9:
             adjusted_leverage = base_leverage  # Full leverage for very high confidence
-            logger.debug(f"Leverage: Confidence {confidence:.2f} >= 0.9 → Full leverage: {adjusted_leverage:.1f}x")
+            logger.debug(f"Leverage: Confidence {confidence:.2f} >= 0.9 -> Full leverage: {adjusted_leverage:.1f}x")
         elif confidence >= 0.8:
             adjusted_leverage = base_leverage * 0.9  # 90% for high confidence
-            logger.debug(f"Leverage: Confidence {confidence:.2f} >= 0.8 → 90% leverage: {adjusted_leverage:.1f}x (from {base_leverage:.1f}x)")
+            logger.debug(f"Leverage: Confidence {confidence:.2f} >= 0.8 -> 90% leverage: {adjusted_leverage:.1f}x (from {base_leverage:.1f}x)")
         elif confidence >= 0.7:
             adjusted_leverage = base_leverage * 0.8  # 80% for medium-high confidence
-            logger.debug(f"Leverage: Confidence {confidence:.2f} >= 0.7 → 80% leverage: {adjusted_leverage:.1f}x (from {base_leverage:.1f}x)")
+            logger.debug(f"Leverage: Confidence {confidence:.2f} >= 0.7 -> 80% leverage: {adjusted_leverage:.1f}x (from {base_leverage:.1f}x)")
         elif confidence >= 0.6:
             adjusted_leverage = base_leverage * 0.7  # 70% for medium confidence
-            logger.debug(f"Leverage: Confidence {confidence:.2f} >= 0.6 → 70% leverage: {adjusted_leverage:.1f}x (from {base_leverage:.1f}x)")
+            logger.debug(f"Leverage: Confidence {confidence:.2f} >= 0.6 -> 70% leverage: {adjusted_leverage:.1f}x (from {base_leverage:.1f}x)")
         else:
             adjusted_leverage = base_leverage * 0.5  # 50% for low confidence
-            logger.debug(f"Leverage: Confidence {confidence:.2f} < 0.6 → 50% leverage: {adjusted_leverage:.1f}x (from {base_leverage:.1f}x)")
+            logger.debug(f"Leverage: Confidence {confidence:.2f} < 0.6 -> 50% leverage: {adjusted_leverage:.1f}x (from {base_leverage:.1f}x)")
 
         if adjusted_leverage != original_leverage:
-            logger.info(f"Leverage adjusted: Base {original_leverage:.1f}x → Final {adjusted_leverage:.1f}x (confidence: {confidence:.2f})")
+            logger.info(f"Leverage adjusted: Base {original_leverage:.1f}x -> Final {adjusted_leverage:.1f}x (confidence: {confidence:.2f})")
 
         return adjusted_leverage
 

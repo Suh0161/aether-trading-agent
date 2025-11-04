@@ -78,7 +78,7 @@ class ScalpingStrategy:
         available_cash = equity - position_value
 
         # VOLATILITY FILTER: Only scalp in high volatility (prevents death by a thousand scratches)
-        if not check_volatility_filter(indicators):
+        if not check_volatility_filter(indicators, price):
             # Use 5m timeframe ATR (atr_14_5m) for scalping, fallback to 1h ATR (atr_14) if not available
             atr_5m = indicators.get("atr_14_5m", indicators.get("atr_14", 0.0))
             price_for_calc = indicators.get("price", price)

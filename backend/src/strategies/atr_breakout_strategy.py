@@ -86,7 +86,7 @@ class ATRBreakoutStrategy:
             )
 
         # Analyze trend alignment
-        trend_alignment, timeframe_info = analyze_trend_alignment(indicators, "long" if position_size >= 0 else "short")
+        trend_alignment, timeframe_info = analyze_trend_alignment(indicators, "long" if position_size >= 0 else "short", price)
 
         # Check support/resistance levels first (Priority 1)
         near_support, near_resistance, sr_level = check_support_resistance_levels(indicators, price)
@@ -140,33 +140,39 @@ class ATRBreakoutStrategy:
         # No position - look for LONG or SHORT entry
 
         # PRIORITY 1: S/R Logic (Support=Buy, Resistance=Sell)
-        if near_support and trend_alignment in ["strong", "partial"]:
+        # Allow longs at support with ANY trend alignment (like old backend)
+        if near_support:
             return self._handle_long_at_support(snapshot, indicators, price, atr_14, equity, available_cash, suppress_logs)
 
-        if near_resistance and trend_alignment in ["strong", "partial"]:
+        # Allow shorts at resistance with ANY trend alignment OR even without alignment (like old backend)
+        if near_resistance:
             return self._handle_short_at_resistance(snapshot, indicators, price, atr_14, equity, available_cash, suppress_logs)
 
         # PRIORITY 2: Keltner Band Logic (breakout/breakdown)
-        # Check for long entry
-        if trend_alignment in ["strong", "partial"] and not near_resistance:
-            # Step 1: Check for 1h breakout (signal generation)
+        # Check trend alignment first (like old backend)
+        trend_alignment, timeframe_info = analyze_trend_alignment(indicators, "long", price)
+        in_uptrend = trend_alignment in ["strong", "partial"]
+
+        # Allow longs with trend alignment (like old backend: in_uptrend or in_uptrend_partial)
+        if in_uptrend:
+            # Check for long entry with breakout conditions
             has_breakout_1h, entry_level_1h, breakout_desc_1h = check_breakout_conditions(indicators, price, "long", "1h")
-            
-            if has_breakout_1h:
+
+            if has_breakout_1h and not near_resistance:
                 # Step 2: Use 15m for precise entry timing (find pullback or confirmation)
                 trend_15m = indicators.get("trend_15m", "neutral")
                 ema_50_15m = indicators.get("ema_50_15m", 0)
                 keltner_upper_15m = indicators.get("keltner_upper_15m", 0)
                 rsi_15m = indicators.get("rsi_14_15m", 50)
-                
+
                 # 15m entry timing options:
                 # Option A: Pullback to 15m EMA50 (better entry price)
                 # Option B: 15m confirms continuation (price above 15m EMA, bullish trend)
                 # Option C: Price near 15m Keltner upper (momentum entry)
-                
+
                 pullback_entry = ema_50_15m > 0 and price > ema_50_15m and trend_15m == "bullish"
                 momentum_entry = keltner_upper_15m > 0 and price > (keltner_upper_15m * 0.995) and rsi_15m < 75
-                
+
                 if pullback_entry:
                     entry_reason = f"1h breakout confirmed, 15m pullback entry at EMA50 ${ema_50_15m:.2f}"
                     entry_level = ema_50_15m
@@ -177,16 +183,19 @@ class ATRBreakoutStrategy:
                     # Entry now but note we're waiting for better 15m setup
                     entry_reason = f"1h breakout {breakout_desc_1h}, entering on 15m confirmation"
                     entry_level = entry_level_1h
-                
+
                 return self._create_long_signal(snapshot, indicators, price, atr_14, equity, available_cash,
                                               entry_level, entry_reason)
 
-        # Check for short entry
-        elif trend_alignment in ["strong", "partial"] and not near_support:
-            # Step 1: Check for 1h breakdown (signal generation)
+        # Check for short entry - require trend alignment like old backend
+        trend_alignment_short, timeframe_info_short = analyze_trend_alignment(indicators, "short", price)
+        in_downtrend = trend_alignment_short in ["strong", "partial"]
+
+        if in_downtrend:
+            # Check for short entry with breakdown conditions
             has_breakdown_1h, entry_level_1h, breakdown_desc_1h = check_breakout_conditions(indicators, price, "short", "1h")
-            
-            if has_breakdown_1h:
+
+            if has_breakdown_1h and not near_support:
                 # Step 2: Use 15m for precise entry timing (find pullback or confirmation)
                 trend_15m = indicators.get("trend_15m", "neutral")
                 ema_50_15m = indicators.get("ema_50_15m", 0)
@@ -244,7 +253,7 @@ class ATRBreakoutStrategy:
         obv_bonus = 0.05 if obv_trend == "bullish" else 0.0
 
         # Multi-TF alignment bonus
-        trend_alignment, _ = analyze_trend_alignment(indicators, "long")
+        trend_alignment, _ = analyze_trend_alignment(indicators, "long", price)
         alignment_bonus = 0.05 if trend_alignment == "strong" else 0.0
 
         base_confidence = max(0.3, min(0.95, base_confidence + volume_confidence_boost + obv_bonus + alignment_bonus))
@@ -281,7 +290,7 @@ class ATRBreakoutStrategy:
         obv_bonus = 0.05 if obv_trend == "bearish" else 0.0
 
         # Multi-TF alignment bonus
-        trend_alignment, _ = analyze_trend_alignment(indicators, "short")
+        trend_alignment, _ = analyze_trend_alignment(indicators, "short", price)
         alignment_bonus = 0.05 if trend_alignment == "strong" else 0.0
 
         base_confidence = max(0.3, min(0.95, base_confidence + volume_confidence_boost + obv_bonus + alignment_bonus))
@@ -304,7 +313,7 @@ class ATRBreakoutStrategy:
         """Create a long entry signal."""
         # Calculate confidence
         volume_ratio, _, obv_trend = analyze_volume_confirmation(indicators, "long")
-        trend_alignment, timeframe_info = analyze_trend_alignment(indicators, "long")
+        trend_alignment, timeframe_info = analyze_trend_alignment(indicators, "long", price)
 
         confidence = calculate_swing_confidence(
             volume_ratio=volume_ratio,
@@ -370,7 +379,7 @@ class ATRBreakoutStrategy:
         """Create a short entry signal."""
         # Calculate confidence
         volume_ratio, _, obv_trend = analyze_volume_confirmation(indicators, "short")
-        trend_alignment, timeframe_info = analyze_trend_alignment(indicators, "short")
+        trend_alignment, timeframe_info = analyze_trend_alignment(indicators, "short", price)
 
         confidence = calculate_swing_confidence(
             volume_ratio=volume_ratio,
