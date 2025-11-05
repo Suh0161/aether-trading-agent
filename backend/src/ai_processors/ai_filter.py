@@ -44,30 +44,42 @@ class AIFilter:
             # Build enhanced prompt for AI filter with capital awareness
             prompt = self._build_enhanced_filter_prompt(snapshot, signal, position_size, equity, total_margin_used, all_symbols)
 
-            # Call AI with timeout and a single retry on timeout
+            # Call AI with timeout and multiple retries with increasing timeout
             base_timeout = 12.0
-            try:
-                response = self.client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[{"role": "user", "content": prompt}],
-                    timeout=base_timeout
-                )
-            except Exception as e:
-                msg = str(e).lower()
-                if "timed out" in msg or "timeout" in msg:
-                    logger.warning("AI filter timeout, retrying once with extended timeout...")
-                    try:
-                        response = self.client.chat.completions.create(
-                            model="deepseek-chat",
-                            messages=[{"role": "user", "content": prompt}],
-                            timeout=base_timeout + 5.0
-                        )
-                    except Exception as e2:
-                        # Gracefully fall back to strategy decision without ERROR noise
-                        logger.warning(f"AI filter retry failed due to timeout: {e2}")
-                        return True, None, None
-                else:
-                    raise
+            max_retries = 3  # Retry up to 3 times (total 4 attempts)
+            last_exception = None
+            
+            for attempt in range(max_retries + 1):  # 0, 1, 2, 3 = 4 attempts total
+                timeout = base_timeout + (attempt * 5.0)  # 12s, 17s, 22s, 27s
+                try:
+                    response = self.client.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=[{"role": "user", "content": prompt}],
+                        timeout=timeout
+                    )
+                    # Success! Break out of retry loop
+                    break
+                except Exception as e:
+                    last_exception = e
+                    msg = str(e).lower()
+                    if "timed out" in msg or "timeout" in msg:
+                        if attempt < max_retries:
+                            logger.warning(f"AI filter timeout (attempt {attempt + 1}/{max_retries + 1}), retrying with {timeout + 5.0:.1f}s timeout...")
+                        else:
+                            # Last attempt failed - log error but don't auto-approve
+                            logger.error(f"AI filter failed after {max_retries + 1} attempts due to timeout. Last timeout: {timeout:.1f}s")
+                            logger.error(f"AI filter unavailable - REJECTING trade for safety (cannot assess risk without AI)")
+                            # Return VETO instead of auto-approve to be safe
+                            return False, None, signal.confidence  # Use strategy confidence as fallback
+                    else:
+                        # Non-timeout error - raise immediately
+                        raise
+            
+            # If we got here, we have a response
+            if 'response' not in locals():
+                # This shouldn't happen, but handle it safely
+                logger.error("AI filter failed - no response received after all retries")
+                return False, None, signal.confidence
 
             ai_response = response.choices[0].message.content.strip()
             ai_response_lower = ai_response.lower()
@@ -160,11 +172,14 @@ class AIFilter:
                     if match:
                         try:
                             leverage_value = float(match.group(1))
-                            # Validate leverage is reasonable (1.0 to 10.0)
-                            if 1.0 <= leverage_value <= 10.0:
-                                suggested_leverage = leverage_value
-                                logger.info(f"AI suggested leverage: {suggested_leverage:.1f}x (confidence: {ai_confidence or signal.confidence:.2f})")
+                            # Validate leverage is whole number (1 or 2 only - Binance doesn't support decimals)
+                            leverage_value = int(round(leverage_value))
+                            if leverage_value == 1 or leverage_value == 2:
+                                suggested_leverage = float(leverage_value)
+                                logger.info(f"AI suggested leverage: {int(suggested_leverage)}x (confidence: {ai_confidence or signal.confidence:.2f})")
                                 break
+                            else:
+                                logger.warning(f"AI suggested invalid leverage {leverage_value}x (must be 1x or 2x), ignoring")
                         except (ValueError, IndexError):
                             pass
             
@@ -188,7 +203,7 @@ class AIFilter:
                 if reasoning:
                     logger.info(f"  |-- Full reasoning: {sanitize_unicode(reasoning)}")
                 if suggested_leverage:
-                    logger.info(f"  |-- AI leverage suggestion: {suggested_leverage:.1f}x")
+                    logger.info(f"  |-- AI leverage suggestion: {int(suggested_leverage)}x")
                 if ai_confidence is not None:
                     logger.info(f"  |-- AI confidence override: {ai_confidence:.2f} (strategy had: {signal.confidence:.2f})")
                 return True, suggested_leverage, ai_confidence
@@ -514,10 +529,12 @@ IMPORTANT: Always end your response with "CONFIDENCE: X.XX" on its own line. Thi
 - NEVER return 0.00 confidence unless you're CERTAIN there's no opportunity
 LEVERAGE SUGGESTION (ONLY if confidence >= 0.75):
 If you APPROVE this trade and confidence is >= 0.75, you may suggest optimal leverage by adding:
-LEVERAGE: X.Xx (where X.X is between 1.0 and 10.0, based on account equity ${equity:,.2f} and market conditions)
-- Consider: Higher leverage for high confidence + strong setups, lower for mixed signals
+LEVERAGE: Xx (where X is 1 or 2 ONLY - Binance does NOT support decimal leverage like 1.5x or 2.5x)
+- Accounts $100+: Max 2x leverage (use 2x for high confidence, 1x for medium/low)
+- Accounts <$100: Max 1x leverage (always use 1x)
+- Consider: Higher leverage (2x) for high confidence + strong setups, 1x for medium/low confidence
 - Your leverage suggestion will OVERRIDE the calculated leverage if provided
-- If you don't suggest leverage, system will use calculated leverage based on confidence
+- If you don't suggest leverage, system will use calculated leverage based on confidence (whole numbers only: 1x or 2x)
 
 You are the last line of defense AND DYNAMIC CONFIDENCE ASSESSOR. Assess confidence for ALL decisions. Find trades even when strategy says HOLD. Be professionally skeptical but APPROVE when you find opportunities. Protect capital without being paralyzed by fear."""
 

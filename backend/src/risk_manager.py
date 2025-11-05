@@ -38,7 +38,8 @@ class RiskManager:
         snapshot: MarketSnapshot,
         position_size: float,
         equity: float,
-        symbol: str
+        symbol: str,
+        position_manager=None  # NEW: Optional position manager for margin calculation
     ) -> tuple[bool, str]:
         """
         Run all risk checks and return approval or denial.
@@ -49,6 +50,7 @@ class RiskManager:
             position_size: Current position size (positive for long, negative for short)
             equity: Current account equity
             symbol: Trading symbol (e.g., 'BTC/USDT')
+            position_manager: Optional PositionManager instance for margin calculation
 
         Returns:
             Tuple of (approved: bool, reason: str)
@@ -132,6 +134,72 @@ class RiskManager:
                 f"max allowed {max_allowed_size:.4f}"
             )
             return False, "exceeds max position size"
+
+        # Rule 5b: Check available cash for new position (CRITICAL: Prevent over-leverage)
+        if decision.action in ["long", "short"] and position_manager:
+            try:
+                # Calculate total margin used across ALL positions
+                total_margin_used = 0.0
+                if hasattr(position_manager, 'tracked_position_sizes'):
+                    for sym in position_manager.tracked_position_sizes:
+                        positions = position_manager.tracked_position_sizes.get(sym, {})
+                        if isinstance(positions, dict):
+                            swing_pos = positions.get('swing', 0.0)
+                            scalp_pos = positions.get('scalp', 0.0)
+                        else:
+                            swing_pos = positions if positions else 0.0
+                            scalp_pos = 0.0
+                        
+                        # Get entry prices and leverage
+                        entry_dict = position_manager.position_entry_prices.get(sym, {})
+                        leverage_dict = position_manager.position_leverages.get(sym, {})
+                        
+                        if abs(swing_pos) > 0.0001:
+                            if isinstance(entry_dict, dict):
+                                swing_entry = entry_dict.get('swing', snapshot.price)
+                            else:
+                                swing_entry = entry_dict if entry_dict else snapshot.price
+                            if isinstance(leverage_dict, dict):
+                                leverage = leverage_dict.get('swing', 1.0)
+                            else:
+                                leverage = leverage_dict if leverage_dict else 1.0
+                            swing_notional = abs(swing_pos) * swing_entry
+                            total_margin_used += swing_notional / leverage if leverage > 0 else swing_notional
+                        
+                        if abs(scalp_pos) > 0.0001:
+                            if isinstance(entry_dict, dict):
+                                scalp_entry = entry_dict.get('scalp', snapshot.price)
+                            else:
+                                scalp_entry = snapshot.price
+                            if isinstance(leverage_dict, dict):
+                                leverage = leverage_dict.get('scalp', 1.0)
+                            else:
+                                leverage = 1.0
+                            scalp_notional = abs(scalp_pos) * scalp_entry
+                            total_margin_used += scalp_notional / leverage if leverage > 0 else scalp_notional
+                
+                # Calculate proposed margin for new position
+                proposed_notional = proposed_size * snapshot.price
+                proposed_leverage = getattr(decision, 'leverage', 1.0)
+                proposed_margin = proposed_notional / proposed_leverage if proposed_leverage > 0 else proposed_notional
+                
+                # Calculate available cash
+                tracked_equity = getattr(position_manager, 'tracked_equity', equity)
+                available_cash = tracked_equity - total_margin_used
+                
+                # Require at least 10% buffer for new position
+                required_cash = proposed_margin * 1.1
+                
+                if available_cash < required_cash:
+                    logger.warning(
+                        f"Risk check: denied - insufficient cash. "
+                        f"Available: ${available_cash:.2f}, Required: ${required_cash:.2f} "
+                        f"(margin used: ${total_margin_used:.2f}, equity: ${tracked_equity:.2f})"
+                    )
+                    return False, f"insufficient cash (available: ${available_cash:.2f}, required: ${required_cash:.2f})"
+            except Exception as e:
+                logger.debug(f"Cash check skipped (calculation failed): {e}")
+                # Don't block if calculation fails, but log it
         
         # Rule 6: Smart leverage limit (adaptive based on portfolio size)
         proposed_position_value = proposed_size * snapshot.price

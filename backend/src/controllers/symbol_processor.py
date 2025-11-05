@@ -190,11 +190,11 @@ class SymbolProcessor:
             # ====================================================================
             # NEW APPROACH: Check BOTH strategies independently (no priority!)
             # ====================================================================
-            self._process_both_strategies_independently(symbol, snapshot, swing_position, scalp_position, equity, cycle_count, current_price, api_client)
+            self._process_both_strategies_independently(symbol, snapshot, swing_position, scalp_position, equity, cycle_count, current_price, api_client, all_snapshots)
             return  # Both strategies processed independently
     def _process_both_strategies_independently(self, symbol: str, snapshot: Any, swing_position: float,
                                                scalp_position: float, equity: float, cycle_count: int,
-                                               current_price: float, api_client: Any):
+                                               current_price: float, api_client: Any, all_snapshots: dict = None):
         """
         Process both SWING and SCALP strategies independently - no priority, no fallback!
         Both strategies can execute simultaneously if they find opportunities.
@@ -224,7 +224,7 @@ class SymbolProcessor:
                 logger.info(f"  {symbol}: STRATEGY REASONING: {reason}")
                 logger.info(f"  {symbol}: ========================================")
                 logger.info(f"  {symbol}: SWING opportunity found - executing {swing_decision.action.upper()}")
-                self._execute_strategy_decision(swing_decision, symbol, snapshot, cycle_count, equity, api_client, 'swing')
+                self._execute_strategy_decision(swing_decision, symbol, snapshot, cycle_count, equity, api_client, 'swing', all_snapshots)
             else:
                 # Compact table format for HOLD decisions
                 logger.info(f"  {symbol}: Step 3: {symbol} | SWING | HOLD | Conf: {confidence_str} | Price: ${current_price:,.2f} | {reason[:60]}...")
@@ -257,7 +257,7 @@ class SymbolProcessor:
                 logger.info(f"  {symbol}: STRATEGY REASONING: {reason}")
                 logger.info(f"  {symbol}: ========================================")
                 logger.info(f"  {symbol}: SCALP opportunity found - executing {scalp_decision.action.upper()}")
-                self._execute_strategy_decision(scalp_decision, symbol, snapshot, cycle_count, equity, api_client, 'scalp')
+                self._execute_strategy_decision(scalp_decision, symbol, snapshot, cycle_count, equity, api_client, 'scalp', all_snapshots)
             else:
                 # Compact table format for HOLD decisions
                 logger.info(f"  {symbol}: Step 3: {symbol} | SCALP | HOLD | Conf: {confidence_str} | Price: ${current_price:,.2f} | {reason[:60]}...")
@@ -436,24 +436,55 @@ class SymbolProcessor:
             return None
 
     def _execute_strategy_decision(self, decision: Any, symbol: str, snapshot: Any, cycle_count: int,
-                                   equity: float, api_client: Any, strategy_type: str = None):
+                                   equity: float, api_client: Any, strategy_type: str = None, all_snapshots: dict = None):
         """
         Execute a strategy decision (long/short/close).
         """
         try:
             # Parse decision to get proper format
             logger.info(f"  {symbol}: Step 4: Parsing decision...")
-            raw_decision = (
-                f'{{"action": "{decision.action}", "size_pct": {decision.size_pct}, '
-                f'"reason": "{decision.reason}", "position_type": "{decision.position_type}", '
-                f'"confidence": {getattr(decision, "confidence", 0.0):.2f}}}'
-            )
+            # Include leverage, take_profit, and stop_loss in the JSON string so they're preserved
+            # CRITICAL: Get leverage from decision - check multiple possible attributes
+            leverage = getattr(decision, 'leverage', None)
+            if leverage is None:
+                # Try to extract from reason string as fallback (format: "Leverage: 2.4x")
+                import re
+                leverage_match = re.search(r'Leverage:\s*([\d.]+)\s*x', decision.reason)
+                if leverage_match:
+                    leverage = float(leverage_match.group(1))
+                    logger.debug(f"  {symbol}: Extracted leverage {leverage:.1f}x from reason string")
+                else:
+                    leverage = 1.0
+                    logger.warning(f"  {symbol}: No leverage found in decision, defaulting to 1.0x")
+            else:
+                logger.debug(f"  {symbol}: Using leverage {leverage:.1f}x from decision object")
+            
+            take_profit = getattr(decision, 'take_profit', None)
+            stop_loss = getattr(decision, 'stop_loss', None)
+            
+            # Build JSON string with all fields
+            raw_decision_parts = [
+                f'"action": "{decision.action}"',
+                f'"size_pct": {decision.size_pct}',
+                f'"reason": "{decision.reason}"',
+                f'"position_type": "{decision.position_type}"',
+                f'"confidence": {getattr(decision, "confidence", 0.0):.2f}',
+                f'"leverage": {int(round(leverage))}'
+            ]
+            
+            # Add TP/SL if they exist
+            if take_profit is not None:
+                raw_decision_parts.append(f'"take_profit": {take_profit:.2f}')
+            if stop_loss is not None:
+                raw_decision_parts.append(f'"stop_loss": {stop_loss:.2f}')
+            
+            raw_decision = '{' + ', '.join(raw_decision_parts) + '}'
             parsed_decision = self.decision_parser.parse(raw_decision)
 
             # Step 5: Validating with risk manager
             logger.info(f"  {symbol}: Step 5: Validating with risk manager...")
             risk_approved, risk_reason = self.risk_manager.validate_decision(
-                parsed_decision, snapshot, abs(self.position_manager.get_position_by_type(symbol, decision.position_type)), equity, symbol
+                parsed_decision, snapshot, abs(self.position_manager.get_position_by_type(symbol, decision.position_type)), equity, symbol, self.position_manager
             )
 
             if not risk_approved:
@@ -486,6 +517,11 @@ class SymbolProcessor:
             self.current_cycle_decisions[symbol]['executed'] = executed
 
             if executed:
+                # Update parsed_decision with actual leverage used (may have been adjusted by order_sizer)
+                # This ensures leverage stored in position tracking matches what was actually used
+                actual_leverage = getattr(parsed_decision, 'leverage', getattr(decision, 'leverage', 1.0))
+                parsed_decision.leverage = actual_leverage
+                
                 # Update position tracking
                 self._update_position_tracking_after_trade(parsed_decision, snapshot, symbol, cycle_count, execution_result)
 
@@ -499,7 +535,84 @@ class SymbolProcessor:
                 logger.info(f"  {symbol}:   Fill Price: ${fill_price:,.2f}, Size: {filled_size:.6f}")
                 logger.info(f"  {symbol}:   Order ID: {order_id}, Leverage: {leverage_used:.1f}x")
 
-                # Send to frontend
+                # Send agent message to frontend when positions are opened (long/short) or closed
+                if api_client and self.ai_message_service:
+                    try:
+                        # Calculate available cash and unrealized P&L for messaging
+                        # Get current position size after update
+                        current_position_size = self.position_manager.get_position_by_type(symbol, parsed_decision.position_type)
+                        
+                        # Calculate total margin used across all positions
+                        total_margin_used = 0.0
+                        try:
+                            if hasattr(self.position_manager, 'tracked_position_sizes'):
+                                for sym in self.position_manager.tracked_position_sizes:
+                                    positions = self.position_manager.tracked_position_sizes.get(sym, {})
+                                    if isinstance(positions, dict):
+                                        swing_pos = positions.get('swing', 0.0)
+                                        scalp_pos = positions.get('scalp', 0.0)
+                                    else:
+                                        swing_pos = positions if positions else 0.0
+                                        scalp_pos = 0.0
+                                    
+                                    entry_dict = self.position_manager.position_entry_prices.get(sym, {})
+                                    leverage_dict = self.position_manager.position_leverages.get(sym, {})
+                                    
+                                    if abs(swing_pos) > 0.0001:
+                                        if isinstance(entry_dict, dict):
+                                            swing_entry = entry_dict.get('swing', fill_price)
+                                        else:
+                                            swing_entry = entry_dict if entry_dict else fill_price
+                                        if isinstance(leverage_dict, dict):
+                                            lev = leverage_dict.get('swing', 1.0)
+                                        else:
+                                            lev = leverage_dict if leverage_dict else 1.0
+                                        swing_notional = abs(swing_pos) * swing_entry
+                                        total_margin_used += swing_notional / lev if lev > 0 else swing_notional
+                                    
+                                    if abs(scalp_pos) > 0.0001:
+                                        if isinstance(entry_dict, dict):
+                                            scalp_entry = entry_dict.get('scalp', fill_price)
+                                        else:
+                                            scalp_entry = fill_price
+                                        if isinstance(leverage_dict, dict):
+                                            lev = leverage_dict.get('scalp', 1.0)
+                                        else:
+                                            lev = 1.0
+                                        scalp_notional = abs(scalp_pos) * scalp_entry
+                                        total_margin_used += scalp_notional / lev if lev > 0 else scalp_notional
+                        except Exception:
+                            total_margin_used = 0.0
+                        
+                        tracked_equity = getattr(self.position_manager, 'tracked_equity', equity)
+                        available_cash = max(0.0, tracked_equity - total_margin_used)
+                        
+                        # Calculate unrealized P&L for this position
+                        entry_price = fill_price  # Use fill price as entry
+                        current_price = get_price_from_snapshot(snapshot)
+                        if decision.action == "long":
+                            unrealized_pnl = current_position_size * (current_price - entry_price)
+                        elif decision.action == "short":
+                            unrealized_pnl = abs(current_position_size) * (entry_price - current_price)
+                        else:
+                            unrealized_pnl = 0.0
+                        
+                        # Send agent message ONLY for successfully executed trades (long/short/close)
+                        # Skip messages for failed executions to prevent spam
+                        if decision.action in ["long", "short", "close"] and executed:
+                            try:
+                                self.ai_message_service.collect_cycle_decision(
+                                    parsed_decision, snapshot, current_position_size, equity,
+                                    available_cash, unrealized_pnl, cycle_count, api_client,
+                                    all_snapshots, realized_pnl=None if decision.action != "close" else None
+                                )
+                                logger.debug(f"  {symbol}: Agent message sent for {decision.action.upper()} action")
+                            except Exception as msg_error:
+                                logger.warning(f"  {symbol}: Failed to send agent message: {msg_error}")
+                    except Exception as e:
+                        logger.warning(f"  {symbol}: Failed to send agent message: {e}")
+
+                # Send completed trade to frontend (for close actions only)
                 if api_client and decision.action == "close":
                     position_type = getattr(parsed_decision, 'position_type', 'swing')
                     self._log_completed_trade(symbol, parsed_decision, snapshot, execution_result, position_type, api_client)
@@ -540,8 +653,19 @@ class SymbolProcessor:
             # Update position tracking based on action type
             if decision.action == "long":
                 # For long trades, add to position size
+                # CRITICAL: Use filled_size from execution_result, not decision.size_pct!
+                # decision.size_pct is a PERCENTAGE (0.25 = 25%), not a quantity!
+                filled_size = getattr(execution_result, 'filled_size', 0.0) if execution_result else 0.0
+                if filled_size == 0.0:
+                    # Fallback: calculate from size_pct if execution_result is missing
+                    # This should never happen, but handle gracefully
+                    equity = getattr(self.position_manager, 'tracked_equity', 100.0)
+                    capital_amount = equity * decision.size_pct
+                    current_price = get_price_from_snapshot(snapshot)
+                    filled_size = capital_amount / current_price if current_price > 0 else 0.0
+                
                 current_size = self.position_manager.get_position_by_type(symbol, position_type)
-                new_size = current_size + decision.size_pct  # decision.size_pct is already the quantity
+                new_size = current_size + filled_size  # Use actual filled quantity, not percentage!
                 self.position_manager.set_position_by_type(symbol, position_type, new_size)
 
                 # Set entry price, timestamp, and confidence for new positions
@@ -580,8 +704,19 @@ class SymbolProcessor:
 
             elif decision.action == "short":
                 # For short trades, subtract from position size (negative size)
+                # CRITICAL: Use filled_size from execution_result, not decision.size_pct!
+                # decision.size_pct is a PERCENTAGE (0.25 = 25%), not a quantity!
+                filled_size = getattr(execution_result, 'filled_size', 0.0) if execution_result else 0.0
+                if filled_size == 0.0:
+                    # Fallback: calculate from size_pct if execution_result is missing
+                    # This should never happen, but handle gracefully
+                    equity = getattr(self.position_manager, 'tracked_equity', 100.0)
+                    capital_amount = equity * decision.size_pct
+                    current_price = get_price_from_snapshot(snapshot)
+                    filled_size = capital_amount / current_price if current_price > 0 else 0.0
+                
                 current_size = self.position_manager.get_position_by_type(symbol, position_type)
-                new_size = current_size - decision.size_pct  # decision.size_pct is already the quantity
+                new_size = current_size - filled_size  # Use actual filled quantity, not percentage!
                 self.position_manager.set_position_by_type(symbol, position_type, new_size)
 
                 # Set entry price, timestamp, and confidence for new positions

@@ -14,7 +14,16 @@ function CompletedTrades({ trades }) {
               <div className="trade-header">
                 <div className="trade-header-left">
                   <div className="agent-info">
-                    <img src="/deepseek.png" alt="DeepSeek" className="agent-logo" />
+                    <img 
+                      src="/deepseek.png" 
+                      alt="DeepSeek" 
+                      className="agent-logo"
+                      onError={(e) => {
+                        // Fallback to aether.png if deepseek.png is missing
+                        e.target.onerror = null;
+                        e.target.src = '/aether.png';
+                      }}
+                    />
                     <span className="agent-name">Aether</span>
                   </div>
                   <span className={`trade-type ${trade.side.toLowerCase()}`}>

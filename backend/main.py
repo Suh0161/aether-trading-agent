@@ -15,33 +15,68 @@ from src.config import Config
 from src.loop_controller import LoopController
 
 
-def setup_logging(verbose: bool = False) -> None:
+def setup_logging(verbose: bool = False, json_logs: bool = False) -> None:
     """
     Configure logging for the application.
     
     Args:
         verbose: If True, set log level to DEBUG, otherwise INFO
+        json_logs: If True, enable JSON structured logging
     """
+    import json
+    from datetime import datetime
+    
     log_level = logging.DEBUG if verbose else logging.INFO
     
     # Create logs directory if it doesn't exist
     Path("logs").mkdir(exist_ok=True)
     
-    # Configure logging format
-    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    date_format = "%Y-%m-%d %H:%M:%S"
+    if json_logs:
+        # JSON structured logging format
+        class JSONFormatter(logging.Formatter):
+            def format(self, record):
+                log_entry = {
+                    "timestamp": datetime.fromtimestamp(record.created).isoformat(),
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "message": record.getMessage(),
+                    "module": record.module,
+                    "function": record.funcName,
+                    "line": record.lineno
+                }
+                # Add exception info if present
+                if record.exc_info:
+                    log_entry["exception"] = self.formatException(record.exc_info)
+                return json.dumps(log_entry)
+        
+        formatter = JSONFormatter()
+    else:
+        # Standard text logging format
+        log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        date_format = "%Y-%m-%d %H:%M:%S"
+        formatter = logging.Formatter(log_format, date_format)
     
     # Configure root logger
+    handlers = [
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("logs/agent.log", mode="a")
+    ]
+    
+    # Apply formatter to all handlers
+    for handler in handlers:
+        handler.setFormatter(formatter)
+    
     logging.basicConfig(
         level=log_level,
-        format=log_format,
-        datefmt=date_format,
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler("logs/agent.log", mode="a")
-        ]
+        handlers=handlers
     )
-
+    
+    # If JSON logging enabled, also create a separate JSON log file
+    if json_logs:
+        json_handler = logging.FileHandler("logs/agent.json", mode="a")
+        json_handler.setFormatter(formatter)
+        logging.root.addHandler(json_handler)
+    
     # Reduce noisy third-party loggers (suppress HTTP URL spam and API retries)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -88,6 +123,12 @@ Safety:
     )
     
     parser.add_argument(
+        "--json-logs",
+        action="store_true",
+        help="Enable JSON structured logging (outputs to logs/agent.json)"
+    )
+    
+    parser.add_argument(
         "--version",
         action="version",
         version="Autonomous Trading Agent v1.0.0"
@@ -107,7 +148,7 @@ def main() -> int:
     args = parse_arguments()
     
     # Setup logging
-    setup_logging(verbose=args.verbose)
+    setup_logging(verbose=args.verbose, json_logs=args.json_logs)
     logger = logging.getLogger(__name__)
     
     logger.info("=" * 80)

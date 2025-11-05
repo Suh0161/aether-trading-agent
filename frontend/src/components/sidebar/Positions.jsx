@@ -9,6 +9,23 @@ function Positions({ positions }) {
 
   const totalUnrealizedPnL = positions.reduce((sum, pos) => sum + pos.unrealPnL, 0)
   
+  // Calculate average leverage from positions (based on AI confidence, not hardcoded)
+  // Leverage is whole numbers only (1x or 2x) - Binance doesn't support decimals
+  const calculateAverageLeverage = () => {
+    if (positions.length === 0) return null
+    const leverages = positions.map(pos => {
+      // Parse leverage string like "2X" or "1X" to number (whole numbers only)
+      const leverageStr = pos.leverage || '1X'
+      const leverageNum = parseInt(leverageStr.replace(/[Xx]/g, ''), 10) || 1
+      return leverageNum
+    })
+    const sum = leverages.reduce((acc, lev) => acc + lev, 0)
+    // Round to whole number (no decimals)
+    return Math.round(sum / leverages.length)
+  }
+  
+  const averageLeverage = calculateAverageLeverage()
+  
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (showExitPlan !== null) {
@@ -51,6 +68,12 @@ function Positions({ positions }) {
             ${totalUnrealizedPnL.toLocaleString('en-US', { minimumFractionDigits: 2 })}
           </span>
         </div>
+        {averageLeverage && (
+          <div className="positions-stats" style={{ marginTop: '8px' }}>
+            <span className="stat-label">Avg Leverage:</span>
+            <span className="stat-value">{averageLeverage}x</span>
+          </div>
+        )}
       </div>
 
       {positions.length === 0 ? (

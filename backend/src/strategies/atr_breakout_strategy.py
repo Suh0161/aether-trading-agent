@@ -344,7 +344,7 @@ class ATRBreakoutStrategy:
 
         # Create reason string
         volume_desc = get_volume_description(volume_ratio)
-        reason = f"Long entry: {entry_reason}, {timeframe_info}. {volume_desc}, OBV: {obv_trend}. Capital: {position_size_pct*100:.0f}%, Leverage: {leverage:.1f}x"
+        reason = f"Long entry: {entry_reason}, {timeframe_info}. {volume_desc}, OBV: {obv_trend}. Capital: {position_size_pct*100:.0f}%, Leverage: {int(round(leverage))}x"
 
         # Avoid re-entering immediately after exit
         if self.last_signal_price and abs(price - self.last_signal_price) / price < 0.005:
@@ -411,7 +411,7 @@ class ATRBreakoutStrategy:
 
         # Create reason string
         volume_desc = get_volume_description(volume_ratio)
-        reason = f"Short entry: {entry_reason}, {timeframe_info}. {volume_desc}, OBV: {obv_trend}. Capital: {position_size_pct*100:.0f}%, Leverage: {leverage:.1f}x"
+        reason = f"Short entry: {entry_reason}, {timeframe_info}. {volume_desc}, OBV: {obv_trend}. Capital: {position_size_pct*100:.0f}%, Leverage: {int(round(leverage))}x"
 
         # Avoid re-entering immediately after exit
         if self.last_signal_price and abs(price - self.last_signal_price) / price < 0.005:

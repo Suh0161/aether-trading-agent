@@ -9,7 +9,7 @@ import './App.css'
 function App() {
   const [positions, setPositions] = useState([])
   const [trades, setTrades] = useState([])
-  const [balance, setBalance] = useState({ cash: 0, unrealizedPnL: 0 })
+  const [balance, setBalance] = useState(null) // Changed from { cash: 0, unrealizedPnL: 0 } to null to indicate not loaded yet
   const [agentMessages, setAgentMessages] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [toasts, setToasts] = useState([])
@@ -34,8 +34,15 @@ function App() {
 
     const fetchData = async () => {
       try {
-        // Fetch positions
-        const positionsRes = await fetch(`${API_BASE}/positions`)
+        // Fetch ALL data in parallel to ensure consistency
+        const [positionsRes, tradesRes, messagesRes, balanceRes] = await Promise.all([
+          fetch(`${API_BASE}/positions`),
+          fetch(`${API_BASE}/trades`),
+          fetch(`${API_BASE}/agent-messages`),
+          fetch(`${API_BASE}/balance`)
+        ])
+
+        // Process positions
         if (positionsRes.ok) {
           const positionsData = await positionsRes.json()
 
@@ -58,8 +65,7 @@ function App() {
           setPositions(positionsData)
         }
 
-        // Fetch trades
-        const tradesRes = await fetch(`${API_BASE}/trades`)
+        // Process trades
         if (tradesRes.ok) {
           const tradesData = await tradesRes.json()
 
@@ -77,18 +83,19 @@ function App() {
           setTrades(tradesData)
         }
 
-        // Fetch agent messages
-        const messagesRes = await fetch(`${API_BASE}/agent-messages`)
+        // Process agent messages
         if (messagesRes.ok) {
           const messagesData = await messagesRes.json()
           setAgentMessages(messagesData)
         }
 
-        // Fetch balance
-        const balanceRes = await fetch(`${API_BASE}/balance`)
+        // Process balance - CRITICAL: Only update if we have valid data
         if (balanceRes.ok) {
           const balanceData = await balanceRes.json()
-          setBalance(balanceData)
+          // Only set balance if we got valid numeric data
+          if (balanceData && typeof balanceData.cash === 'number' && typeof balanceData.unrealizedPnL === 'number') {
+            setBalance(balanceData)
+          }
         }
 
         setIsLoading(false)
@@ -118,7 +125,7 @@ function App() {
   return (
     <div className="app">
       <Header
-        balance={balance}
+        balance={balance || { cash: 0, unrealizedPnL: 0 }} // Provide fallback if balance not loaded yet
         showPerformance={showPerformance}
         setShowPerformance={setShowPerformance}
       />

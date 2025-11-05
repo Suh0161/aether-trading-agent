@@ -104,10 +104,13 @@ class FrontendManager:
                         else:
                             leverage = lev_dict
 
+                    # Round leverage to whole number (Binance doesn't support decimals)
+                    leverage_whole = int(round(leverage))
+                    
                     positions_list.append({
                         "side": "LONG" if was_long else "SHORT",
                         "coin": base_currency,
-                        "leverage": f"{leverage:.1f}X",
+                        "leverage": f"{leverage_whole}X",  # Whole number only (1x or 2x)
                         "notional": abs(swing_position) * current_price,
                         "unrealPnL": unrealized_pnl,
                         "entryPrice": entry_price,
@@ -164,10 +167,13 @@ class FrontendManager:
                         else:
                             leverage = 1.0
 
+                    # Round leverage to whole number (Binance doesn't support decimals)
+                    leverage_whole = int(round(leverage))
+                    
                     positions_list.append({
                         "side": "LONG" if was_long else "SHORT",
                         "coin": base_currency,
-                        "leverage": f"{leverage:.1f}X",
+                        "leverage": f"{leverage_whole}X",  # Whole number only (1x or 2x)
                         "notional": abs(scalp_position) * current_price,
                         "unrealPnL": unrealized_pnl,
                         "entryPrice": entry_price,
@@ -235,9 +241,20 @@ class FrontendManager:
 
                 # Calculate margin using ENTRY price (not current price!)
                 # Margin = (Position Size * Entry Price) / Leverage = Entry Notional / Leverage
+                # CRITICAL: Validate position size - if margin seems unreasonable, the position size might be stored incorrectly
                 if entry_price and position_size > 0 and leverage > 0:
                     entry_notional = position_size * entry_price
                     margin_for_position = entry_notional / leverage
+                    
+                    # Validate: If margin for a single position exceeds total equity, position size is likely stored incorrectly
+                    # This can happen if old positions were stored as percentages instead of quantities
+                    if margin_for_position > position_manager.tracked_equity * 2.0:  # More than 2x equity = definitely wrong
+                        logger.error(f"  {coin} ({pos_type}) INVALID POSITION SIZE DETECTED: size={position_size:.6f}, margin=${margin_for_position:.2f} exceeds equity ${position_manager.tracked_equity:.2f}")
+                        logger.error(f"    This position was likely stored incorrectly (as percentage instead of quantity). Skipping margin calculation for this position.")
+                        logger.error(f"    RECOMMENDATION: Close this position and reopen it to fix the stored size.")
+                        # Skip this position's margin to prevent incorrect cash calculation
+                        continue
+                    
                     total_margin_used += margin_for_position
                     logger.info(f"  {coin} ({pos_type}) margin calc: size={position_size:.6f}, entry=${entry_price:.2f}, entry_notional=${entry_notional:.2f}, leverage={leverage:.1f}x, margin=${margin_for_position:.2f}, stored_leverage={actual_leverage if actual_leverage is not None else 'N/A'}")
                 elif position_size > 0 and leverage > 0 and current_price:

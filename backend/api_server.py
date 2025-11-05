@@ -73,6 +73,69 @@ async def get_balance():
         # Ensure balance_data exists and has correct structure
         if not isinstance(balance_data, dict):
             return {"cash": 0.00, "unrealizedPnL": 0.00}
+        
+        # CRITICAL: If we have positions but balance_data is stale/default, calculate from position manager
+        # This ensures balance and positions are always consistent
+        if loop_controller_instance and hasattr(loop_controller_instance, 'position_manager'):
+            try:
+                position_manager = loop_controller_instance.position_manager
+                tracked_equity = getattr(position_manager, 'tracked_equity', None)
+                
+                if tracked_equity is not None and len(positions_data) > 0:
+                    # We have positions - calculate balance from them to ensure consistency
+                    # Calculate total unrealized P&L from positions
+                    total_unrealized_pnl = sum(pos.get('unrealPnL', 0.0) for pos in positions_data if isinstance(pos, dict))
+                    
+                    # Calculate total margin used from positions
+                    total_margin_used = 0.0
+                    for pos in positions_data:
+                        if not isinstance(pos, dict):
+                            continue
+                        entry_price = pos.get('entryPrice')
+                        current_price = pos.get('currentPrice', entry_price)  # Fallback to entry if current missing
+                        leverage_str = pos.get('leverage', '1.0X')
+                        notional = pos.get('notional', 0.0)  # Current notional (size * current_price)
+                        
+                        if entry_price and current_price and notional > 0:
+                            try:
+                                leverage = float(leverage_str.replace('X', '').replace('x', ''))
+                                if leverage > 0 and current_price > 0:
+                                    # Calculate position size from current notional
+                                    position_size = notional / current_price
+                                    # Calculate entry notional
+                                    entry_notional = position_size * entry_price
+                                    # Margin = Entry Notional / Leverage
+                                    margin = entry_notional / leverage
+                                    
+                                    # VALIDATION: Skip positions with invalid sizes (margin > 2x equity = likely stored incorrectly)
+                                    if margin > tracked_equity * 2.0:
+                                        logger.debug(f"Skipping invalid position {pos.get('coin', 'UNKNOWN')} in balance calc: margin ${margin:.2f} > 2x equity ${tracked_equity:.2f}")
+                                        continue
+                                    
+                                    total_margin_used += margin
+                            except (ValueError, AttributeError, ZeroDivisionError):
+                                pass
+                    
+                    # Calculate available cash
+                    total_equity = tracked_equity + total_unrealized_pnl
+                    available_cash = max(0.0, total_equity - total_margin_used)
+                    
+                    logger.debug(f"Balance calculated from positions: equity=${tracked_equity:.2f}, pnl=${total_unrealized_pnl:.2f}, margin=${total_margin_used:.2f}, cash=${available_cash:.2f}")
+                    
+                    return {
+                        "cash": float(available_cash),
+                        "unrealizedPnL": float(total_unrealized_pnl)
+                    }
+                elif tracked_equity is not None and len(positions_data) == 0:
+                    # No positions - return tracked equity as cash
+                    return {
+                        "cash": float(tracked_equity),
+                        "unrealizedPnL": float(balance_data.get("unrealizedPnL", 0.00))
+                    }
+            except Exception as e:
+                logger.debug(f"Could not calculate balance from position manager: {e}")
+        
+        # Fallback to stored balance_data
         return {
             "cash": float(balance_data.get("cash", 0.00)),
             "unrealizedPnL": float(balance_data.get("unrealizedPnL", 0.00))

@@ -476,7 +476,7 @@ class ScalpingStrategy:
         # Volume description
         volume_desc = get_volume_description(active_volume_ratio)
 
-        reason = f"Scalp long: {entry_reason}, price ${price:.2f} > VWAP ${vwap_5m:.2f}, {volume_desc}. Capital: {position_size_pct*100:.0f}%, Leverage: {leverage:.1f}x"
+        reason = f"Scalp long: {entry_reason}, price ${price:.2f} > VWAP ${vwap_5m:.2f}, {volume_desc}. Capital: {position_size_pct*100:.0f}%, Leverage: {int(round(leverage))}x"
 
         return StrategySignal(
             action="long",
@@ -540,7 +540,7 @@ class ScalpingStrategy:
         # Volume description
         volume_desc = get_volume_description(active_volume_ratio)
 
-        reason = f"Scalp short: {entry_reason}, price ${price:.2f} < VWAP ${vwap_5m:.2f}, {volume_desc}. Capital: {position_size_pct*100:.0f}%, Leverage: {leverage:.1f}x"
+        reason = f"Scalp short: {entry_reason}, price ${price:.2f} < VWAP ${vwap_5m:.2f}, {volume_desc}. Capital: {position_size_pct*100:.0f}%, Leverage: {int(round(leverage))}x"
 
         return StrategySignal(
             action="short",

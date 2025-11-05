@@ -242,6 +242,57 @@ class OrderExecutor:
                 error=error_msg
             )
 
+    def _round_to_precision(self, symbol: str, quantity: float) -> float:
+        """
+        Round quantity to the correct precision for the symbol based on exchange stepSize.
+        
+        Args:
+            symbol: Trading symbol
+            quantity: Raw quantity to round
+            
+        Returns:
+            Rounded quantity
+        """
+        try:
+            futures_symbol = symbol.replace('/', '')
+            market_info = self.exchange.fapiPublicGetExchangeInfo()
+            
+            for market in market_info.get('symbols', []):
+                if market['symbol'] == futures_symbol:
+                    for filt in market.get('filters', []):
+                        if filt.get('filterType') == 'LOT_SIZE':
+                            step_size = float(filt.get('stepSize', '0.001'))
+                            # Calculate precision from step_size
+                            # e.g., step_size=0.001 -> precision=3, step_size=0.01 -> precision=2, step_size=1.0 -> precision=0
+                            if step_size >= 1.0:
+                                precision = 0
+                            else:
+                                # Count decimal places after the decimal point
+                                step_str = str(step_size)
+                                if '.' in step_str:
+                                    # Get decimal part and count significant digits
+                                    decimal_part = step_str.split('.')[1]
+                                    # Remove trailing zeros
+                                    decimal_part = decimal_part.rstrip('0')
+                                    precision = len(decimal_part)
+                                else:
+                                    precision = 0
+                            
+                            # Round to step_size
+                            rounded = round(quantity / step_size) * step_size
+                            # Round to precision to avoid floating point errors
+                            rounded = round(rounded, precision)
+                            logger.debug(f"Rounded {quantity} to {rounded} for {symbol} (step_size={step_size}, precision={precision})")
+                            return rounded
+                    break
+        except Exception as e:
+            logger.warning(f"Failed to round quantity for {symbol}: {e}, using default rounding")
+            # Fallback: round to 8 decimal places (common for crypto)
+            return round(quantity, 8)
+        
+        # Final fallback
+        return round(quantity, 8)
+    
     def execute_close(self, symbol: str, position_size: float, current_price: float,
                      is_emergency: bool = False) -> ExecutionResult:
         """
@@ -279,6 +330,10 @@ class OrderExecutor:
                     fill_price=current_price,
                     error="No position to close"
                 )
+
+            # CRITICAL: Round close_size to correct precision to avoid "Precision is over the maximum" error
+            close_size = self._round_to_precision(symbol, close_size)
+            logger.debug(f"Precision-rounded close size: {close_size} for {symbol}")
 
             # For demo trading, use Futures-specific order placement method
             if self.config.exchange_type.lower() == "binance_demo":
@@ -352,11 +407,13 @@ class OrderExecutor:
                     # Retry the order
                     futures_symbol = symbol.replace('/', '')
                     side = 'SELL' if position_size > 0 else 'BUY'
+                    # CRITICAL: Round close_size again for retry (in case it wasn't rounded before)
+                    close_size_retry = self._round_to_precision(symbol, close_size)
                     retry_params = {
                         'symbol': futures_symbol,
                         'side': side,
                         'type': 'MARKET',
-                        'quantity': close_size,
+                        'quantity': close_size_retry,
                         'recvWindow': 10000
                     }
                     if server_time_ms is not None:

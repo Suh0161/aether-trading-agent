@@ -252,6 +252,37 @@ class TPSLAdjuster:
                 logger.warning(f"Trailing percentage {trailing_pct*100:.1f}% out of range (5-20%), ignoring")
                 trailing_pct = None
 
+        # CRITICAL: Validate Risk:Reward ratio after adjustments
+        # Use adjusted TP/SL if available, otherwise use strategy defaults
+        final_tp = adjusted_tp if adjusted_tp is not None else signal.take_profit
+        final_sl = adjusted_sl if adjusted_sl is not None else signal.stop_loss
+        
+        if final_tp and final_sl and entry_price > 0:
+            if signal.action == "long":
+                risk = entry_price - final_sl
+                reward = final_tp - entry_price
+            else:  # short
+                risk = final_sl - entry_price
+                reward = entry_price - final_tp
+            
+            if risk > 0:
+                final_rr = reward / risk
+                
+                # If R:R is poor (<1.5:1), reject adjustments and use strategy defaults
+                if final_rr < 1.5:
+                    logger.warning(
+                        f"AI TP/SL adjustment rejected: R:R ratio {final_rr:.2f}:1 is below minimum 1.5:1. "
+                        f"Using strategy defaults (TP=${signal.take_profit:,.2f}, SL=${signal.stop_loss:,.2f})"
+                    )
+                    # Revert to strategy defaults
+                    adjusted_tp = None
+                    adjusted_sl = None
+                    trailing_pct = None  # Also reset trailing if R:R is bad
+                elif final_rr < 2.0:
+                    logger.info(f"AI TP/SL adjustment R:R: {final_rr:.2f}:1 (acceptable, but strategy might be better)")
+                else:
+                    logger.info(f"AI TP/SL adjustment R:R: {final_rr:.2f}:1 (GOOD)")
+
         return adjusted_tp, adjusted_sl, trailing_pct
 
     def _build_tp_sl_adjustment_prompt(self, snapshot, signal, position_size: float, equity: float) -> str:
@@ -262,24 +293,54 @@ class TPSLAdjuster:
         # Get risk/reward info if available
         risk_amount = getattr(signal, 'risk_amount', None)
         reward_amount = getattr(signal, 'reward_amount', None)
+        
+        # Calculate strategy Risk:Reward ratio
+        strategy_rr = None
+        if signal.take_profit and signal.stop_loss and entry_price > 0:
+            if signal.action == "long":
+                risk = entry_price - signal.stop_loss
+                reward = signal.take_profit - entry_price
+            else:  # short
+                risk = signal.stop_loss - entry_price
+                reward = entry_price - signal.take_profit
+            if risk > 0:
+                strategy_rr = reward / risk
 
         prompt = f"""You are a professional trader optimizing take profit, stop loss, AND trailing stop levels.
+
+CRITICAL PRINCIPLES:
+1. STRATEGY FIRST: The strategy has already calculated TP/SL based on technical analysis (ATR, support/resistance, etc.). 
+   These are GOOD defaults - only override if market conditions clearly justify it.
+2. CONFIDENCE-BASED ADJUSTMENT: Your confidence level ({signal.confidence:.2f}) determines how aggressive you can be:
+   - High confidence (0.8+): You can widen TP targets, tighten SL slightly, or use tighter trailing stops
+   - Medium confidence (0.6-0.8): Make conservative adjustments, stay close to strategy defaults
+   - Lower confidence (<0.6): This function shouldn't be called, but if it is, be VERY conservative
+3. RISK:REWARD RATIO: Always maintain at least 1.5:1 R:R ratio (preferably 2:1 or better).
+   Strategy default R:R: {f'{strategy_rr:.2f}:1' if strategy_rr else 'N/A'}
+   Your adjustments MUST maintain or improve this ratio - never make it worse!
+4. MAKE SENSE: Only adjust if:
+   - Support/Resistance levels suggest different targets
+   - Volatility (ATR) indicates TP/SL should be wider/tighter
+   - Trend strength justifies extended targets
+   - Market structure (swing highs/lows) offers better levels
+   DO NOT adjust randomly or without clear reasoning!
 
 CRITICAL: You have FULL CONTROL over THREE risk management parameters:
 1. TAKE PROFIT (TP) - Price level to exit with profit
 2. STOP LOSS (SL) - Price level to exit with loss protection  
 3. TRAILING STOP PERCENTAGE - Percentage to trail behind price (for swing trades only, 5-20% range)
 
-You can adjust ANY or ALL of these parameters based on market conditions. Your adjustments will override the strategy defaults.
+Your adjustments will override the strategy defaults - USE THIS POWER WISELY!
 
 TRADE DETAILS:
 - Action: {signal.action.upper()}
 - Symbol: {snapshot.symbol}
 - Entry Price: ${entry_price:,.2f}
-- Confidence: {signal.confidence:.2f}
+- Confidence: {signal.confidence:.2f} ({'HIGH - Can be aggressive' if signal.confidence >= 0.8 else 'MEDIUM - Be conservative' if signal.confidence >= 0.6 else 'LOW - Be very conservative'})
 - Position Type: {signal.position_type.upper()} ({'Swing trades use trailing stops' if signal.position_type == 'swing' else 'Scalp trades do not use trailing stops'})
 - Strategy TP: ${signal.take_profit:,.2f} ({((signal.take_profit - entry_price)/entry_price*100):+.1f}% from entry)
 - Strategy SL: ${signal.stop_loss:,.2f} ({((signal.stop_loss - entry_price)/entry_price*100):+.1f}% from entry)
+- Strategy R:R: {f'{strategy_rr:.2f}:1' if strategy_rr else 'N/A'} {'(GOOD - maintain or improve)' if strategy_rr and strategy_rr >= 2.0 else '(OK - improve if possible)' if strategy_rr and strategy_rr >= 1.5 else '(POOR - MUST improve)' if strategy_rr else ''}
 - Default Trailing: {'10-15% (based on confidence)' if signal.position_type == 'swing' else 'N/A (scalps do not trail)'}
 {f"- Risk Amount: ${risk_amount:,.2f}" if risk_amount else ""}
 {f"- Reward Amount: ${reward_amount:,.2f}" if reward_amount else ""}
@@ -296,12 +357,27 @@ MARKET CONTEXT:
 
 TASK: Optimize TP/SL levels AND trailing stop percentage for maximum profit potential while managing risk.
 
+DECISION FRAMEWORK:
+1. EVALUATE STRATEGY DEFAULT: Are the strategy TP/SL levels reasonable?
+   - If YES and R:R is good (≥2:1): Consider "NO_ADJUSTMENT" - strategy knows what it's doing!
+   - If NO or R:R is poor (<1.5:1): Adjust with clear reasoning
+2. CONFIDENCE-BASED ADJUSTMENT RULES:
+   - Confidence 0.8+: Can widen TP by 10-20%, tighten SL by 5-10%, use tighter trailing (8-10%)
+   - Confidence 0.7-0.8: Minor adjustments only (±5-10% from strategy), moderate trailing (10-12%)
+   - Confidence <0.7: Shouldn't be here, but if so: Keep strategy defaults or very minor tweaks
+3. RISK:REWARD VALIDATION: After any adjustment, calculate:
+   - New R:R = (TP - Entry) / (Entry - SL) for LONG, or (Entry - TP) / (SL - Entry) for SHORT
+   - MUST be ≥ 1.5:1 (preferably ≥2:1)
+   - If adjustment makes R:R worse, DON'T MAKE IT - strategy default is better!
+
 CONSIDERATIONS FOR TP/SL:
-1. Support/Resistance Levels: Use S/R as natural TP/SL targets
-2. Trend Strength: Extend TP in strong trends, tighten SL in weak trends
-3. Volume Confirmation: Strong volume supports larger targets
-4. Risk/Reward: Aim for at least 2:1 reward-to-risk ratio
+1. Support/Resistance Levels: Use S/R as natural TP/SL targets (only if better than strategy)
+2. Trend Strength: Extend TP in strong trends ONLY if confidence is high (0.8+)
+3. Volume Confirmation: Strong volume supports larger targets, but maintain R:R
+4. Risk/Reward: MUST maintain at least 1.5:1, preferably 2:1 or better
 5. Market Structure: Respect swing highs/lows and key levels
+6. Volatility (ATR): Wider ATR = wider stops/targets, but always maintain R:R
+7. CONFIDENCE MATTERS: Higher confidence = can be more aggressive, lower = more conservative
 
 CONSIDERATIONS FOR TRAILING STOP PERCENTAGE (Swing trades only):
 1. High Volatility: Use wider trailing (12-15%) to avoid premature exits
@@ -321,12 +397,22 @@ Trailing: 10%  (or Trailing: 0.10)
 Option 2 - JSON format:
 {{"take_profit": 108000, "stop_loss": 96000, "trailing_stop_pct": 0.10}}
 
+VALIDATION RULES (CRITICAL - FOLLOW THESE):
+1. If strategy R:R is already ≥2:1 and levels make sense: Consider "NO_ADJUSTMENT"
+2. If adjusting TP: Must maintain R:R ≥1.5:1 (preferably ≥2:1)
+3. If adjusting SL: Must maintain R:R ≥1.5:1 (preferably ≥2:1)
+4. If confidence <0.8: Keep adjustments conservative (within ±10% of strategy)
+5. If confidence ≥0.8: Can be more aggressive but still maintain R:R
+6. NEVER adjust without clear market reasoning (S/R, volatility, trend strength)
+7. If unsure: Use "NO_ADJUSTMENT" - strategy defaults are better than guessing!
+
 IMPORTANT NOTES:
 - You can provide TP, SL, trailing, or any combination
 - If you don't want to adjust a parameter, omit it (strategy default will be used)
 - For trailing stop: Use decimal (0.10 = 10%) or percentage (10% = 10%)
 - Trailing stops only apply to SWING trades (scalps don't use trailing)
-- If all strategy levels are optimal, respond with "NO_ADJUSTMENT"
-- REMEMBER: You control TP, SL, AND trailing stop percentage!"""
+- If strategy levels are optimal OR you're unsure: Respond with "NO_ADJUSTMENT"
+- REMEMBER: Strategy defaults are GOOD - only override if you have CLEAR reasoning!
+- ALWAYS validate R:R ratio after adjustment - must be ≥1.5:1!"""
 
         return prompt

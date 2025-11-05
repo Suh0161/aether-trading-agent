@@ -15,5 +15,7 @@ websockets==12.0
 ## Environment/config
 python-dotenv==1.2.1
 
-## Exchange (optional). If not installed, app uses HTTP fallback for market data
-ccxt
+## Exchange (REQUIRED for trading)
+## Without CCXT: App uses HTTP fallback for market data only (read-only, no trading)
+## With CCXT: Full trading functionality enabled (order execution, balance, positions)
+ccxt==4.5.15

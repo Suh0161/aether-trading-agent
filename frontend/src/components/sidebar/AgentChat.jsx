@@ -144,9 +144,27 @@ function AgentChat({ agentMessages }) {
               <div key={message.id} className={`chat-message ${message.sender === 'USER' ? 'user-message' : ''} ${isTradeExecution ? 'trade-execution' : ''}`}>
                 <div className={`message-avatar ${message.sender === 'USER' ? 'user' : 'ai'}`}>
                   {message.sender === 'USER' ? (
-                    <img src="/kungfu_car.png" alt="User" className="message-avatar-logo" />
+                    <img 
+                      src="/kungfu_car.png" 
+                      alt="User" 
+                      className="message-avatar-logo"
+                      onError={(e) => {
+                        // Fallback to aether.png if kungfu_car.png is missing
+                        e.target.onerror = null;
+                        e.target.src = '/aether.png';
+                      }}
+                    />
                   ) : (
-                    <img src="/deepseek.png" alt="DeepSeek" className="message-avatar-logo" />
+                    <img 
+                      src="/deepseek.png" 
+                      alt="DeepSeek" 
+                      className="message-avatar-logo"
+                      onError={(e) => {
+                        // Fallback to aether.png if deepseek.png is missing
+                        e.target.onerror = null;
+                        e.target.src = '/aether.png';
+                      }}
+                    />
                   )}
                 </div>
                 <div className="message-bubble">

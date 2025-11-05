@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react'
 import './Header.css'
 
 function Header({ balance, showPerformance, setShowPerformance }) {
-  const totalUnrealizedPnL = balance.unrealizedPnL || 0
+  const totalUnrealizedPnL = balance?.unrealizedPnL || 0
+  const cash = balance?.cash ?? 0
   const [agentPaused, setAgentPaused] = useState(false)
   const [loading, setLoading] = useState(false)
   const [showModal, setShowModal] = useState(false)
@@ -82,7 +83,7 @@ function Header({ balance, showPerformance, setShowPerformance }) {
         <div className="header-right">
           <div className="balance-item">
             <span className="balance-label">AVAILABLE CASH:</span>
-            <span className="balance-value">${balance.cash.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            <span className="balance-value">{balance ? `$${cash.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'Loading...'}</span>
           </div>
           <div className="balance-item">
             <span className="balance-label">TOTAL UNREALIZED P&L:</span>

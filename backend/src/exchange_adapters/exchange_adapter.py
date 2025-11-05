@@ -172,7 +172,19 @@ class ExchangeAdapter:
                             logger.error(f"URllib ticker fetch failed: {e2}")
                             return {'symbol': symbol, 'price': '100.00'}
 
-                # Trading endpoints intentionally not implemented (no trading without CCXT)
+                def fapiPublicGetExchangeInfo(self, params=None):
+                    """Stub method - trading requires CCXT."""
+                    logger.error("HttpExchange: fapiPublicGetExchangeInfo called but CCXT not available")
+                    raise AttributeError("'HttpExchange' object has no attribute 'fapiPublicGetExchangeInfo' - CCXT required for trading")
+
+                def fapiPrivatePostOrder(self, params=None):
+                    """Stub method - trading requires CCXT."""
+                    logger.error("HttpExchange: fapiPrivatePostOrder called but CCXT not available")
+                    raise AttributeError("'HttpExchange' object has no attribute 'fapiPrivatePostOrder' - CCXT required for trading")
+
+                def load_time_difference(self):
+                    """Stub method - time sync requires CCXT."""
+                    pass
 
             # Choose base URL depending on configured exchange_type
             et = config.exchange_type.lower()
