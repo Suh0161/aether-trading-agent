@@ -802,20 +802,21 @@ class SymbolProcessor:
                         holding_time = f"{holding_seconds // 3600}h {(holding_seconds % 3600) // 60}m"
                 
                 # Send to frontend
-                trade_data = {
-                    "symbol": symbol,
-                    "position_type": position_type,
-                    "action": decision.action,
-                    "entry_price": entry_price,
-                    "exit_price": exit_price,
-                    "quantity": quantity,
-                    "pnl": realized_pnl,
-                    "holding_time": holding_time,
-                    "timestamp": datetime.now().isoformat()
-                }
-                
+                # Map trade data to positional arguments for add_trade
                 if api_client:
-                    api_client.add_trade(trade_data)
+                    # entry_timestamp and exit_timestamp are optional and not tracked here
+                    api_client.add_trade(
+                        symbol,  # coin
+                        decision.action,  # side
+                        entry_price,  # entry_price
+                        exit_price,   # exit_price
+                        quantity,     # quantity
+                        entry_price * quantity,  # entry_notional
+                        exit_price * quantity,   # exit_notional
+                        holding_time, # holding_time
+                        realized_pnl  # pnl
+                        # entry_timestamp and exit_timestamp omitted (default None)
+                    )
                     logger.debug(f"  {symbol}: Completed trade logged to frontend")
                 
         except Exception as e:
