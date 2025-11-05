@@ -169,9 +169,7 @@ function Positions({ positions }) {
                   </div>
 
                   <div className={`position-pnl-section col-pnl ${position.unrealPnL >= 0 ? 'positive' : 'negative'}`}>
-                    <div className="pnl-amount">
-                      ${position.unrealPnL.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </div>
+                    <div className="pnl-amount">${position.unrealPnL.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                   </div>
 
                   {(isHovered || showPlan) && (

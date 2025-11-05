@@ -130,7 +130,7 @@ function App() {
         setShowPerformance={setShowPerformance}
       />
       <div className="main-content">
-        <TradingDashboard positions={positions} />
+        <TradingDashboard positions={positions} trades={trades} />
         <Sidebar
           positions={positions}
           trades={trades}

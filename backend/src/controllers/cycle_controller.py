@@ -198,6 +198,15 @@ class CycleController:
                 # Step 1: Fetch enhanced market snapshots for all symbols (with Tier 2/Tier 3 data)
                 logger.info("Step 1: Fetching enhanced market snapshots for all symbols...")
                 try:
+                    # CRITICAL: Sync positions with exchange first (detect externally closed positions)
+                    try:
+                        self.position_manager.sync_positions_with_exchange(
+                            self.data_acquisition.exchange_adapter,
+                            self.config.symbols
+                        )
+                    except Exception as e:
+                        logger.debug(f"Position sync skipped: {e}")
+                    
                     # Get position sizes for enhanced snapshot fetching (use total for backward compat)
                     position_sizes = {}
                     for symbol in self.config.symbols:

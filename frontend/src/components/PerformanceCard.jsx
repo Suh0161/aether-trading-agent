@@ -1,7 +1,10 @@
 import { useEffect } from 'react'
 import './PerformanceCard.css'
 
-function PerformanceCard({ trades, balance, onClose }) {
+function PerformanceCard({ trades = [], balance, onClose }) {
+  // Safety check for balance
+  const safeBalance = balance || { cash: 0, unrealizedPnL: 0 }
+  
   // Calculate performance metrics
   const totalTrades = trades.length
   const winningTrades = trades.filter(t => t.pnl > 0).length
@@ -101,14 +104,14 @@ function PerformanceCard({ trades, balance, onClose }) {
           <div className="metric-card">
             <div className="metric-label">Available Cash</div>
             <div className="metric-value">
-              ${balance.cash.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              ${safeBalance.cash.toLocaleString('en-US', { minimumFractionDigits: 2 })}
             </div>
           </div>
           
           <div className="metric-card">
             <div className="metric-label">Unrealized P&L</div>
-            <div className={`metric-value ${balance.unrealizedPnL >= 0 ? 'positive' : 'negative'}`}>
-              ${balance.unrealizedPnL.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            <div className={`metric-value ${safeBalance.unrealizedPnL >= 0 ? 'positive' : 'negative'}`}>
+              ${safeBalance.unrealizedPnL.toLocaleString('en-US', { minimumFractionDigits: 2 })}
             </div>
           </div>
         </div>

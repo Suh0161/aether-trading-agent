@@ -76,9 +76,10 @@ class StrategySelector:
         """
         Check if scalping strategy should be used as fallback.
         
-        SIMULTANEOUS POSITIONS ENABLED:
-        - Now checks SCALP position only (not total position)
-        - Can scalp even if swing position exists!
+        PULLBACK TRADING ENABLED:
+        - If swing is SHORT → scalp looks for LONG on pullbacks
+        - If swing is LONG → scalp looks for SHORT on pullbacks
+        - This maximizes opportunities by catching both trend AND counter-trend moves!
 
         Args:
             snapshot: Market snapshot
@@ -88,14 +89,25 @@ class StrategySelector:
         Returns:
             Scalping signal if appropriate, None otherwise
         """
-        # REMOVED RESTRICTION: Now allows scalping even with swing position!
-        # Only check if we already have a SCALP position (not swing)
-        if abs(scalp_position_size) > 0.0001:
-            # Already have a scalp position - let strategy decide if it should close/hold
-            pass
-
+        # Get swing position for pullback trading logic
+        swing_position_size = self._get_position_by_type(snapshot.symbol, 'swing')
+        
         try:
-            scalping_signal = self.scalping_strategy.analyze(snapshot, scalp_position_size, equity, suppress_logs)
+            # Pass swing position to scalping strategy for intelligent pullback trading
+            scalping_signal = self.scalping_strategy.analyze(
+                snapshot, scalp_position_size, equity, suppress_logs, swing_position=swing_position_size
+            )
+
+            # If a swing position exists, prevent same-direction scalp entries
+            if abs(swing_position_size) > 0.0001 and scalping_signal.action in ["long", "short"]:
+                if (swing_position_size > 0 and scalping_signal.action == "long") or (
+                    swing_position_size < 0 and scalping_signal.action == "short"
+                ):
+                    if not suppress_logs:
+                        logger.info(
+                            "Scalp blocked: same direction as open swing (waiting for opposite pullback)"
+                        )
+                    return None
 
             # Only return scalping signal if it's an actual trade (not hold)
             if scalping_signal.action in ["long", "short", "close"]:

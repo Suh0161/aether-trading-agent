@@ -2,12 +2,12 @@
     background: #ffffff;
     border: 1px solid #e5e7eb;
     border-radius: 12px;
-    padding: 20px;
-    margin-left: 20px;
-    min-width: 280px;
-    max-width: 320px;
+    padding: 16px;
+    min-width: 260px;
+    max-width: 280px;
     height: fit-content;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    flex-shrink: 0;
 }
 
 .coin-info-header {

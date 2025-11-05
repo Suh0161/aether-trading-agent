@@ -24,7 +24,7 @@ function CompletedTrades({ trades }) {
                         e.target.src = '/aether.png';
                       }}
                     />
-                    <span className="agent-name">Aether</span>
+                    <span className="agent-name">DeepSeek</span>
                   </div>
                   <span className={`trade-type ${trade.side.toLowerCase()}`}>
                     {trade.side}
@@ -78,6 +78,19 @@ function CompletedTrades({ trades }) {
                     <span className="detail-label">Duration</span>
                     <span className="detail-value">{trade.holdingTime}</span>
                   </div>
+                  {(() => {
+                    const rawType = trade.positionType ?? trade.type ?? trade.position_type
+                    const t = typeof rawType === 'string' ? rawType.trim().toLowerCase() : null
+                    if (t !== 'swing' && t !== 'scalp') return null
+                    return (
+                      <div className="detail-group">
+                        <span className="detail-label">Type</span>
+                        <span className="detail-value">
+                          <span className={`type-badge ${t}`}>{t.toUpperCase()}</span>
+                        </span>
+                      </div>
+                    )
+                  })()}
                   <div className="detail-group">
                     <span className="detail-label">Return</span>
                     <span className={`detail-value ${trade.pnl >= 0 ? 'profit-text' : 'loss-text'}`}>

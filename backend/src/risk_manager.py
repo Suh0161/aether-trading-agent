@@ -30,6 +30,13 @@ class RiskManager:
         self.last_open_time: Optional[int] = None
         self.starting_equity: Optional[float] = None
         self.current_day: Optional[int] = None
+        
+        # Per-symbol, per-strategy cooldown tracking (prevents spam trading)
+        self.last_close_time = {}  # {symbol: {'swing': timestamp, 'scalp': timestamp}}
+        
+        # Scalp-specific cooldown (faster re-entry for scalping)
+        self.scalp_cooldown_seconds = 60  # 1 minute minimum between scalp trades
+        self.swing_cooldown_seconds = 300  # 5 minutes minimum between swing trades
         self.consecutive_100pct_count: int = 0
     
     def validate_decision(
@@ -187,16 +194,16 @@ class RiskManager:
                 tracked_equity = getattr(position_manager, 'tracked_equity', equity)
                 available_cash = tracked_equity - total_margin_used
                 
-                # CRITICAL: Enforce maximum margin usage (95% of equity) to leave buffer for smart money management
+                # CRITICAL: Enforce maximum margin usage based on config to leave buffer for smart money management
                 # This prevents using 100% of capital and ensures we always have some cash available
-                max_allowed_margin = tracked_equity * 0.95  # Use maximum 95% of equity as margin
+                max_allowed_margin = tracked_equity * self.max_equity_usage_pct
                 
                 if total_margin_used > max_allowed_margin:
                     logger.warning(
                         f"Risk check: denied - margin usage ({total_margin_used:.2f}) exceeds maximum allowed ({max_allowed_margin:.2f}) "
-                        f"(95% of equity: ${tracked_equity:.2f}). This is smart money management - we keep 5% buffer."
+                        f"({int(self.max_equity_usage_pct*100)}% of equity: ${tracked_equity:.2f})."
                     )
-                    return False, f"margin usage exceeds maximum (95% limit: ${max_allowed_margin:.2f})"
+                    return False, f"margin usage exceeds maximum ({int(self.max_equity_usage_pct*100)}% limit: ${max_allowed_margin:.2f})"
                 
                 # Require at least 10% buffer for new position
                 required_cash = proposed_margin * 1.1
@@ -250,7 +257,31 @@ class RiskManager:
                 )
                 return False, "daily loss cap reached"
         
-        # Rule 7: Cooldown period
+        # Rule 7a: Per-symbol, per-strategy cooldown (PREVENTS SPAM TRADING)
+        if decision.action in ["long", "short"]:
+            position_type = getattr(decision, 'position_type', 'swing')
+            current_time = int(datetime.now(timezone.utc).timestamp())
+            
+            # Get last close time for this symbol and strategy
+            if symbol in self.last_close_time:
+                last_close_dict = self.last_close_time.get(symbol, {})
+                if isinstance(last_close_dict, dict):
+                    last_close = last_close_dict.get(position_type, None)
+                    
+                    if last_close is not None:
+                        time_since_close = current_time - last_close
+                        
+                        # Use different cooldowns for scalp vs swing
+                        required_cooldown = self.scalp_cooldown_seconds if position_type == 'scalp' else self.swing_cooldown_seconds
+                        
+                        if time_since_close < required_cooldown:
+                            logger.warning(
+                                f"Risk check: denied - {position_type} cooldown active for {symbol} "
+                                f"({time_since_close}s < {required_cooldown}s) - prevents spam trading"
+                            )
+                            return False, f"{position_type} cooldown active ({time_since_close}s/{required_cooldown}s)"
+        
+        # Rule 7b: Global cooldown (legacy, kept for backward compatibility)
         if self.cooldown_seconds is not None and decision.action in ["long", "short"]:
             if self.last_open_time is not None:
                 current_time = int(datetime.now(timezone.utc).timestamp())
@@ -258,7 +289,7 @@ class RiskManager:
                 
                 if time_since_open < self.cooldown_seconds:
                     logger.warning(
-                        f"Risk check: denied - cooldown active "
+                        f"Risk check: denied - global cooldown active "
                         f"({time_since_open}s < {self.cooldown_seconds}s)"
                     )
                     return False, "cooldown period active"
@@ -285,6 +316,29 @@ class RiskManager:
             self.last_open_time = int(datetime.now(timezone.utc).timestamp())
         
         return True, ""
+    
+    def record_position_close(self, symbol: str, position_type: str) -> None:
+        """
+        Record when a position closes to enforce cooldown period.
+        This prevents the agent from immediately re-entering the same position (spam trading).
+        
+        Args:
+            symbol: Trading symbol (e.g., 'BTC/USDT')
+            position_type: 'swing' or 'scalp'
+        """
+        from datetime import datetime, timezone
+        current_time = int(datetime.now(timezone.utc).timestamp())
+        
+        if symbol not in self.last_close_time:
+            self.last_close_time[symbol] = {}
+        
+        self.last_close_time[symbol][position_type] = current_time
+        
+        cooldown = self.scalp_cooldown_seconds if position_type == 'scalp' else self.swing_cooldown_seconds
+        logger.info(
+            f"[COOLDOWN] {symbol} {position_type} closed - "
+            f"next entry allowed in {cooldown}s to prevent spam trading"
+        )
     
     def _calculate_smart_leverage(self, equity: float) -> float:
         """

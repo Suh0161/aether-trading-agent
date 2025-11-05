@@ -167,9 +167,13 @@ def calculate_dynamic_scalp_sl_tp(price: float, atr_value: float, action: str) -
     # ATR-based percentages for scalps
     atr_pct = atr_value / price if price > 0 else 0.003
 
-    # Dynamic SL/TP based on ATR, but with minimums to account for fees
-    dynamic_sl_pct = max(0.003, atr_pct * 0.5)  # Min 0.3%, max based on ATR
-    dynamic_tp_pct = max(0.005, atr_pct * 0.8)  # Min 0.5%, max based on ATR
+    # Dynamic SL/TP based on ATR, with min AND sane max caps to avoid nonsense values
+    # Min caps account for fees; max caps prevent extreme values from broken ATR inputs
+    dynamic_sl_pct = max(0.003, atr_pct * 0.5)
+    dynamic_tp_pct = max(0.005, atr_pct * 0.8)
+    # Cap to 2% SL and 4% TP for scalps
+    dynamic_sl_pct = min(dynamic_sl_pct, 0.02)
+    dynamic_tp_pct = min(dynamic_tp_pct, 0.04)
 
     if action == "long":
         stop_loss = price - (price * dynamic_sl_pct)

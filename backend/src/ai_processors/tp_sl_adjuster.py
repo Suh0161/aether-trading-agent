@@ -24,9 +24,10 @@ class TPSLAdjuster:
         """
         Use AI to optionally adjust TP/SL and trailing stop percentage when confidence is high.
 
-        Only called when:
+        COST-SAVING: Only called when:
         1. AI has already approved the trade
-        2. Signal confidence >= 0.7 (high confidence)
+        2. Signal confidence >= 0.75 (RAISED from 0.7 to reduce calls)
+        3. Strategy TP/SL R:R < 2.0 (only adjust if strategy needs improvement)
 
         Args:
             snapshot: Market snapshot
@@ -37,9 +38,30 @@ class TPSLAdjuster:
         Returns:
             Tuple of (adjusted_tp, adjusted_sl, trailing_stop_pct) or (None, None, None) if no adjustment
         """
-        # Only adjust if confidence is high (>= 0.7)
-        if signal.confidence < 0.7:
+        # COST-SAVING: Raise threshold from 0.7 to 0.75
+        if signal.confidence < 0.75:
             return (None, None, None)
+        
+        # COST-SAVING: Skip if strategy already has good R:R (>= 2.0)
+        # No need to pay AI to slightly adjust already-good levels
+        try:
+            entry_price = snapshot.price
+            if signal.take_profit and signal.stop_loss and entry_price > 0:
+                if signal.action == "long":
+                    risk = entry_price - signal.stop_loss
+                    reward = signal.take_profit - entry_price
+                else:
+                    risk = signal.stop_loss - entry_price
+                    reward = entry_price - signal.take_profit
+                
+                if risk > 0:
+                    strategy_rr = reward / risk
+                    # Skip AI adjustment if strategy R:R is already excellent
+                    if strategy_rr >= 2.0:
+                        logger.debug(f"Skipping TP/SL adjustment - strategy R:R {strategy_rr:.2f}:1 already good (saves API cost)")
+                        return (None, None, None)
+        except Exception:
+            pass  # If calculation fails, proceed with AI call
 
         ai_response = None  # Initialize to avoid scoping issues
         try:

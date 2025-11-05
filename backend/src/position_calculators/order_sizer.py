@@ -32,9 +32,9 @@ class OrderSizer:
             futures_symbol = symbol.replace('/', '')
             market_info = self.exchange.fapiPublicGetExchangeInfo()
             
-            # Default fallback: Binance Futures typical minimum is $10-20, but API will override with actual value
-            # Some symbols/demo environments may require $100 - API will provide correct value
-            min_notional = 10.0  # Conservative default (API will override if different)
+            # Default fallback: Binance Futures demo enforces $20 min notional for many symbols
+            # Some symbols or environments may require higher; API will override when available
+            min_notional = 20.0  # Safer default to avoid rejections when API lacks MIN_NOTIONAL
             min_qty = 0.001  # Default fallback
             step_size = 0.001  # Default fallback
 
@@ -47,12 +47,14 @@ class OrderSizer:
                             min_qty = float(filt.get('minQty', '0.001'))
                             step_size = float(filt.get('stepSize', '0.001'))
                     break
+            # If API omitted MIN_NOTIONAL (seen on demo), use safer $20 fallback
+            if not min_notional or min_notional <= 0:
+                min_notional = 20.0
             return min_notional, min_qty, step_size
         except Exception as e:
             logger.warning(f"Failed to fetch minimums for {symbol}: {e}, using defaults")
-            # Safe defaults: Use $10 as fallback (API will override if different)
-            # Note: Some Binance demo environments may require $100 - API will provide correct value
-            return 10.0, 0.001, 0.001  # Safe defaults
+            # Safe defaults: Use $20 to match Binance Futures demo minimum
+            return 20.0, 0.001, 0.001  # Safe defaults
 
     def calculate_order_size(self, symbol: str, equity: float, size_pct: float,
                            price: float, leverage: float = 1.0, confidence: float = None) -> Tuple[float, float]:
@@ -83,7 +85,8 @@ class OrderSizer:
             confidence: Optional confidence score (0.0-1.0) for leverage adjustment
 
         Returns:
-            Tuple of (order_size, actual_leverage)
+            Tuple of (order_size, actual_leverage, capital_amount)
+            capital_amount: The actual capital allocated (before order size inflation to meet minimums)
         """
         # Fetch symbol-specific minimum requirements
         min_notional_usd, min_qty, step_size = self._get_symbol_minimums(symbol)
@@ -274,7 +277,7 @@ class OrderSizer:
         )
         # Final leverage rounding: ensure it's whole number between 1 and 2 (Binance doesn't support decimals)
         leverage = int(round(min(max(leverage, 1.0), 2.0)))
-        return order_size, leverage  # Return both order size and actual leverage used
+        return order_size, leverage, capital_amount  # Return order size, leverage, and actual capital allocated
 
     def _round_to_precision(self, symbol: str, order_size: float) -> float:
         """

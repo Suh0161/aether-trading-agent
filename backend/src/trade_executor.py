@@ -79,9 +79,12 @@ class TradeExecutor:
             logger.info(f"Trade execution: Requested leverage {int(leverage)}x for {action.upper()} {decision.size_pct*100:.1f}% position (confidence: {confidence_str})")
 
             # Pass confidence to order_sizer for smart money leverage adjustment
-            order_size, actual_leverage = self.order_sizer.calculate_order_size(
+            order_size, actual_leverage, capital_amount = self.order_sizer.calculate_order_size(
                 snapshot.symbol, equity, decision.size_pct, snapshot.price, leverage, confidence
             )
+            
+            # Store capital_amount in decision for margin calculation
+            decision.capital_amount = capital_amount
 
             # Update decision with actual leverage used (may be higher for small accounts)
             if actual_leverage != leverage:

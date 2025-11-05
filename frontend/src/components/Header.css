@@ -2,21 +2,12 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 24px;
-  background: linear-gradient(to bottom, #ffffff 0%, #fafafa 100%);
-  border-bottom: 1px solid #e5e7eb;
+  padding: 14px 20px;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
   transition: all 0.2s ease;
   position: relative;
-}
-
-.header::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, #e5e7eb, transparent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .header-left {
@@ -53,131 +44,66 @@
   flex-direction: column;
   align-items: flex-end;
   gap: 4px;
-  padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.6);
+  padding: 10px 16px;
+  background: #ffffff;
   border-radius: 8px;
-  border: 1px solid rgba(229, 231, 235, 0.8);
-  transition: all 0.2s ease;
+  border: 1px solid #e2e8f0;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
-  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
-
 .balance-item:hover {
-  background: rgba(255, 255, 255, 0.9);
-  border-color: #d1d5db;
+  background: #f8fafc;
+  border-color: #cbd5e1;
   transform: translateY(-1px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
 }
 
 .balance-label {
   font-size: 10px;
   font-weight: 600;
-  color: #6b7280;
+  color: #94a3b8;
   letter-spacing: 0.5px;
   text-transform: uppercase;
   position: relative;
 }
 
-.balance-label::after {
-  content: '';
-  position: absolute;
-  bottom: -2px;
-  left: 0;
-  width: 0;
-  height: 1px;
-  background: currentColor;
-  transition: width 0.3s ease;
-}
-
-.balance-item:hover .balance-label::after {
-  width: 100%;
-}
-
 .balance-value {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
-  color: #111827;
-  letter-spacing: -0.3px;
+  color: #0f172a;
+  letter-spacing: -0.2px;
   transition: all 0.2s ease;
 }
 
 .balance-value.positive {
   color: #059669;
-  position: relative;
-}
-
-.balance-value.positive::before {
-  content: '↑';
-  position: absolute;
-  left: -20px;
-  font-size: 16px;
-  opacity: 0.7;
-  animation: pulse 2s ease-in-out infinite;
 }
 
 .balance-value.negative {
   color: #dc2626;
-  position: relative;
-}
-
-.balance-value.negative::before {
-  content: '↓';
-  position: absolute;
-  left: -20px;
-  font-size: 16px;
-  opacity: 0.7;
-  animation: pulse 2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% {
-    opacity: 0.6;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.1);
-  }
 }
 
 .control-buttons {
   display: flex;
-  gap: 8px;
-  margin-left: 32px;
+  gap: 6px;
+  margin-left: 24px;
 }
 
 .control-btn {
-  padding: 8px 16px;
+  padding: 8px 18px;
   font-size: 12px;
   font-weight: 600;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
   background: #ffffff;
-  color: #374151;
+  color: #64748b;
   cursor: pointer;
-  transition: all 0.2s ease;
-  letter-spacing: 0.3px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  letter-spacing: 0.2px;
   position: relative;
-  overflow: hidden;
-}
-
-.control-btn::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 0;
-  height: 0;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.05);
-  transform: translate(-50%, -50%);
-  transition: width 0.3s ease, height 0.3s ease;
-}
-
-.control-btn:active::after {
-  width: 300px;
-  height: 300px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
 .control-btn:disabled {
@@ -186,42 +112,45 @@
 }
 
 .control-btn.start {
-  border-color: #059669;
-  color: #059669;
-  background: linear-gradient(to bottom, #ffffff, #f0fdf4);
+  border-color: #10b981;
+  color: #10b981;
+  background: #ffffff;
 }
 
 .control-btn.start:hover:not(:disabled) {
-  background: linear-gradient(to bottom, #f0fdf4, #dcfce7);
-  border-color: #059669;
+  background: #f0fdf4;
+  border-color: #10b981;
+  color: #059669;
   transform: translateY(-1px);
-  box-shadow: 0 2px 4px rgba(5, 150, 105, 0.15);
+  box-shadow: 0 2px 4px rgba(16, 185, 129, 0.15);
 }
 
 .control-btn.pause {
-  border-color: #d1d5db;
-  color: #6b7280;
+  border-color: #e2e8f0;
+  color: #64748b;
+  background: #ffffff;
 }
 
 .control-btn.pause:hover:not(:disabled) {
-  background: #f9fafb;
-  border-color: #9ca3af;
-  color: #374151;
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #475569;
   transform: translateY(-1px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
 }
 
 .control-btn.emergency {
-  border-color: #dc2626;
-  color: #dc2626;
-  background: linear-gradient(to bottom, #ffffff, #fef2f2);
+  border-color: #ef4444;
+  color: #ef4444;
+  background: #ffffff;
 }
 
 .control-btn.emergency:hover:not(:disabled) {
-  background: linear-gradient(to bottom, #fef2f2, #fee2e2);
-  border-color: #dc2626;
+  background: #fef2f2;
+  border-color: #ef4444;
+  color: #dc2626;
   transform: translateY(-1px);
-  box-shadow: 0 2px 4px rgba(220, 38, 38, 0.15);
+  box-shadow: 0 2px 4px rgba(239, 68, 68, 0.15);
 }
 
 .modal-overlay {
@@ -325,7 +254,7 @@
   gap: 8px;
   margin-left: 16px;
   padding-left: 16px;
-  border-left: 1px solid #e5e7eb;
+  border-left: 1px solid #e2e8f0;
 }
 
 .icon-btn {
@@ -334,38 +263,25 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(249, 250, 251, 0.8);
-  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
   cursor: pointer;
-  color: #6b7280;
-  transition: all 0.2s ease;
+  color: #64748b;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
-}
-
-.icon-btn::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: 8px;
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(139, 92, 246, 0.1));
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-
-.icon-btn:hover::before {
-  opacity: 1;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
 .icon-btn:hover {
-  background: rgba(255, 255, 255, 0.9);
-  border-color: #3b82f6;
-  color: #3b82f6;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 8px rgba(59, 130, 246, 0.15);
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #0f172a;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
 }
 
 .icon-btn:active {
   transform: translateY(0);
-  box-shadow: 0 2px 4px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }

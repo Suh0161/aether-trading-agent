@@ -131,7 +131,7 @@ function AgentChat({ agentMessages }) {
         </div>
       ) : (
         <div className="chat-messages" ref={chatScrollRef} onScroll={handleChatScroll}>
-          {[...agentMessages, ...optimisticMessages.filter(opt => !agentMessages.some(msg => msg.id === opt.id || (msg.text === opt.text && msg.sender === opt.sender)))].map((message) => {
+          {[...agentMessages, ...optimisticMessages.filter(opt => !agentMessages.some(msg => msg.id === opt.id || (msg.text === opt.text && msg.sender === opt.sender)))].map((message, idx) => {
             // Detect if message contains trade execution keywords
             const isTradeExecution = message.sender !== 'USER' && (
               message.text.toLowerCase().includes('executed') || 
@@ -141,7 +141,7 @@ function AgentChat({ agentMessages }) {
             )
             
             return (
-              <div key={message.id} className={`chat-message ${message.sender === 'USER' ? 'user-message' : ''} ${isTradeExecution ? 'trade-execution' : ''}`}>
+              <div key={`${message.id ?? ''}-${message.timestamp ?? ''}-${idx}`} className={`chat-message ${message.sender === 'USER' ? 'user-message' : ''} ${isTradeExecution ? 'trade-execution' : ''}`}>
                 <div className={`message-avatar ${message.sender === 'USER' ? 'user' : 'ai'}`}>
                   {message.sender === 'USER' ? (
                     <img 

@@ -53,9 +53,14 @@ class ScalpingStrategy:
         self.stop_loss_pct = stop_loss_pct
         self.max_hold_seconds = 600  # 10 minutes max (increased from 5 min)
 
-    def analyze(self, snapshot: Any, position_size: float, equity: float, suppress_logs: bool = False) -> StrategySignal:
+    def analyze(self, snapshot: Any, position_size: float, equity: float, suppress_logs: bool = False, swing_position: float = 0.0) -> StrategySignal:
         """
         Analyze market using 15m/5m/1m timeframes for quick scalping opportunities.
+        
+        INTELLIGENT PULLBACK TRADING:
+        - If swing is SHORT → scalp looks for LONG opportunities on pullbacks (buy the dip in downtrend)
+        - If swing is LONG → scalp looks for SHORT opportunities on pullbacks (sell the rip in uptrend)
+        - This maximizes trading opportunities and catches both trend AND counter-trend moves
         
         Multi-timeframe scalping approach:
         - 15m: Trend bias confirmation
@@ -64,8 +69,10 @@ class ScalpingStrategy:
 
         Args:
             snapshot: Market snapshot with price and multi-timeframe indicators
-            position_size: Current position size
+            position_size: Current SCALP position size (not swing)
             equity: Account equity
+            suppress_logs: Whether to suppress debug logs
+            swing_position: Current SWING position size (NEW - for pullback trading)
 
         Returns:
             StrategySignal with action and parameters
@@ -76,6 +83,11 @@ class ScalpingStrategy:
         # Calculate available cash
         position_value = position_size * price if position_size > 0 else 0.0
         available_cash = equity - position_value
+        
+        # PULLBACK TRADING LOGIC: If swing position exists, scalp trades pullbacks in OPPOSITE direction
+        swing_is_long = swing_position > 0.0001
+        swing_is_short = swing_position < -0.0001
+        prefer_opposite_direction = swing_is_long or swing_is_short
 
         # VOLATILITY FILTER: Only scalp in high volatility (prevents death by a thousand scratches)
         if not check_volatility_filter(indicators, price):
@@ -136,7 +148,49 @@ class ScalpingStrategy:
             )
 
         # No position - look for LONG or SHORT scalping entry
-
+        
+        # NEW PULLBACK TRADING LOGIC:
+        # If swing exists, prioritize OPPOSITE direction on pullbacks (smart money!)
+        if prefer_opposite_direction:
+            if swing_is_short:
+                # Swing is SHORT → Scalp looks for LONG on pullbacks (buy the dip in downtrend)
+                # Look for bullish 5m/1m momentum (pullback exhausted, ready to bounce)
+                if trend_5m == "bullish" or trend_1m == "bullish":
+                    # Pullback detected, try to scalp LONG
+                    bias_aligned, _ = get_scalp_trend_bias(indicators, "long")
+                    if bias_aligned:
+                        entry_signal = self._check_long_scalp_entry(snapshot, indicators, price, equity, available_cash)
+                        if entry_signal:
+                            # Modify reason to indicate pullback trading
+                            entry_signal.reason = f"Pullback scalp LONG (swing is SHORT): " + entry_signal.reason
+                            return entry_signal
+            
+            elif swing_is_long:
+                # Swing is LONG → Scalp looks for SHORT on pullbacks (sell the rip in uptrend)
+                # Look for bearish 5m/1m momentum (pullback exhausted, ready to drop)
+                if trend_5m == "bearish" or trend_1m == "bearish":
+                    # Pullback detected, try to scalp SHORT
+                    bias_aligned, _ = get_scalp_trend_bias(indicators, "short")
+                    if bias_aligned:
+                        entry_signal = self._check_short_scalp_entry(snapshot, indicators, price, equity, available_cash)
+                        if entry_signal:
+                            # Modify reason to indicate pullback trading
+                            entry_signal.reason = f"Pullback scalp SHORT (swing is LONG): " + entry_signal.reason
+                            return entry_signal
+            
+            # If no pullback opportunity, just HOLD (don't trade same direction as swing)
+            swing_direction = "LONG" if swing_is_long else "SHORT"
+            return StrategySignal(
+                action="hold",
+                size_pct=0.0,
+                reason=f"Scalp: Waiting for pullback (swing is {swing_direction}, looking for opposite scalp opportunity)",
+                confidence=0.0,
+                symbol=snapshot.symbol,
+                position_type="scalp"
+            )
+        
+        # NO SWING POSITION: Use normal scalp logic (S/R and Keltner bands)
+        
         # Check support/resistance levels first (Priority 1)
         near_support, near_resistance, sr_level = check_support_resistance_levels(indicators, price)
 
@@ -179,8 +233,14 @@ class ScalpingStrategy:
         )
 
     def _check_long_exit_conditions(self, snapshot: Any, indicators: dict, price: float, position_size: float) -> Optional[StrategySignal]:
-        """Check exit conditions for long scalp positions."""
-        # "No move" exit - if held > 5 minutes AND profit < 0.3%, exit
+        """
+        Check exit conditions for long scalp positions.
+        
+        SMART EXIT LOGIC:
+        - Hold position if trend is still bullish (1m/5m)
+        - Don't close for tiny profits if momentum is still up
+        - Only close if: trend reversed OR held too long with no profit
+        """
         entry_timestamp = getattr(snapshot, 'entry_timestamp', None)
         if entry_timestamp is None:
             entry_timestamp = indicators.get('position_entry_timestamp', None)
@@ -194,19 +254,40 @@ class ScalpingStrategy:
 
                 if entry_price > 0:
                     profit_pct = ((price - entry_price) / entry_price) * 100
-                    min_hold_seconds = 300  # 5 minutes
-                    min_profit_threshold_pct = 0.3
-
-                    # Exit if time held is reasonable AND profit is below threshold
-                    if 0 <= time_held_seconds <= 3600 and time_held_seconds >= min_hold_seconds and profit_pct < min_profit_threshold_pct:
+                    
+                    # Check if trend is still bullish (reason to HOLD)
+                    trend_1m = indicators.get("trend_1m", "neutral")
+                    trend_5m = indicators.get("trend_5m", "neutral")
+                    trend_is_still_bullish = (trend_1m == "bullish" or trend_5m == "bullish")
+                    
+                    # NEW LOGIC: Don't exit early if trend is still favorable
+                    # Old: Exit after 5min if profit < 0.3%
+                    # New: Only exit if trend reversed OR held 15min+ with minimal profit
+                    
+                    # Exit condition 1: Held 15+ minutes with < 0.3% profit AND trend not bullish
+                    if time_held_seconds >= 900 and profit_pct < 0.3 and not trend_is_still_bullish:
                         return StrategySignal(
                             action="close",
                             size_pct=1.0,
-                            reason=f"Scalp long exit: No move after {time_held_seconds/60:.1f}min (profit {profit_pct:.2f}% < {min_profit_threshold_pct}% threshold)",
+                            reason=f"Scalp long exit: No move after {time_held_seconds/60:.1f}min (profit {profit_pct:.2f}% < 0.3%), trend no longer bullish",
                             confidence=0.7,
                             position_type="scalp",
                             symbol=snapshot.symbol
                         )
+                    
+                    # Exit condition 2: Held 30+ minutes with < 0.5% profit (regardless of trend)
+                    if time_held_seconds >= 1800 and profit_pct < 0.5:
+                        return StrategySignal(
+                            action="close",
+                            size_pct=1.0,
+                            reason=f"Scalp long exit: Held too long ({time_held_seconds/60:.1f}min) with low profit ({profit_pct:.2f}%)",
+                            confidence=0.7,
+                            position_type="scalp",
+                            symbol=snapshot.symbol
+                        )
+                    
+                    # KEY CHANGE: If trend is still bullish, HOLD even if profit is small
+                    # This prevents spam trading - let winners run!
 
         # Strong reversal exit
         vwap_5m = indicators.get("vwap_5m", price)
@@ -229,8 +310,14 @@ class ScalpingStrategy:
         return None
 
     def _check_short_exit_conditions(self, snapshot: Any, indicators: dict, price: float, position_size: float) -> Optional[StrategySignal]:
-        """Check exit conditions for short scalp positions."""
-        # "No move" exit - if held > 5 minutes AND profit < 0.3%, exit
+        """
+        Check exit conditions for short scalp positions.
+        
+        SMART EXIT LOGIC:
+        - Hold position if trend is still bearish (1m/5m)
+        - Don't close for tiny profits if momentum is still down
+        - Only close if: trend reversed OR held too long with no profit
+        """
         entry_timestamp = getattr(snapshot, 'entry_timestamp', None)
         if entry_timestamp is None:
             entry_timestamp = indicators.get('position_entry_timestamp', None)
@@ -244,19 +331,40 @@ class ScalpingStrategy:
 
                 if entry_price > 0:
                     profit_pct = ((entry_price - price) / entry_price) * 100  # For short: profit = entry - current
-                    min_hold_seconds = 300  # 5 minutes
-                    min_profit_threshold_pct = 0.3
-
-                    # Exit if time held is reasonable AND profit is below threshold
-                    if 0 <= time_held_seconds <= 3600 and time_held_seconds >= min_hold_seconds and profit_pct < min_profit_threshold_pct:
+                    
+                    # Check if trend is still bearish (reason to HOLD)
+                    trend_1m = indicators.get("trend_1m", "neutral")
+                    trend_5m = indicators.get("trend_5m", "neutral")
+                    trend_is_still_bearish = (trend_1m == "bearish" or trend_5m == "bearish")
+                    
+                    # NEW LOGIC: Don't exit early if trend is still favorable
+                    # Old: Exit after 5min if profit < 0.3%
+                    # New: Only exit if trend reversed OR held 15min+ with minimal profit
+                    
+                    # Exit condition 1: Held 15+ minutes with < 0.3% profit AND trend not bearish
+                    if time_held_seconds >= 900 and profit_pct < 0.3 and not trend_is_still_bearish:
                         return StrategySignal(
                             action="close",
                             size_pct=1.0,
-                            reason=f"Scalp short exit: No move after {time_held_seconds/60:.1f}min (profit {profit_pct:.2f}% < {min_profit_threshold_pct}% threshold)",
+                            reason=f"Scalp short exit: No move after {time_held_seconds/60:.1f}min (profit {profit_pct:.2f}% < 0.3%), trend no longer bearish",
                             confidence=0.7,
                             position_type="scalp",
                             symbol=snapshot.symbol
                         )
+                    
+                    # Exit condition 2: Held 30+ minutes with < 0.5% profit (regardless of trend)
+                    if time_held_seconds >= 1800 and profit_pct < 0.5:
+                        return StrategySignal(
+                            action="close",
+                            size_pct=1.0,
+                            reason=f"Scalp short exit: Held too long ({time_held_seconds/60:.1f}min) with low profit ({profit_pct:.2f}%)",
+                            confidence=0.7,
+                            position_type="scalp",
+                            symbol=snapshot.symbol
+                        )
+                    
+                    # KEY CHANGE: If trend is still bearish, HOLD even if profit is small
+                    # This prevents spam trading - let winners run!
 
         # Strong reversal exit
         vwap_5m = indicators.get("vwap_5m", price)

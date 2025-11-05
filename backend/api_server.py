@@ -83,38 +83,137 @@ async def get_balance():
                 
                 if tracked_equity is not None and len(positions_data) > 0:
                     # We have positions - calculate balance from them to ensure consistency
-                    # Calculate total unrealized P&L from positions
-                    total_unrealized_pnl = sum(pos.get('unrealPnL', 0.0) for pos in positions_data if isinstance(pos, dict))
+                    # Calculate total unrealized P&L from LIVE prices every request
+                    total_unrealized_pnl = 0.0
+                    # Resolve exchange handle for live ticker
+                    exchange = None
+                    try:
+                        cc = getattr(loop_controller_instance, 'cycle_controller', None)
+                        if cc and hasattr(cc, 'exchange_adapter'):
+                            exchange_adapter = getattr(cc, 'exchange_adapter')
+                            exchange = getattr(exchange_adapter, 'exchange', None)
+                    except Exception:
+                        exchange = None
                     
                     # Calculate total margin used from positions
+                    # CRITICAL: Use stored capital_amount for accurate margin calculation (same as frontend_manager)
+                    # This ensures smart money management works correctly
                     total_margin_used = 0.0
+                    config = loop_controller_instance.config if hasattr(loop_controller_instance, 'config') else None
+                    
                     for pos in positions_data:
                         if not isinstance(pos, dict):
                             continue
-                        entry_price = pos.get('entryPrice')
-                        current_price = pos.get('currentPrice', entry_price)  # Fallback to entry if current missing
-                        leverage_str = pos.get('leverage', '1.0X')
-                        notional = pos.get('notional', 0.0)  # Current notional (size * current_price)
                         
-                        if entry_price and current_price and notional > 0:
-                            try:
-                                leverage = float(leverage_str.replace('X', '').replace('x', ''))
-                                if leverage > 0 and current_price > 0:
+                        coin = pos.get('coin', 'UNKNOWN')
+                        pos_type = pos.get('positionType', 'swing')
+                        
+                        # Get symbol from coin name
+                        symbol_for_pos = None
+                        if config and hasattr(config, 'symbols'):
+                            for sym in config.symbols:
+                                if sym.split('/')[0] == coin:
+                                    symbol_for_pos = sym
+                                    break
+                        # Compute LIVE unrealized P&L using PositionManager size + live ticker price
+                        try:
+                            entry_price = None
+                            if symbol_for_pos and symbol_for_pos in position_manager.position_entry_prices:
+                                ep_dict = position_manager.position_entry_prices[symbol_for_pos]
+                                if isinstance(ep_dict, dict):
+                                    entry_price = ep_dict.get(pos_type)
+                                else:
+                                    entry_price = ep_dict if pos_type == 'swing' else None
+                            if entry_price is None:
+                                entry_price = pos.get('entryPrice')
+
+                            size = 0.0
+                            if symbol_for_pos:
+                                size = position_manager.get_position_by_type(symbol_for_pos, pos_type)
+
+                            current_price = pos.get('currentPrice', entry_price)
+                            if exchange and symbol_for_pos:
+                                sym_ccxt = symbol_for_pos.replace('/', '')
+                                try:
+                                    if hasattr(exchange, 'fapiPublicGetTickerPrice'):
+                                        res = exchange.fapiPublicGetTickerPrice({'symbol': sym_ccxt})
+                                        p = float(res['price']) if isinstance(res, dict) and 'price' in res else float(res)
+                                        if p > 0:
+                                            current_price = p
+                                    elif hasattr(exchange, 'fetch_ticker'):
+                                        t = exchange.fetch_ticker(symbol_for_pos)
+                                        p = float(t.get('last', current_price))
+                                        if p > 0:
+                                            current_price = p
+                                except Exception:
+                                    pass
+
+                            if entry_price and current_price and abs(size) > 0:
+                                if size > 0:
+                                    total_unrealized_pnl += size * (current_price - entry_price)
+                                else:
+                                    total_unrealized_pnl += abs(size) * (entry_price - current_price)
+                        except Exception:
+                            pass
+                        
+                        # Try to get actual capital used from PositionManager (if available)
+                        # This is the actual capital allocated, not the inflated notional value
+                        actual_capital_used = None
+                        if symbol_for_pos and hasattr(position_manager, 'position_capital_used'):
+                            if symbol_for_pos in position_manager.position_capital_used:
+                                capital_dict = position_manager.position_capital_used[symbol_for_pos]
+                                if isinstance(capital_dict, dict):
+                                    actual_capital_used = capital_dict.get(pos_type)
+                                else:
+                                    actual_capital_used = capital_dict if pos_type == 'swing' else None
+                        
+                        if actual_capital_used is not None and actual_capital_used > 0:
+                            # Use stored actual capital - this is the correct margin!
+                            margin_for_position = actual_capital_used
+                            total_margin_used += margin_for_position
+                            logger.debug(f"Balance calc: {coin} ({pos_type}) using stored capital=${actual_capital_used:.2f}")
+                        else:
+                            # Fallback: Calculate from notional/leverage if capital not stored
+                            # This shouldn't happen for new positions, but handles old positions gracefully
+                            entry_price = pos.get('entryPrice')
+                            current_price = pos.get('currentPrice', entry_price)
+                            leverage_str = pos.get('leverage', '1.0X')
+                            notional = pos.get('notional', 0.0)
+                            
+                            if entry_price and current_price and notional > 0:
+                                try:
                                     # Calculate position size from current notional
-                                    position_size = notional / current_price
-                                    # Calculate entry notional
-                                    entry_notional = position_size * entry_price
-                                    # Margin = Entry Notional / Leverage
-                                    margin = entry_notional / leverage
-                                    
-                                    # VALIDATION: Skip positions with invalid sizes (margin > 2x equity = likely stored incorrectly)
-                                    if margin > tracked_equity * 2.0:
-                                        logger.debug(f"Skipping invalid position {pos.get('coin', 'UNKNOWN')} in balance calc: margin ${margin:.2f} > 2x equity ${tracked_equity:.2f}")
-                                        continue
-                                    
-                                    total_margin_used += margin
-                            except (ValueError, AttributeError, ZeroDivisionError):
-                                pass
+                                    position_size = notional / current_price if current_price > 0 else 0.0
+                                    if position_size > 0 and entry_price > 0:
+                                        # Try to get actual leverage from stored position_leverages
+                                        actual_leverage = None
+                                        if symbol_for_pos and hasattr(position_manager, 'position_leverages'):
+                                            if symbol_for_pos in position_manager.position_leverages:
+                                                lev_dict = position_manager.position_leverages[symbol_for_pos]
+                                                if isinstance(lev_dict, dict):
+                                                    actual_leverage = lev_dict.get(pos_type)
+                                                else:
+                                                    actual_leverage = lev_dict if pos_type == 'swing' else 1.0
+                                        
+                                        leverage = 1.0
+                                        if actual_leverage is not None and actual_leverage > 0:
+                                            leverage = actual_leverage
+                                        else:
+                                            leverage = float(leverage_str.replace('X', '').replace('x', ''))
+                                        
+                                        entry_notional = position_size * entry_price
+                                        margin_for_position = entry_notional / leverage
+                                        
+                                        # VALIDATION: Skip positions with invalid sizes
+                                        if margin_for_position > tracked_equity * 2.0:
+                                            logger.debug(f"Skipping invalid position {coin} ({pos_type}) in balance calc: margin ${margin_for_position:.2f} > 2x equity ${tracked_equity:.2f}")
+                                            continue
+                                        
+                                        total_margin_used += margin_for_position
+                                        logger.debug(f"Balance calc: {coin} ({pos_type}) FALLBACK using notional/leverage=${margin_for_position:.2f} (stored capital not available)")
+                                except (ValueError, AttributeError, ZeroDivisionError, TypeError) as e:
+                                    logger.debug(f"Error calculating margin for {coin} ({pos_type}): {e}")
+                                    pass
                     
                     # Calculate available cash
                     total_equity = tracked_equity + total_unrealized_pnl
@@ -126,11 +225,16 @@ async def get_balance():
                         logger.warning(f"  Clamping margin to equity to prevent negative cash display.")
                         total_margin_used = total_equity
                     
-                    # SMART MONEY MANAGEMENT: Ensure we never use more than 95% of equity as margin
-                    # This leaves a 5% buffer for opportunities and prevents over-leverage
-                    max_allowed_margin = total_equity * 0.95
+                    # SMART MONEY MANAGEMENT: Cap margin at configured percentage of equity
+                    try:
+                        from src.config import Config
+                        cfg = Config.load()
+                        limit_pct = getattr(cfg, 'max_equity_usage_pct', 0.10)
+                    except Exception:
+                        limit_pct = 0.10
+                    max_allowed_margin = total_equity * limit_pct
                     if total_margin_used > max_allowed_margin:
-                        logger.debug(f"SMART MONEY: Margin usage (${total_margin_used:.2f}) > 95% limit (${max_allowed_margin:.2f}), clamping to limit")
+                        logger.debug(f"SMART MONEY: Margin usage (${total_margin_used:.2f}) > {int(limit_pct*100)}% limit (${max_allowed_margin:.2f}), clamping to limit")
                         total_margin_used = max_allowed_margin
                     
                     available_cash = max(0.0, total_equity - total_margin_used)

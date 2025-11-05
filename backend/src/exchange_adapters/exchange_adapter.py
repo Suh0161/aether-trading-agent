@@ -337,3 +337,54 @@ class ExchangeAdapter:
 
         # Convert to ccxt format: [[timestamp, open, high, low, close, volume], ...]
         return [[int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in klines]
+
+    def fetch_futures_positions(self) -> dict:
+        """
+        Fetch current open positions from Binance Futures.
+        
+        Returns:
+            Dictionary mapping symbols to position info:
+            {
+                'BTC/USDT': {'side': 'long', 'size': 0.001, 'entry_price': 102641.0, 'unrealized_pnl': -0.94},
+                'ETH/USDT': {'side': 'short', 'size': 0.008, 'entry_price': 3325.91, 'unrealized_pnl': 0.08}
+            }
+        """
+        try:
+            # Try using account endpoint first (works for both demo and live)
+            # Endpoint: GET /fapi/v2/account
+            account_data = self.exchange.fapiPrivateGetAccount()
+            
+            positions = {}
+            
+            # Extract positions from account data
+            if 'positions' in account_data:
+                for pos in account_data['positions']:
+                    symbol_raw = pos.get('symbol', '')  # e.g., "BTCUSDT"
+                    position_amt = float(pos.get('positionAmt', 0))
+                    
+                    # Skip positions with zero size
+                    if abs(position_amt) < 0.0001:
+                        continue
+                    
+                    # Convert symbol format (BTCUSDT -> BTC/USDT)
+                    if symbol_raw.endswith('USDT'):
+                        symbol = symbol_raw[:-4] + '/USDT'
+                    else:
+                        symbol = symbol_raw  # Fallback
+                    
+                    entry_price = float(pos.get('entryPrice', 0))
+                    unrealized_pnl = float(pos.get('unrealizedProfit', 0))
+                    
+                    positions[symbol] = {
+                        'side': 'long' if position_amt > 0 else 'short',
+                        'size': abs(position_amt),
+                        'entry_price': entry_price,
+                        'unrealized_pnl': unrealized_pnl
+                    }
+            
+            return positions
+            
+        except Exception as e:
+            logger.debug(f"Position sync skipped: {e}")
+            # Return empty dict - sync will be skipped this cycle
+            return {}

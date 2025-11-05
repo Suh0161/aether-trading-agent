@@ -1,13 +1,34 @@
 import { useState, useEffect } from 'react'
 import './Header.css'
 
-function Header({ balance, showPerformance, setShowPerformance }) {
+function Header({ balance, showPerformance, setShowPerformance, selectedCoin, setSelectedCoin, timeframe, setTimeframe, chartType, setChartType, currentPrice, priceChange }) {
   const totalUnrealizedPnL = balance?.unrealizedPnL || 0
   const cash = balance?.cash ?? 0
   const [agentPaused, setAgentPaused] = useState(false)
   const [loading, setLoading] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const [modalConfig, setModalConfig] = useState({ title: '', message: '', onConfirm: null })
+  const [showCoinDropdown, setShowCoinDropdown] = useState(false)
+  
+  const availableCoins = [
+    { symbol: 'BTC/USDT', name: 'Bitcoin', icon: '/image/Bitcoin.svg.webp' },
+    { symbol: 'ETH/USDT', name: 'Ethereum', icon: '/image/eth.svg' },
+    { symbol: 'SOL/USDT', name: 'Solana', icon: '/image/sol.svg' },
+    { symbol: 'DOGE/USDT', name: 'Dogecoin', icon: '/image/dogecoin.svg' },
+    { symbol: 'BNB/USDT', name: 'BNB', icon: '/image/bnb.svg' },
+    { symbol: 'XRP/USDT', name: 'Ripple', icon: '/image/ripple-xrp-crypto.svg' },
+  ]
+  
+  const formatPrice = (price) => {
+    if (price === null || price === undefined) return '--'
+    if (price >= 1000) {
+      return price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    } else if (price >= 1) {
+      return price.toFixed(4)
+    } else {
+      return price.toFixed(6)
+    }
+  }
 
   useEffect(() => {
     // Check agent status on mount

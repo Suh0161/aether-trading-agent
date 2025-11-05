@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, memo } from 'react'
 import Positions from './sidebar/Positions'
 import CompletedTrades from './sidebar/CompletedTrades'
 import AgentChat from './sidebar/AgentChat'
@@ -39,4 +39,4 @@ function Sidebar({ positions, trades, agentMessages }) {
   )
 }
 
-export default Sidebar
+export default memo(Sidebar)

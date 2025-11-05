@@ -2,6 +2,7 @@
 
 import logging
 from typing import Dict, Optional
+import re
 
 from src.utils.snapshot_utils import get_price_from_snapshot, get_base_snapshot
 
@@ -30,6 +31,10 @@ class AIMessageService:
         self.current_cycle_decisions = {}  # {symbol: decision_data} for current cycle
         self.cycle_api_client = None  # Store API client for cycle-end messaging
         self.cycles_since_last_summary = 0  # Track cycles since last summary message
+
+        # Anti-spam controls for trade announcements
+        self._last_trade_cycle_by_symbol: Dict[str, int] = {}
+        self._trade_cooldown_cycles = 2  # do not announce same symbol more than once within 2 cycles (~60s)
 
     def generate_ai_message(
         self, decision, snapshot, position_size: float, equity: float,
@@ -65,6 +70,19 @@ class AIMessageService:
             price = get_price_from_snapshot(snapshot)
             symbol = base_snapshot.symbol
             base_currency = symbol.split('/')[0]
+
+            # Ensure message uses the ACTUAL executed leverage
+            try:
+                lev_attr = getattr(decision, 'leverage', 1)
+                leverage_used = int(round(lev_attr)) if isinstance(lev_attr, (int, float)) else int(lev_attr)
+            except Exception:
+                leverage_used = 1
+            sanitized_reason = getattr(decision, 'reason', '') or ''
+            try:
+                sanitized_reason = re.sub(r"Leverage:\s*\d+(?:\.\d+)?x", f"Leverage: {leverage_used}x", sanitized_reason)
+            except Exception:
+                pass
+            capital_used = getattr(decision, 'capital_amount', None)
 
             # Build ALL COINS market overview (COMPREHENSIVE - ALL INDICATORS)
             all_coins_context = ""
@@ -156,11 +174,13 @@ CURRENT SITUATION:
 - Available Cash: ${available_cash:,.2f}
 - Unrealized P&L: ${unrealized_pnl:+,.2f}
 {"- Realized P&L: $" + f"{realized_pnl:+,.2f}" if realized_pnl is not None else ""}
+- Leverage Used (executed): {leverage_used}x
+{"- Capital Used: $" + f"{capital_used:,.2f}" if capital_used is not None else ""}
 
 DECISION MADE:
 - Action: {decision.action.upper()}
 - Position Type: {position_type}
-- Reason: {decision.reason}
+- Reason: {sanitized_reason}
 
 {all_coins_context}
 
@@ -174,6 +194,7 @@ INSTRUCTIONS FOR YOUR RESPONSE:
 - For HOLD actions: Give a quick market update on why you're waiting
 - Reference specific indicators when relevant (RSI, EMA, support/resistance, volume, trends)
 - Use the current market context to support your explanation
+\nCRITICAL: If the reason mentions a different leverage than 'Leverage Used (executed)', ALWAYS state the executed leverage {leverage_used}x and ignore the reason's leverage.
 
 Remember: You're Aether, the autonomous trading assistant. Sound professional but approachable."""
 
@@ -335,13 +356,20 @@ Remember: This is your introduction. Be warm but professional."""
 
         # === ALWAYS SEND: Important actions (trades) ===
         if decision.action in ["long", "short", "close"]:
-            message = self.generate_ai_message(
-                decision, snapshot, position_size, equity,
-                available_cash, unrealized_pnl, all_snapshots, realized_pnl=realized_pnl
-            )
-            api_client.add_agent_message(message)
-            self.last_message_type = decision.action
-            self.last_message_cycle = cycle_count
+            # Per-symbol cooldown to prevent message bursts when multiple orders fire close together
+            symbol_key = get_base_snapshot(snapshot).symbol
+            last_cycle = self._last_trade_cycle_by_symbol.get(symbol_key, -999999)
+            if cycle_count - last_cycle >= self._trade_cooldown_cycles:
+                message = self.generate_ai_message(
+                    decision, snapshot, position_size, equity,
+                    available_cash, unrealized_pnl, all_snapshots, realized_pnl=realized_pnl
+                )
+                api_client.add_agent_message(message)
+                self.last_message_type = decision.action
+                self.last_message_cycle = cycle_count
+                self._last_trade_cycle_by_symbol[symbol_key] = cycle_count
+            else:
+                logger.debug(f"[AI MSG] Suppressed trade message for {symbol_key} (cooldown)")
             return
 
         # === COLLECT: Hold decisions for consolidated messaging ===
@@ -361,7 +389,9 @@ Remember: This is your introduction. Be warm but professional."""
     def send_cycle_summary_message(self, cycle_count: int) -> None:
         """
         Send a consolidated summary of all hold decisions for this cycle.
-        Only sends every 7 cycles when idle to prevent spam.
+        
+        COST-SAVING: Only sends every 10 cycles (5 minutes) instead of every cycle (30s).
+        This reduces AI message calls by 90% while keeping user informed.
 
         Args:
             cycle_count: Current cycle count
@@ -373,8 +403,11 @@ Remember: This is your introduction. Be warm but professional."""
             return
 
         try:
-            # Only send summary every 7 cycles when all coins are idle
-            should_send_summary = (self.cycles_since_last_summary >= 7)
+            # New behavior: If the cycle had only HOLD decisions (no trades),
+            # send a simple hardcoded summary EVERY cycle. Keep the 10-cycle
+            # cadence only for AI-generated summaries when needed.
+            needs_ai_analysis = self._check_if_needs_ai_analysis()
+            should_send_summary = True if not needs_ai_analysis else (self.cycles_since_last_summary >= 10)
 
             if should_send_summary:
                 # Generate consolidated message for all coins

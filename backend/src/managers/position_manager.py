@@ -40,6 +40,10 @@ class PositionManager:
         self.position_leverages = {}  # {symbol: {'swing': leverage, 'scalp': leverage}}
         self.position_risk_amounts = {}  # {symbol: {'swing': risk, 'scalp': risk}}
         self.position_reward_amounts = {}  # {symbol: {'swing': reward, 'scalp': reward}}
+        
+        # Track actual capital used for margin calculation (critical for smart money management)
+        # This is the actual capital allocated, not the inflated notional value
+        self.position_capital_used = {}  # {symbol: {'swing': capital, 'scalp': capital}}
 
         # Track highest/lowest price for trailing stop (swing trades only)
         self.position_highest_prices = {}  # {symbol: {'swing': highest}} for LONG positions
@@ -54,6 +58,13 @@ class PositionManager:
 
         # Track last scalp close time per symbol to prevent immediate re-entry (cooldown)
         self.last_scalp_close_time = {}  # {symbol: timestamp} - Unix timestamp in seconds
+        
+        # Track last sync time to avoid syncing too frequently
+        self.last_position_sync_time = 0
+        # Anti-duplicate emission tracker for externally closed trades
+        self._last_emitted_close = {}  # key=(symbol, position_type) -> timestamp
+        # Debounce clearing: require consecutive exchange 'no position' reports
+        self._no_position_miss_count = {}  # key=(symbol, position_type) -> count
 
     def get_position_by_type(self, symbol: str, position_type: str) -> float:
         """Helper to get position size by type (swing or scalp). Returns 0 if not found."""
@@ -338,3 +349,223 @@ class PositionManager:
                     del self.position_reward_amounts[symbol][position_type]
             else:
                 del self.position_reward_amounts[symbol]
+        
+        # Clear capital used tracking
+        if symbol in self.position_capital_used:
+            if isinstance(self.position_capital_used[symbol], dict):
+                if position_type in self.position_capital_used[symbol]:
+                    del self.position_capital_used[symbol][position_type]
+            else:
+                del self.position_capital_used[symbol]
+    
+    def sync_positions_with_exchange(self, exchange_adapter, tracked_symbols: list) -> None:
+        """
+        Synchronize internal position tracking with actual exchange positions.
+        This detects positions that were closed externally (e.g., by hitting SL/TP on exchange).
+        
+        Args:
+            exchange_adapter: ExchangeAdapter instance with fetch_futures_positions() method
+            tracked_symbols: List of symbols we're tracking (e.g., ['BTC/USDT', 'ETH/USDT'])
+        """
+        import time
+        current_time = time.time()
+        
+        # Only sync every 30 seconds to avoid spamming the exchange
+        if current_time - self.last_position_sync_time < 30:
+            return
+        
+        self.last_position_sync_time = current_time
+        
+        try:
+            # Fetch actual positions from exchange
+            exchange_positions = exchange_adapter.fetch_futures_positions()
+            
+            # Check each tracked symbol for discrepancies
+            for symbol in tracked_symbols:
+                # Get our internal tracking
+                swing_pos = self.get_position_by_type(symbol, 'swing')
+                scalp_pos = self.get_position_by_type(symbol, 'scalp')
+                
+                # Get actual position from exchange (total, not split by strategy type)
+                actual_pos = exchange_positions.get(symbol, None)
+                
+                if actual_pos:
+                    # Exchange has a position
+                    actual_size = actual_pos['size']
+                    if actual_pos['side'] == 'short':
+                        actual_size = -actual_size
+                    # Reset miss counters if exchange reports a position
+                    self._no_position_miss_count[(symbol, 'swing')] = 0
+                    self._no_position_miss_count[(symbol, 'scalp')] = 0
+                    
+                    # Check if our internal tracking matches
+                    internal_total = swing_pos + scalp_pos
+                    
+                    if abs(internal_total - actual_size) > 0.001:
+                        logger.warning(f"[POSITION SYNC] {symbol}: Discrepancy detected!")
+                        logger.warning(f"  Internal: swing={swing_pos:.6f}, scalp={scalp_pos:.6f}, total={internal_total:.6f}")
+                        logger.warning(f"  Exchange: {actual_pos['side']} {actual_size:.6f}")
+                        
+                        # For now, just log the discrepancy
+                        # In production, you might want to reconcile automatically
+                else:
+                    # Exchange has NO position for this symbol
+                    if abs(swing_pos) > 0.001 or abs(scalp_pos) > 0.001:
+                        logger.warning(f"[POSITION SYNC] {symbol}: Position closed externally!")
+                        logger.warning(f"  Internal: swing={swing_pos:.6f}, scalp={scalp_pos:.6f}")
+                        logger.warning(f"  Exchange: No position")
+                        logger.info(f"  -> Debouncing clear to avoid false positives")
+
+                        # Debounce logic: if the position was opened very recently, or this is the first miss,
+                        # do NOT clear yet. Require two consecutive 'no position' syncs and older than 120s.
+                        def _should_clear(ptype: str, size: float) -> bool:
+                            if abs(size) <= 0.001:
+                                # Nothing to clear
+                                return False
+                            # If entry timestamp exists and is recent, skip clearing (likely propagation lag)
+                            ts = None
+                            try:
+                                ts = self.position_entry_timestamps.get(symbol, {}).get(ptype)
+                            except Exception:
+                                ts = None
+                            if ts is not None and current_time - int(ts) < 120:
+                                logger.info(f"  -> Skipping {ptype} clear (opened {int(current_time - int(ts))}s ago < 120s)")
+                                # Reset miss counter since we consider it valid
+                                self._no_position_miss_count[(symbol, ptype)] = 0
+                                return False
+                            # Increment consecutive miss count
+                            key = (symbol, ptype)
+                            self._no_position_miss_count[key] = self._no_position_miss_count.get(key, 0) + 1
+                            if self._no_position_miss_count[key] < 2:
+                                logger.info(f"  -> {ptype} miss #{self._no_position_miss_count[key]} (waiting for confirmation)")
+                                return False
+                            # Confirmed by 2 consecutive misses
+                            return True
+
+                        # Evaluate for each type independently
+                        clear_swing = _should_clear('swing', swing_pos)
+                        clear_scalp = _should_clear('scalp', scalp_pos)
+
+                        if not clear_swing and not clear_scalp:
+                            # Do not proceed to emit/clear yet this cycle
+                            continue
+                        try:
+                            # Attempt to send completed trade(s) to frontend for visibility
+                            import api_server
+                            loop = getattr(api_server, 'loop_controller_instance', None)
+                            api_client = None
+                            if loop and hasattr(loop, 'cycle_controller') and loop.cycle_controller:
+                                api_client = getattr(loop.cycle_controller, 'api_client', None)
+                            # Helper to fetch last price
+                            def _last_price(sym: str, fallback: float = 0.0) -> float:
+                                try:
+                                    ex = getattr(exchange_adapter, 'exchange', None)
+                                    if ex and hasattr(ex, 'fapiPublicGetTickerPrice'):
+                                        res = ex.fapiPublicGetTickerPrice({'symbol': sym.replace('/', '')})
+                                        p = float(res['price']) if isinstance(res, dict) and 'price' in res else float(res)
+                                        return p if p > 0 else fallback
+                                    if ex and hasattr(ex, 'fetch_ticker'):
+                                        tk = ex.fetch_ticker(sym)
+                                        p = float(tk.get('last', fallback))
+                                        return p if p > 0 else fallback
+                                except Exception:
+                                    pass
+                                return fallback
+                            # Helper to log trade
+                            def _emit_trade(ptype: str, size: float):
+                                if not api_client or abs(size) <= 0.0:
+                                    return
+                                # De-dupe: do not emit the same symbol/type more than once within 10s
+                                import time as _t
+                                key = (symbol, ptype)
+                                last_ts = self._last_emitted_close.get(key, 0)
+                                now_ts = int(_t.time())
+                                if now_ts - last_ts < 10:
+                                    return
+                                # Entry price from tracking
+                                entry_price = None
+                                ep_dict = self.position_entry_prices.get(symbol, {})
+                                if isinstance(ep_dict, dict):
+                                    entry_price = ep_dict.get(ptype)
+                                exit_price = _last_price(symbol, entry_price or 0.0)
+                                qty = abs(size)
+                                if entry_price and exit_price and qty > 0:
+                                    side = 'LONG' if size > 0 else 'SHORT'
+                                    # Holding time
+                                    ts = None
+                                    ts_dict = self.position_entry_timestamps.get(symbol, {})
+                                    if isinstance(ts_dict, dict):
+                                        ts = ts_dict.get(ptype)
+                                    holding = 'Unknown'
+                                    import time as _t
+                                    if ts:
+                                        sec = int(_t.time()) - int(ts)
+                                        holding = f"{sec // 60}m" if sec < 3600 else f"{sec // 3600}h {(sec % 3600)//60}m"
+                                    pnl = (exit_price - entry_price) * qty if size > 0 else (entry_price - exit_price) * qty
+                                    # Skip micro-noise trades to avoid spam
+                                    if abs(pnl) < 0.01:
+                                        return
+                                    try:
+                                        api_client.add_trade(
+                                            symbol,
+                                            side,
+                                            entry_price,
+                                            exit_price,
+                                            qty,
+                                            entry_price * qty,
+                                            exit_price * qty,
+                                            holding,
+                                            pnl,
+                                        )
+                                        self._last_emitted_close[key] = now_ts
+                                        # Also notify Agent Chat about the close
+                                        try:
+                                            agent_side = side.lower()
+                                            agent_msg = (
+                                                f"Closed {ptype.upper()} {symbol} {agent_side} at ${exit_price:,.2f} "
+                                                f"(qty {qty:g}). Duration {holding}. P&L {pnl:+.2f}."
+                                            )
+                                            api_client.add_agent_message(agent_msg)
+                                        except Exception:
+                                            pass
+                                    except Exception:
+                                        pass
+                                    # Update tracked equity with realized PnL
+                                    try:
+                                        self.tracked_equity = (self.tracked_equity or 0.0) + pnl
+                                    except Exception:
+                                        pass
+                            # Emit trades for both types
+                            if clear_swing and abs(swing_pos) > 0.001:
+                                _emit_trade('swing', swing_pos)
+                            if clear_scalp and abs(scalp_pos) > 0.001:
+                                _emit_trade('scalp', scalp_pos)
+                        except Exception:
+                            pass
+
+                        # Clear our internal tracking since exchange says no position
+                        if clear_swing and abs(swing_pos) > 0.001:
+                            logger.info(f"  -> Clearing swing position")
+                            # Zero the tracked size before clearing metadata
+                            try:
+                                self.set_position_by_type(symbol, 'swing', 0.0)
+                            except Exception:
+                                pass
+                            self._clear_position_tracking(symbol, 'swing')
+                        if clear_scalp and abs(scalp_pos) > 0.001:
+                            logger.info(f"  -> Clearing scalp position")
+                            try:
+                                self.set_position_by_type(symbol, 'scalp', 0.0)
+                            except Exception:
+                                pass
+                            self._clear_position_tracking(symbol, 'scalp')
+                        # Reset miss counters after clearing
+                        if clear_swing:
+                            self._no_position_miss_count[(symbol, 'swing')] = 0
+                        if clear_scalp:
+                            self._no_position_miss_count[(symbol, 'scalp')] = 0
+            
+            logger.debug(f"[POSITION SYNC] Completed - tracked equity: ${self.tracked_equity:.2f}")
+            
+        except Exception as e:
+            logger.error(f"[POSITION SYNC] Failed to sync positions: {e}")

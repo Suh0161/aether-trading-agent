@@ -167,6 +167,31 @@
   font-weight: 700;
 }
 
+/* Type badge (matches exit-plan badge styling) */
+.type-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  border: 1px solid transparent;
+  line-height: 1.2;
+}
+
+.type-badge.swing {
+  color: #059669;
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.type-badge.scalp {
+  color: #4f46e5;
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+
 /* Empty State */
 .empty-state {
   display: flex;

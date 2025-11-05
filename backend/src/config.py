@@ -40,6 +40,11 @@ class Config:
     # LLM
     decision_provider: str
     strategy_mode: str  # "hybrid_atr", "hybrid_ema", "ai_only"
+
+    # Portfolio allocator knobs
+    swing_target_pct: float  # per-trade ceiling for swing allocations (e.g., 0.25)
+    scalp_target_pct: float  # per-trade ceiling for scalp allocations (e.g., 0.15)
+    min_allocation_usd: float  # minimum capital to allocate to any trade (e.g., $3)
     
     @classmethod
     def from_env(cls) -> "Config":
@@ -99,6 +104,20 @@ class Config:
             max_leverage = float(os.getenv("MAX_LEVERAGE", "3.0"))
         except ValueError:
             raise ValueError("MAX_LEVERAGE must be a valid float")
+
+        # Portfolio allocator knobs
+        try:
+            swing_target_pct = float(os.getenv("SWING_TARGET_PCT", "0.25"))
+        except ValueError:
+            raise ValueError("SWING_TARGET_PCT must be a valid float")
+        try:
+            scalp_target_pct = float(os.getenv("SCALP_TARGET_PCT", "0.15"))
+        except ValueError:
+            raise ValueError("SCALP_TARGET_PCT must be a valid float")
+        try:
+            min_allocation_usd = float(os.getenv("MIN_ALLOCATION_USD", "3.0"))
+        except ValueError:
+            raise ValueError("MIN_ALLOCATION_USD must be a valid float")
         
         # Load optional fields
         daily_loss_cap_pct = None
@@ -126,6 +145,13 @@ class Config:
         
         if max_leverage <= 0:
             raise ValueError("MAX_LEVERAGE must be greater than 0")
+
+        if not 0.0 <= swing_target_pct <= 1.0:
+            raise ValueError("SWING_TARGET_PCT must be between 0.0 and 1.0")
+        if not 0.0 <= scalp_target_pct <= 1.0:
+            raise ValueError("SCALP_TARGET_PCT must be between 0.0 and 1.0")
+        if min_allocation_usd < 0.0:
+            raise ValueError("MIN_ALLOCATION_USD must be non-negative")
         
         if daily_loss_cap_pct is not None and not 0.0 <= daily_loss_cap_pct <= 1.0:
             raise ValueError("DAILY_LOSS_CAP_PCT must be between 0.0 and 1.0")
@@ -171,4 +197,7 @@ class Config:
             decision_provider=decision_provider,
             strategy_mode=strategy_mode,
             scalp_profit_threshold_pct=scalp_profit_threshold_pct,
+            swing_target_pct=swing_target_pct,
+            scalp_target_pct=scalp_target_pct,
+            min_allocation_usd=min_allocation_usd,
         )
