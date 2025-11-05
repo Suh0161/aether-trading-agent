@@ -42,6 +42,12 @@ def setup_logging(verbose: bool = False) -> None:
         ]
     )
 
+    # Reduce noisy third-party loggers (suppress HTTP URL spam and API retries)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("openai._base_client").setLevel(logging.WARNING)  # Suppress retry messages
+
 
 def parse_arguments() -> argparse.Namespace:
     """
@@ -192,7 +198,11 @@ def main() -> int:
         logger.info("Loop controller registered with API server")
         
         def run_api_server():
-            uvicorn.run(api_server.app, host="0.0.0.0", port=8000, log_level="warning")
+            try:
+                logger.info("Starting API server thread...")
+                uvicorn.run(api_server.app, host="0.0.0.0", port=8000, log_level="warning")
+            except Exception as e:
+                logger.error(f"API server thread crashed: {e}", exc_info=True)
         
         api_thread = threading.Thread(target=run_api_server, daemon=True)
         api_thread.start()
@@ -200,9 +210,20 @@ def main() -> int:
         # Give API server a moment to initialize
         import time
         time.sleep(2)
-        logger.info("API server started in background on http://0.0.0.0:8000")
+        
+        # Verify API server is actually running
+        try:
+            import requests
+            response = requests.get("http://localhost:8000/", timeout=2)
+            if response.status_code == 200:
+                logger.info("API server started successfully on http://0.0.0.0:8000")
+            else:
+                logger.warning(f"API server responded with status {response.status_code}")
+        except Exception as e:
+            logger.warning(f"API server health check failed: {e}")
+            logger.warning("Frontend may not be able to connect. Check if port 8000 is available.")
     except Exception as e:
-        logger.warning(f"Failed to start API server: {e}")
+        logger.warning(f"Failed to start API server: {e}", exc_info=True)
         logger.warning("Interactive chat will not be available")
     
     # Start main loop

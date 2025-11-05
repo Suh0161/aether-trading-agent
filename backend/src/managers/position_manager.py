@@ -49,6 +49,9 @@ class PositionManager:
         # Track confidence when position was opened (for adaptive trailing stop)
         self.position_confidence = {}  # {symbol: {'swing': confidence, 'scalp': confidence}}
 
+        # Track AI-suggested trailing stop percentage (if AI adjusted it)
+        self.position_trailing_stop_pct = {}  # {symbol: {'swing': trailing_pct}}
+
         # Track last scalp close time per symbol to prevent immediate re-entry (cooldown)
         self.last_scalp_close_time = {}  # {symbol: timestamp} - Unix timestamp in seconds
 
@@ -106,14 +109,33 @@ class PositionManager:
             else:
                 confidence = conf_dict if position_type == 'swing' else 0.5
 
-        # Calculate trailing percentage based on confidence
-        # Higher confidence = tighter trailing (10%), lower confidence = looser (15%)
-        if confidence >= 0.8:
-            trail_pct = 0.10  # 10% trailing for high confidence
-        elif confidence >= 0.6:
-            trail_pct = 0.12  # 12% trailing for medium-high confidence
-        else:
-            trail_pct = 0.15  # 15% trailing for lower confidence
+        # Check if AI suggested a trailing stop percentage
+        ai_trailing_pct = None
+        if symbol in self.position_trailing_stop_pct:
+            trailing_dict = self.position_trailing_stop_pct[symbol]
+            if isinstance(trailing_dict, dict):
+                ai_trailing_pct = trailing_dict.get(position_type)
+
+        # Use AI-suggested trailing percentage if available, otherwise use confidence-based defaults
+        if ai_trailing_pct is not None:
+            # Validate AI-suggested trailing percentage is reasonable
+            if 0.05 <= ai_trailing_pct <= 0.20:
+                trail_pct = ai_trailing_pct
+                logger.debug(f"Using AI-suggested trailing stop: {trail_pct*100:.1f}% for {symbol} {position_type}")
+            else:
+                logger.warning(f"AI trailing percentage {ai_trailing_pct*100:.1f}% out of range (5-20%), using confidence-based default")
+                # Fall through to confidence-based calculation
+                ai_trailing_pct = None
+
+        # Calculate trailing percentage based on confidence (if AI didn't suggest one)
+        if ai_trailing_pct is None:
+            # Higher confidence = tighter trailing (10%), lower confidence = looser (15%)
+            if confidence >= 0.8:
+                trail_pct = 0.10  # 10% trailing for high confidence
+            elif confidence >= 0.6:
+                trail_pct = 0.12  # 12% trailing for medium-high confidence
+            else:
+                trail_pct = 0.15  # 15% trailing for lower confidence
 
         # Update highest/lowest prices and trailing stops
         if position_size > 0:  # LONG position
@@ -132,7 +154,7 @@ class PositionManager:
                     self.position_stop_losses[symbol] = {}
                 self.position_stop_losses[symbol][position_type] = new_sl
 
-                logger.info(f"[TRAILING] {symbol} {position_type} LONG: New high ${current_highest:.2f}, SL updated to ${new_sl:.2f} ({trail_pct*100:.0f}% trail, conf: {confidence:.2f})")
+                logger.info(f"[TRAILING] {symbol} {position_type} LONG: New high ${current_highest:.2f}, SL updated to ${new_sl:.2f} ({trail_pct*100:.0f}% trail, conf: {confidence:.2f}, {'AI-suggested' if ai_trailing_pct else 'confidence-based'})")
 
         elif position_size < 0:  # SHORT position
             # Track lowest price reached
@@ -150,7 +172,7 @@ class PositionManager:
                     self.position_stop_losses[symbol] = {}
                 self.position_stop_losses[symbol][position_type] = new_sl
 
-                logger.info(f"[TRAILING] {symbol} {position_type} SHORT: New low ${current_lowest:.2f}, SL updated to ${new_sl:.2f} ({trail_pct*100:.0f}% trail, conf: {confidence:.2f})")
+                logger.info(f"[TRAILING] {symbol} {position_type} SHORT: New low ${current_lowest:.2f}, SL updated to ${new_sl:.2f} ({trail_pct*100:.0f}% trail, conf: {confidence:.2f}, {'AI-suggested' if ai_trailing_pct else 'confidence-based'})")
 
     def check_position_sl_tp(self, symbol: str, snapshot, position_type: str, position_size: float, current_price: float) -> Optional[str]:
         """
@@ -286,6 +308,14 @@ class PositionManager:
                     del self.position_lowest_prices[symbol][position_type]
             else:
                 del self.position_lowest_prices[symbol]
+
+        # Clear AI-suggested trailing stop percentage
+        if symbol in self.position_trailing_stop_pct:
+            if isinstance(self.position_trailing_stop_pct[symbol], dict):
+                if position_type in self.position_trailing_stop_pct[symbol]:
+                    del self.position_trailing_stop_pct[symbol][position_type]
+            else:
+                del self.position_trailing_stop_pct[symbol]
 
         # Clear leverage and risk/reward tracking
         if symbol in self.position_leverages:

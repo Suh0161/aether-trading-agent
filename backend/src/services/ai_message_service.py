@@ -334,7 +334,7 @@ Remember: This is your introduction. Be warm but professional."""
         self.cycle_api_client = api_client
 
         # === ALWAYS SEND: Important actions (trades) ===
-        if decision.action in ["long", "sell", "close"]:
+        if decision.action in ["long", "short", "close"]:
             message = self.generate_ai_message(
                 decision, snapshot, position_size, equity,
                 available_cash, unrealized_pnl, all_snapshots, realized_pnl=realized_pnl

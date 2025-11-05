@@ -3,6 +3,8 @@
 import logging
 import os
 import time
+from datetime import datetime
+from typing import Any, Optional
 
 from src.utils.snapshot_utils import get_price_from_snapshot
 
@@ -185,204 +187,350 @@ class SymbolProcessor:
                 logger.info(f"  {symbol}: Agent paused - halting before decision provider")
                 return
 
-            # COST OPTIMIZATION: Skip LLM call if market hasn't changed significantly
-            should_skip_llm = self._should_skip_llm_call(symbol, snapshot, position_size, cycle_count)
+            # ====================================================================
+            # NEW APPROACH: Check BOTH strategies independently (no priority!)
+            # ====================================================================
+            self._process_both_strategies_independently(symbol, snapshot, swing_position, scalp_position, equity, cycle_count, current_price, api_client)
+            return  # Both strategies processed independently
+    def _process_both_strategies_independently(self, symbol: str, snapshot: Any, swing_position: float,
+                                               scalp_position: float, equity: float, cycle_count: int,
+                                               current_price: float, api_client: Any):
+        """
+        Process both SWING and SCALP strategies independently - no priority, no fallback!
+        Both strategies can execute simultaneously if they find opportunities.
+        """
 
-            if should_skip_llm:
-                # Use cached "hold" decision from last call
-                logger.info(f"  {symbol}: Step 3: Skipping LLM call - market unchanged")
-                raw_llm_output = '{"action": "hold", "size_pct": 0.0, "reason": "Market unchanged - waiting for significant movement"}'
+        # ====================================================================
+        # PROCESS SWING STRATEGY
+        # ====================================================================
+        swing_decision = self._get_strategy_decision(symbol, snapshot, swing_position, equity,
+                                                     cycle_count, 'swing', current_price)
+        
+        # ALWAYS log decision details (even for HOLD)
+        if swing_decision:
+            confidence = getattr(swing_decision, 'confidence', 0.0)
+            confidence_str = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else str(confidence)
+            reason = getattr(swing_decision, 'reason', 'N/A')
+            
+            if swing_decision.action in ["long", "short", "close"]:
+                # Detailed logging for actual trades
+                logger.info(f"  {symbol}: Step 3: Getting decision from Strategy...")
+                logger.info(f"  {symbol}: ========================================")
+                logger.info(f"  {symbol}: SYMBOL: {symbol}")
+                logger.info(f"  {symbol}: STRATEGY: SWING")
+                logger.info(f"  {symbol}: ACTION: {swing_decision.action.upper()}")
+                logger.info(f"  {symbol}: CONFIDENCE: {confidence_str}")
+                logger.info(f"  {symbol}: PRICE: ${current_price:,.2f}")
+                logger.info(f"  {symbol}: STRATEGY REASONING: {reason}")
+                logger.info(f"  {symbol}: ========================================")
+                logger.info(f"  {symbol}: SWING opportunity found - executing {swing_decision.action.upper()}")
+                self._execute_strategy_decision(swing_decision, symbol, snapshot, cycle_count, equity, api_client, 'swing')
             else:
-                logger.info(f"  {symbol}: Step 3: Getting decision from LLM...")
+                # Compact table format for HOLD decisions
+                logger.info(f"  {symbol}: Step 3: {symbol} | SWING | HOLD | Conf: {confidence_str} | Price: ${current_price:,.2f} | {reason[:60]}...")
+                logger.info(f"  {symbol}: Step 4: Parsing decision... (HOLD - no parsing needed)")
+                logger.info(f"  {symbol}: Step 5: Validating with risk manager... (HOLD - validation skipped)")
+                logger.info(f"  {symbol}: Step 6: Executing trade... (HOLD - no execution needed)")
+                logger.debug(f"  {symbol}: SWING HOLD Reasoning: {reason}")
+
+        # ====================================================================
+        # PROCESS SCALP STRATEGY (independent of swing!)
+        # ====================================================================
+        scalp_decision = self._get_strategy_decision(symbol, snapshot, scalp_position, equity,
+                                                     cycle_count, 'scalp', current_price)
+        
+        # ALWAYS log decision details (even for HOLD)
+        if scalp_decision:
+            confidence = getattr(scalp_decision, 'confidence', 0.0)
+            confidence_str = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else str(confidence)
+            reason = getattr(scalp_decision, 'reason', 'N/A')
+            
+            if scalp_decision.action in ["long", "short", "close"]:
+                # Detailed logging for actual trades
+                logger.info(f"  {symbol}: Step 3: Getting decision from Strategy...")
+                logger.info(f"  {symbol}: ========================================")
+                logger.info(f"  {symbol}: SYMBOL: {symbol}")
+                logger.info(f"  {symbol}: STRATEGY: SCALP")
+                logger.info(f"  {symbol}: ACTION: {scalp_decision.action.upper()}")
+                logger.info(f"  {symbol}: CONFIDENCE: {confidence_str}")
+                logger.info(f"  {symbol}: PRICE: ${current_price:,.2f}")
+                logger.info(f"  {symbol}: STRATEGY REASONING: {reason}")
+                logger.info(f"  {symbol}: ========================================")
+                logger.info(f"  {symbol}: SCALP opportunity found - executing {scalp_decision.action.upper()}")
+                self._execute_strategy_decision(scalp_decision, symbol, snapshot, cycle_count, equity, api_client, 'scalp')
+            else:
+                # Compact table format for HOLD decisions
+                logger.info(f"  {symbol}: Step 3: {symbol} | SCALP | HOLD | Conf: {confidence_str} | Price: ${current_price:,.2f} | {reason[:60]}...")
+                logger.info(f"  {symbol}: Step 4: Parsing decision... (HOLD - no parsing needed)")
+                logger.info(f"  {symbol}: Step 5: Validating with risk manager... (HOLD - validation skipped)")
+                logger.info(f"  {symbol}: Step 6: Executing trade... (HOLD - no execution needed)")
+                logger.debug(f"  {symbol}: SCALP HOLD Reasoning: {reason}")
+
+        # Log results (only for trades, HOLD is already logged compactly)
+        if (swing_decision and swing_decision.action in ["long", "short", "close"]) or \
+           (scalp_decision and scalp_decision.action in ["long", "short", "close"]):
+            swing_action = swing_decision.action.upper() if swing_decision else "NONE"
+            scalp_action = scalp_decision.action.upper() if scalp_decision else "NONE"
+            logger.info(f"  {symbol}: Strategy results - SWING: {swing_action}, SCALP: {scalp_action}")
+
+    def _get_strategy_decision(self, symbol: str, snapshot: Any, position_size: float, equity: float,
+                               cycle_count: int, strategy_type: str, current_price: float) -> Optional[Any]:
+        """
+        Get decision for a specific strategy type (swing or scalp).
+        """
+        try:
+            # Inject position-specific data for the strategy
+            entry_timestamp = None
+            entry_price = None
+
+            if abs(position_size) > 0.0001 and symbol in self.position_manager.position_entry_timestamps:
+                entry_timestamp_dict = self.position_manager.position_entry_timestamps.get(symbol)
+                entry_price_dict = self.position_manager.position_entry_prices.get(symbol, {})
+
+                if isinstance(entry_timestamp_dict, dict):
+                    entry_timestamp = entry_timestamp_dict.get(strategy_type)
+                if isinstance(entry_price_dict, dict):
+                    entry_price = entry_price_dict.get(strategy_type)
+
+            # Inject into snapshot
+            if entry_timestamp is not None and entry_timestamp > 0:
+                from src.tiered_data import EnhancedMarketSnapshot
+                if isinstance(snapshot, EnhancedMarketSnapshot):
+                    snapshot.original.indicators['position_entry_timestamp'] = entry_timestamp
+                    if entry_price is not None:
+                        snapshot.original.indicators['position_entry_price'] = entry_price
+                else:
+                    snapshot.indicators['position_entry_timestamp'] = entry_timestamp
+                    if entry_price is not None:
+                        snapshot.indicators['position_entry_price'] = entry_price
+
+            # Get decision based on strategy type
+            if strategy_type == 'swing':
+                # For swing, use ATR strategy directly
+                from src.strategies.atr_breakout_strategy import ATRBreakoutStrategy
+                strategy = ATRBreakoutStrategy()
+                decision = strategy.analyze(snapshot, position_size, equity, suppress_logs=True)
+                decision.position_type = 'swing'
+            elif strategy_type == 'scalp':
+                # For scalp, use scalping strategy directly
+                from src.strategies.scalping_strategy import ScalpingStrategy
+                strategy = ScalpingStrategy()
+                decision = strategy.analyze(snapshot, position_size, equity, suppress_logs=True)
+                decision.position_type = 'scalp'
+            else:
+                return None
+
+            # Apply AI filter if using HybridDecisionProvider (has AI filter for confidence assessment)
+            if hasattr(self.decision_provider, 'ai_filter'):
+                # Optional: skip AI call if market is stable to meet cycle budget
                 try:
-                    raw_llm_output = self.decision_provider.get_decision(
-                        snapshot, position_size, equity
-                    )
-                    # Log full raw LLM output (AI reasoning is in the "reason" field)
-                    logger.info(f"  {symbol}:   Raw LLM output: {raw_llm_output}")
-
-                    # Check if agent is paused after LLM call
-                    if os.path.exists(pause_flag):
-                        logger.info(f"  {symbol}: Agent paused - halting after decision provider")
-                        return
-
-                    # Track this LLM call for future cost optimization
-                    from src.utils.snapshot_utils import get_base_snapshot
-                    snapshot_for_tracking = get_base_snapshot(snapshot)
+                    if self._should_skip_llm_call(symbol, snapshot, position_size, cycle_count):
+                        logger.info(f"  {symbol}: Skipping AI filter (stable market / recent analysis)")
+                        return decision
+                except Exception:
+                    pass
+                # Calculate total margin used for capital awareness
+                total_margin_used = 0.0
+                all_symbols = []
+                try:
+                    if hasattr(self.config, 'symbols'):
+                        all_symbols = self.config.symbols
+                    else:
+                        all_symbols = [symbol]
+                    
+                    # Calculate total margin used across all positions
+                    for sym in all_symbols:
+                        swing_pos = self.position_manager.get_position_by_type(sym, 'swing')
+                        scalp_pos = self.position_manager.get_position_by_type(sym, 'scalp')
+                        if abs(swing_pos) > 0.0001 or abs(scalp_pos) > 0.0001:
+                            entry_dict = self.position_manager.position_entry_prices.get(sym, {})
+                            if isinstance(entry_dict, dict):
+                                swing_entry = entry_dict.get('swing', snapshot.price)
+                                scalp_entry = entry_dict.get('scalp', snapshot.price)
+                            else:
+                                swing_entry = entry_dict if entry_dict else snapshot.price
+                                scalp_entry = snapshot.price
+                            
+                            if abs(swing_pos) > 0.0001:
+                                lev_dict = self.position_manager.position_leverages.get(sym, {})
+                                if isinstance(lev_dict, dict):
+                                    leverage = lev_dict.get('swing', 1.0)
+                                else:
+                                    leverage = lev_dict if lev_dict else 1.0
+                                position_notional = abs(swing_pos) * swing_entry
+                                total_margin_used += position_notional / leverage if leverage > 0 else position_notional
+                            
+                            if abs(scalp_pos) > 0.0001:
+                                lev_dict = self.position_manager.position_leverages.get(sym, {})
+                                if isinstance(lev_dict, dict):
+                                    leverage = lev_dict.get('scalp', 1.0)
+                                else:
+                                    leverage = 1.0
+                                position_notional = abs(scalp_pos) * scalp_entry
+                                total_margin_used += position_notional / leverage if leverage > 0 else position_notional
+                except Exception as e:
+                    logger.debug(f"Could not calculate total margin: {e}")
+                    all_symbols = [symbol]
+                    total_margin_used = abs(position_size) * snapshot.price if position_size != 0 else 0.0
+                
+                # Apply AI filter (from HybridDecisionProvider) - AI assesses confidence dynamically!
+                logger.info(f"  {symbol}: Calling AI filter for {strategy_type.upper()} {decision.action.upper()} (strategy confidence: {decision.confidence:.2f})...")
+                approved, ai_suggested_leverage, ai_confidence = self.decision_provider.ai_filter.filter_signal(
+                    snapshot, decision, position_size, equity, total_margin_used, all_symbols
+                )
+                # Record last LLM call snapshot for budget control
+                try:
                     self.last_llm_call[symbol] = {
                         'price': get_price_from_snapshot(snapshot),
-                        'cycle': cycle_count,
-                        'timestamp': snapshot_for_tracking.timestamp,
-                        'volume_1h': snapshot_for_tracking.indicators.get('volume_ratio_1h', 1.0),
-                        'volume_5m': snapshot_for_tracking.indicators.get('volume_ratio_5m', 1.0)
+                        'timestamp': int(time.time()),
+                        'cycle': cycle_count
                     }
-
-                    if position_size == 0:
-                        # Log decision for new entry evaluation (only at DEBUG for cleaner output)
-                        temp_parsed = self.decision_parser.parse(raw_llm_output)
-                        temp_confidence = getattr(temp_parsed, 'confidence', 0.0)
-                        logger.debug(f"  {symbol}: {temp_parsed.action} (confidence: {temp_confidence:.2f})")
-                except Exception as e:
-                    logger.error(f"  {symbol}: Decision provider failed: {e}")
-                    raw_llm_output = f"Error: {str(e)}"
-
-        # ====================================================================
-        # STEP 4: Parse decision
-        # ====================================================================
-        logger.info(f"  {symbol}: Step 4: Parsing decision...")
-        decision = self.decision_parser.parse(raw_llm_output)
-        logger.info(f"  {symbol}:   Action: {decision.action}, Size: {decision.size_pct*100:.1f}%, Confidence: {getattr(decision, 'confidence', 0.0):.2f}")
-        logger.info(f"  {symbol}:   AI Reasoning: {decision.reason}")
-
-        # ====================================================================
-        # STEP 5: Validate with risk manager
-        # ====================================================================
-        # Store decision for cycle status messages
-        self.current_cycle_decisions[symbol] = {
-            'decision': decision,
-            'snapshot': snapshot,
-            'position_size': position_size,
-            'executed': False,
-            'risk_approved': False,
-            'risk_reason': None
-        }
-
-        # Get the actual position size for this decision type (important for risk validation)
-        decision_position_size = position_size
-        if hasattr(decision, 'position_type') and decision.position_type:
-            decision_position_size = self.position_manager.get_position_by_type(symbol, decision.position_type)
-        else:
-            # Backward compatibility: if no position_type, use total
-            decision_position_size = position_size
-
-        # Validate with risk manager
-        logger.info(f"  {symbol}: Step 5: Validating with risk manager...")
-        risk_approved, risk_reason = self.risk_manager.validate_decision(
-            decision, snapshot, decision_position_size, equity, symbol
-        )
-        logger.info(f"  {symbol}:   Approved: {risk_approved}" + (f" ({risk_reason})" if risk_reason else ""))
-
-        self.current_cycle_decisions[symbol]['risk_approved'] = risk_approved
-        self.current_cycle_decisions[symbol]['risk_reason'] = risk_reason
-
-        if not risk_approved:
-            logger.info(f"  {symbol}: Risk check FAILED - {risk_reason}")
-            logger.info(f"  {symbol}: Decision blocked: {decision.action} -> hold")
-            decision.action = "hold"
-            decision.size_pct = 0.0
-            decision.reason = f"Risk check failed: {risk_reason}"
-
-        # ====================================================================
-        # STEP 6: Execute trade if approved
-        # ====================================================================
-        logger.info(f"  {symbol}: Step 6: Executing trade...")
-        if decision.action == "hold":
-            logger.info(f"  {symbol}:   Action is 'hold', no execution needed")
-            logger.info(f"  {symbol}:   Executed: False")
-        elif decision.action in ["long", "short", "close"]:
-            logger.info(f"  {symbol}:   Executing {decision.action.upper()}")
-
-            execution_result = None  # Store for JSON logging
-            try:
-                execution_result = self.trade_executor.execute(decision, snapshot, decision_position_size, equity)
-                executed = execution_result.executed
-                self.current_cycle_decisions[symbol]['executed'] = executed
-                self.current_cycle_decisions[symbol]['execution_result'] = execution_result  # Store for JSON logging
-
-                if executed:
-                    # Update position tracking after successful execution
-                    self._update_position_tracking_after_trade(decision, snapshot, symbol, cycle_count)
-
-                    logger.info(f"  {symbol}:   Executed: True")
-                    logger.info(f"  {symbol}:   ✓ Trade executed successfully")
-
-                    # Log trade to frontend
-                    if api_client and hasattr(api_client, 'log_trade'):
-                        try:
-                            api_client.log_trade({
-                                'symbol': symbol,
-                                'action': decision.action,
-                                'size_pct': decision.size_pct,
-                                'reason': decision.reason,
-                                'price': get_price_from_snapshot(snapshot),
-                                'timestamp': int(time.time()),
-                                'position_type': getattr(decision, 'position_type', 'swing')
-                            })
-                        except Exception as e:
-                            logger.debug(f"Failed to log trade to frontend: {e}")
+                except Exception:
+                    pass
+                
+                logger.debug(f"  {symbol}: AI filter returned: approved={approved}, leverage={ai_suggested_leverage}, confidence={ai_confidence}")
+                
+                # Use AI confidence if provided (AI overrides hardcoded strategy confidence)
+                # IMPORTANT: Apply confidence BEFORE checking veto status
+                if ai_confidence is not None:
+                    original_confidence = decision.confidence
+                    decision.confidence = ai_confidence
+                    logger.info(f"  {symbol}: [AI CONFIDENCE OVERRIDE] {ai_confidence:.2f} (strategy had: {original_confidence:.2f})")
                 else:
-                    logger.info(f"  {symbol}:   Executed: False")
-                    logger.warning(f"  {symbol}:   ✗ Trade execution failed")
+                    logger.warning(f"  {symbol}: [WARNING] AI did not provide confidence assessment - using strategy confidence: {decision.confidence:.2f}")
 
-            except Exception as e:
-                logger.error(f"  {symbol}: Trade execution error: {e}")
-                self.current_cycle_decisions[symbol]['executed'] = False
-                execution_result = None
+                # Precision Mode: compute objective entry qualifier and fuse with confidence
+                try:
+                    if decision.action in ["long", "short"]:
+                        from src.decision_filters.entry_qualifier import compute_entry_qualifier
+                        direction = "long" if decision.action == "long" else "short"
+                        qualifier = compute_entry_qualifier(snapshot, decision.position_type, direction)
+                        fused = max(0.0, min(1.0, 0.7 * decision.confidence + 0.3 * qualifier))
+                        decision.confidence = fused
+                        decision.reason = f"{decision.reason} | EntryQualifier={qualifier:.2f} -> FusedConf={fused:.2f}"
+                        # Attach for downstream risk checks (optional)
+                        setattr(decision, 'entry_qualifier', qualifier)
+                        logger.info(f"  {symbol}: PRECISION MODE -> Qualifier={qualifier:.2f}, FusedConf={fused:.2f}")
+                except Exception as e:
+                    logger.debug(f"  {symbol}: Entry qualifier computation failed: {e}")
+                
+                # If AI vetoed and it's a trade decision, convert to hold (but keep AI confidence if provided)
+                if not approved and decision.action in ["long", "short", "close"]:
+                    logger.info(f"  {symbol}: AI VETOED {decision.action.upper()} - converting to HOLD")
+                    decision.action = "hold"
+                    decision.size_pct = 0.0
+                    # Keep AI confidence if provided, otherwise set to 0.0
+                    if ai_confidence is None:
+                        decision.confidence = 0.0
+                    decision.reason = f"AI vetoed setup (confidence: {decision.confidence:.2f})"
+                
+                # For HOLD decisions that AI vetoed: AI found opportunity, keep confidence but stay HOLD for now
+                # (Future: Could convert to trade if AI approves with high confidence)
+                if not approved and decision.action == "hold" and ai_confidence is not None:
+                    logger.info(f"  {symbol}: AI found opportunity (conf: {ai_confidence:.2f}) but decision remains HOLD")
 
-        # ====================================================================
-        # STEP 7: Send AI message about decision
-        # ====================================================================
-        logger.info(f"  {symbol}: Step 7: Sending AI message...")
-        if api_client and hasattr(decision, 'action'):
-            try:
-                available_cash = equity  # Simplified - would need proper calculation
-                unrealized_pnl = 0.0  # Simplified - would need proper calculation
-
-                self.ai_message_service.send_smart_agent_message(
-                    decision, snapshot, position_size, equity,
-                    available_cash, unrealized_pnl, cycle_count,
-                    api_client, all_snapshots
-                )
-            except Exception as e:
-                logger.debug(f"Failed to send AI message: {e}")
-
-        # ====================================================================
-        # STEP 8: Log cycle data to JSON for AI memory and audit trail
-        # ====================================================================
-        logger.debug(f"  {symbol}: Step 8: Logging cycle data to JSON...")
-        try:
-            from src.models import CycleLog
-            import time
-
-            # Get execution result for detailed logging
-            execution_result = self.current_cycle_decisions.get(symbol, {}).get('execution_result')
-
-            # Create comprehensive cycle log
-            cycle_log = CycleLog(
-                timestamp=int(time.time()),
-                symbol=symbol,
-                market_price=get_price_from_snapshot(snapshot),
-                position_before=position_size,
-                llm_raw_output=raw_llm_output if 'raw_llm_output' in locals() else '',
-                parsed_action=decision.action if decision else '',
-                parsed_size_pct=getattr(decision, 'size_pct', 0.0) if decision else 0.0,
-                parsed_reason=getattr(decision, 'reason', '') if decision else '',
-                risk_approved=self.current_cycle_decisions.get(symbol, {}).get('risk_approved', False),
-                risk_reason=self.current_cycle_decisions.get(symbol, {}).get('risk_reason', ''),
-                executed=self.current_cycle_decisions.get(symbol, {}).get('executed', False),
-                order_id=execution_result.order_id if execution_result else None,
-                filled_size=execution_result.filled_size if execution_result else None,
-                fill_price=execution_result.fill_price if execution_result else None,
-                mode=self.config.run_mode  # Use actual run mode from config
-            )
-
-            # Log to JSON file for AI memory and audit trail
-            if hasattr(self, 'logger') and self.logger:
-                logger.debug(f"  {symbol}:   Logger available, calling log_cycle...")
-                self.logger.log_cycle(cycle_log)
-                logger.debug(f"  {symbol}:   JSON logging completed")
-            else:
-                logger.warning(f"  {symbol}:   Logger not available for JSON logging")
+            return decision
 
         except Exception as e:
-            logger.warning(f"Failed to log cycle data to JSON: {e}")
+            logger.error(f"  {symbol}: Error getting {strategy_type} decision: {e}")
+            return None
+
+    def _execute_strategy_decision(self, decision: Any, symbol: str, snapshot: Any, cycle_count: int,
+                                   equity: float, api_client: Any, strategy_type: str = None):
+        """
+        Execute a strategy decision (long/short/close).
+        """
+        try:
+            # Parse decision to get proper format
+            logger.info(f"  {symbol}: Step 4: Parsing decision...")
+            raw_decision = (
+                f'{{"action": "{decision.action}", "size_pct": {decision.size_pct}, '
+                f'"reason": "{decision.reason}", "position_type": "{decision.position_type}", '
+                f'"confidence": {getattr(decision, "confidence", 0.0):.2f}}}'
+            )
+            parsed_decision = self.decision_parser.parse(raw_decision)
+
+            # Step 5: Validating with risk manager
+            logger.info(f"  {symbol}: Step 5: Validating with risk manager...")
+            risk_approved, risk_reason = self.risk_manager.validate_decision(
+                parsed_decision, snapshot, abs(self.position_manager.get_position_by_type(symbol, decision.position_type)), equity, symbol
+            )
+
+            if not risk_approved:
+                logger.warning(f"  {symbol}: {decision.position_type.upper()} decision BLOCKED by risk manager: {risk_reason}")
+                return
+
+            # Step 6: Executing trade
+            logger.info(f"  {symbol}: Step 6: Executing trade...")
+            confidence = getattr(decision, 'confidence', 0.0)
+            confidence_str = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else str(confidence)
+            reason = getattr(decision, 'reason', 'N/A')
+            logger.info(f"  {symbol}: ========================================")
+            logger.info(f"  {symbol}: SYMBOL: {symbol}")
+            logger.info(f"  {symbol}: STRATEGY: {decision.position_type.upper()}")
+            logger.info(f"  {symbol}: ACTION: {decision.action.upper()}")
+            logger.info(f"  {symbol}: CONFIDENCE: {confidence_str}")
+            logger.info(f"  {symbol}: PRICE: ${snapshot.price:,.2f}")
+            logger.info(f"  {symbol}: AI REASONING: {reason}")
+            logger.info(f"  {symbol}: ========================================")
+
+            # Ensure per-symbol decision record exists for this cycle before execution
+            if symbol not in self.current_cycle_decisions:
+                self.current_cycle_decisions[symbol] = {}
+
+            execution_result = self.trade_executor.execute(parsed_decision, snapshot,
+                                                         self.position_manager.get_position_by_type(symbol, decision.position_type),
+                                                         equity)
+
+            executed = execution_result.executed
+            self.current_cycle_decisions[symbol]['executed'] = executed
+
+            if executed:
+                # Update position tracking
+                self._update_position_tracking_after_trade(parsed_decision, snapshot, symbol, cycle_count, execution_result)
+
+                # Log success with detailed information
+                fill_price = getattr(execution_result, 'fill_price', snapshot.price)
+                filled_size = getattr(execution_result, 'filled_size', 0.0)
+                order_id = getattr(execution_result, 'order_id', 'N/A')
+                leverage_used = getattr(parsed_decision, 'leverage', 1.0)
+
+                logger.info(f"  {symbol}: [SUCCESS] {decision.position_type.upper()} {decision.action.upper()} executed")
+                logger.info(f"  {symbol}:   Fill Price: ${fill_price:,.2f}, Size: {filled_size:.6f}")
+                logger.info(f"  {symbol}:   Order ID: {order_id}, Leverage: {leverage_used:.1f}x")
+
+                # Send to frontend
+                if api_client and decision.action == "close":
+                    position_type = getattr(parsed_decision, 'position_type', 'swing')
+                    self._log_completed_trade(symbol, parsed_decision, snapshot, execution_result, position_type, api_client)
+            else:
+                logger.warning(f"  {symbol}: [FAILED] {decision.position_type.upper()} {decision.action.upper()} not executed")
+
+        except Exception as e:
+            logger.error(f"  {symbol}: Error executing {strategy_type} decision: {e}")
 
     def _should_skip_llm_call(self, symbol: str, snapshot, position_size: float, cycle_count: int) -> bool:
-        """Check if LLM call should be skipped for cost optimization."""
-        # Implementation would go here - simplified for refactoring
-        return False
+        """Check if LLM call should be skipped to reduce cycle time and cost.
 
-    def _update_position_tracking_after_trade(self, decision, snapshot, symbol: str, cycle_count: int):
+        Skip when:
+        - Price change vs last AI call < 0.2%
+        - And last AI call was < 45s ago
+        """
+        try:
+            now = int(time.time())
+            current_price = get_price_from_snapshot(snapshot)
+            rec = self.last_llm_call.get(symbol)
+            if rec and current_price > 0 and rec.get('price'):
+                delta = abs(current_price - rec['price']) / current_price
+                recent = (now - rec.get('timestamp', 0)) < 45
+                if delta < 0.002 and recent:
+                    return True
+            # Update record only when we truly call AI (handled at call site)
+            return False
+        except Exception:
+            return False
+
+    def _update_position_tracking_after_trade(self, decision, snapshot, symbol: str, cycle_count: int, execution_result=None):
         """Update position tracking after a successful trade."""
         try:
             position_type = getattr(decision, 'position_type', 'swing')  # Default to swing if not specified
@@ -487,3 +635,53 @@ class SymbolProcessor:
 
         except Exception as e:
             logger.error(f"  {symbol}: Failed to update position tracking: {e}")
+
+    def _log_completed_trade(self, symbol: str, decision, snapshot, execution_result, position_type: str, api_client):
+        """Log completed trades to frontend."""
+        try:
+            # Calculate PnL for the trade
+            entry_price = getattr(execution_result, 'entry_price', get_price_from_snapshot(snapshot))
+            exit_price = getattr(execution_result, 'fill_price', get_price_from_snapshot(snapshot))
+            quantity = getattr(execution_result, 'filled_size', abs(decision.size_pct))
+            
+            if decision.action == "close":
+                # Calculate realized PnL
+                if position_type == "long":
+                    realized_pnl = (exit_price - entry_price) * quantity
+                else:  # short
+                    realized_pnl = (entry_price - exit_price) * quantity
+                
+                # Calculate holding time
+                entry_timestamp = None
+                if symbol in self.position_manager.position_entry_timestamps:
+                    timestamp_dict = self.position_manager.position_entry_timestamps.get(symbol, {})
+                    if isinstance(timestamp_dict, dict):
+                        entry_timestamp = timestamp_dict.get(position_type)
+                
+                holding_time = "Unknown"
+                if entry_timestamp:
+                    holding_seconds = int(time.time()) - entry_timestamp
+                    if holding_seconds < 3600:
+                        holding_time = f"{holding_seconds // 60}m"
+                    else:
+                        holding_time = f"{holding_seconds // 3600}h {(holding_seconds % 3600) // 60}m"
+                
+                # Send to frontend
+                trade_data = {
+                    "symbol": symbol,
+                    "position_type": position_type,
+                    "action": decision.action,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "quantity": quantity,
+                    "pnl": realized_pnl,
+                    "holding_time": holding_time,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                if api_client:
+                    api_client.add_trade(trade_data)
+                    logger.debug(f"  {symbol}: Completed trade logged to frontend")
+                
+        except Exception as e:
+            logger.warning(f"Failed to log completed trade: {e}")

@@ -1,6 +1,10 @@
 """Order book analyzer for Tier 2 microstructure data."""
 
-import ccxt
+try:
+    import ccxt
+except ImportError:
+    # Fallback for CCXT installation issues
+    ccxt = None
 import logging
 from typing import Dict, Optional, List
 from src.tiered_data import Tier2Data
@@ -12,7 +16,7 @@ logger = logging.getLogger(__name__)
 class OrderBookAnalyzer:
     """Analyzes order book to extract microstructure signals."""
     
-    def __init__(self, exchange: ccxt.Exchange):
+    def __init__(self, exchange):
         """
         Initialize order book analyzer.
         
@@ -29,7 +33,7 @@ class OrderBookAnalyzer:
         # Order book is a public endpoint and doesn't require authentication
         self._init_public_exchange(exchange)
     
-    def _init_public_exchange(self, exchange: ccxt.Exchange):
+    def _init_public_exchange(self, exchange):
         """
         Create a public-only exchange instance for order book fetching.
         Order book is a public endpoint and doesn't require API keys.

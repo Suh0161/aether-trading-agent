@@ -2,13 +2,22 @@
 
 import logging
 from typing import Dict, List
-import pandas as pd
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
 logger = logging.getLogger(__name__)
 
 
 class TechnicalIndicatorCalculator:
     """Calculates technical indicators from OHLCV data."""
+
+    def __init__(self):
+        """Initialize technical indicator calculator."""
+        self._pandas_available = pd is not None
+        if not self._pandas_available:
+            logger.warning("Pandas not available, using fallback calculations")
 
     def compute_indicators(self, ohlcv: List[List[float]]) -> Dict[str, float]:
         """
@@ -21,6 +30,10 @@ class TechnicalIndicatorCalculator:
             Dictionary of indicator values
         """
         try:
+            if not self._pandas_available:
+                # Return basic indicators without pandas
+                return self._compute_basic_indicators(ohlcv)
+
             # Convert OHLCV to pandas DataFrame
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
@@ -212,5 +225,110 @@ class TechnicalIndicatorCalculator:
 
         except Exception as e:
             logger.error(f"Failed to compute indicators: {e}")
-            # Return empty indicators on failure
+            # Return basic indicators on failure
+            return self._compute_basic_indicators(ohlcv)
+
+    def _compute_basic_indicators(self, ohlcv):
+        """Compute basic indicators without pandas as fallback."""
+        if not ohlcv or len(ohlcv) < 15:  # Need at least 15 candles for ATR calculation
             return {}
+
+        # Extract OHLC data (CCXT format: [timestamp, open, high, low, close, volume])
+        # Verify we have valid candle data
+        if len(ohlcv) == 0:
+            logger.warning("No OHLCV data provided for indicator calculation")
+            return {}
+        
+        # Validate candle structure
+        if len(ohlcv[0]) < 5:
+            logger.error(f"Invalid candle format: expected 6 elements [timestamp, open, high, low, close, volume], got {len(ohlcv[0])}")
+            return {}
+        
+        highs = [candle[2] for candle in ohlcv[-50:]]   # Last 50 highs (index 2)
+        lows = [candle[3] for candle in ohlcv[-50:]]    # Last 50 lows (index 3)
+        closes = [candle[4] for candle in ohlcv[-50:]]  # Last 50 closes (index 4)
+        
+        logger.debug(f"Processing {len(ohlcv)} candles, using last {len(closes)} closes for indicators")
+
+        indicators = {}
+
+        # Exponential Moving Averages (EMA) - NOT Simple Moving Averages!
+        # EMA formula: EMA(today) = Price(today) × α + EMA(yesterday) × (1 - α)
+        # where α = 2 / (period + 1)
+        if len(closes) >= 50:
+            # Start with SMA for first value, then apply EMA formula
+            ema_50 = sum(closes[:50]) / 50  # Initial value (SMA)
+            alpha_50 = 2.0 / (50 + 1)  # Smoothing factor for EMA(50)
+            for i in range(50, len(closes)):
+                ema_50 = closes[i] * alpha_50 + ema_50 * (1 - alpha_50)
+            indicators['ema_50'] = ema_50
+        
+        if len(closes) >= 20:
+            # Start with SMA for first value, then apply EMA formula
+            ema_20 = sum(closes[:20]) / 20  # Initial value (SMA)
+            alpha_20 = 2.0 / (20 + 1)  # Smoothing factor for EMA(20)
+            for i in range(20, len(closes)):
+                ema_20 = closes[i] * alpha_20 + ema_20 * (1 - alpha_20)
+            indicators['ema_20'] = ema_20
+
+        # ATR (Average True Range) calculation - critical for ATR breakout strategy
+        # Formula: TR = max(high-low, abs(high-prev_close), abs(low-prev_close))
+        # ATR = SMA of True Range over 14 periods
+        if len(highs) >= 15 and len(lows) >= 15 and len(closes) >= 15:
+            true_ranges = []
+            # Calculate True Range for each period (need 14 periods for ATR(14))
+            for i in range(1, len(closes)):
+                tr1 = highs[i] - lows[i]  # Current high - current low
+                tr2 = abs(highs[i] - closes[i-1])  # Current high - previous close
+                tr3 = abs(lows[i] - closes[i-1])   # Current low - previous close
+                true_range = max(tr1, tr2, tr3)
+                true_ranges.append(true_range)
+            
+            # Calculate ATR as SMA of last 14 True Ranges
+            if len(true_ranges) >= 14:
+                atr_value = sum(true_ranges[-14:]) / 14
+            elif len(true_ranges) > 0:
+                # Use available periods if less than 14
+                atr_value = sum(true_ranges) / len(true_ranges)
+            else:
+                atr_value = 0.0
+            
+            if atr_value > 0:
+                # Ensure minimum ATR for scalping (0.1% of price as minimum)
+                current_price = closes[-1] if closes else 100000  # fallback price
+                min_atr = current_price * 0.001  # 0.1% minimum ATR
+                indicators['atr_14'] = max(atr_value, min_atr)
+            else:
+                # Fallback ATR based on recent volatility
+                if len(closes) >= 2:
+                    avg_range = sum([abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]) / (len(closes) - 1)
+                    current_price = closes[-1] if closes else 100000
+                    min_atr = current_price * 0.001  # 0.1% minimum ATR
+                    indicators['atr_14'] = max(avg_range, min_atr)
+
+        # RSI approximation
+        if len(closes) >= 14:
+            gains = []
+            losses = []
+            for i in range(1, min(15, len(closes))):
+                change = closes[i] - closes[i-1]
+                if change > 0:
+                    gains.append(change)
+                else:
+                    losses.append(-change)
+
+            avg_gain = sum(gains) / len(gains) if gains else 0
+            avg_loss = sum(losses) / len(losses) if losses else 0
+
+            if avg_loss > 0:
+                rs = avg_gain / avg_loss
+                indicators['rsi_14'] = 100 - (100 / (1 + rs))
+            else:
+                indicators['rsi_14'] = 100
+
+        # Current price
+        indicators['price'] = closes[-1] if closes else 0
+
+        logger.debug(f"Basic indicators computed: ema_50={indicators.get('ema_50', 'MISSING')}, atr_14={indicators.get('atr_14', 'MISSING')}, price={indicators.get('price', 'MISSING')}")
+        logger.debug("Using basic indicators (pandas not available)")
+        return indicators

@@ -27,6 +27,7 @@ class DecisionObject:
     symbol: str = "BTC/USDT"  # Trading symbol for this decision
     stop_loss: Optional[float] = None  # Stop loss price for position monitoring
     take_profit: Optional[float] = None  # Take profit price for position monitoring
+    trailing_stop_pct: Optional[float] = None  # Trailing stop percentage (0.05 to 0.20) - AI can adjust this
     position_type: str = "swing"  # "swing" | "scalp" - indicates trade duration style
     confidence: float = 0.0  # Confidence level 0.0 to 1.0
 

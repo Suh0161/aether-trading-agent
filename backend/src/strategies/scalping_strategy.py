@@ -83,7 +83,7 @@ class ScalpingStrategy:
             atr_5m = indicators.get("atr_14_5m", indicators.get("atr_14", 0.0))
             price_for_calc = indicators.get("price", price)
             atr_to_price_ratio = atr_5m / price_for_calc if price_for_calc > 0 else 0
-            min_vol_threshold = 0.15
+            min_vol_threshold = 0.03
             comparison = "<" if atr_to_price_ratio * 100 < min_vol_threshold else ">="
             return StrategySignal(
                 action="hold",
@@ -144,12 +144,12 @@ class ScalpingStrategy:
         if near_support:
             bias_aligned, bias_desc = get_scalp_trend_bias(indicators, "long")
             if bias_aligned and trend_5m == "bullish" and price > vwap_5m:
-                return self._handle_scalp_long_at_support(snapshot, indicators, price, equity, available_cash)
+                return self._handle_scalp_long_at_support(snapshot, indicators, price, equity, available_cash, suppress_logs=suppress_logs)
 
         if near_resistance:
             bias_aligned, bias_desc = get_scalp_trend_bias(indicators, "short")
             if bias_aligned and trend_5m == "bearish" and price < vwap_5m:
-                return self._handle_scalp_short_at_resistance(snapshot, indicators, price, equity, available_cash)
+                return self._handle_scalp_short_at_resistance(snapshot, indicators, price, equity, available_cash, suppress_logs=suppress_logs)
 
         # PRIORITY 2: Keltner Band Logic for Scalping
         # Check for long scalp entry
@@ -279,7 +279,7 @@ class ScalpingStrategy:
         return None
 
     def _handle_scalp_long_at_support(self, snapshot: Any, indicators: dict, price: float,
-                                     equity: float, available_cash: float) -> StrategySignal:
+                                     equity: float, available_cash: float, suppress_logs: bool = False) -> StrategySignal:
         """Handle LONG scalp entry at support level."""
         volume_ratio_5m = indicators.get("volume_ratio_5m", 1.0)
         volume_ratio_1m = indicators.get("volume_ratio_1m", 1.0)
@@ -322,7 +322,7 @@ class ScalpingStrategy:
                                             support_level, f"support bounce at ${support_level:.2f}")
 
     def _handle_scalp_short_at_resistance(self, snapshot: Any, indicators: dict, price: float,
-                                         equity: float, available_cash: float) -> StrategySignal:
+                                         equity: float, available_cash: float, suppress_logs: bool = False) -> StrategySignal:
         """Handle SHORT scalp entry at resistance level."""
         volume_ratio_5m = indicators.get("volume_ratio_5m", 1.0)
         volume_ratio_1m = indicators.get("volume_ratio_1m", 1.0)

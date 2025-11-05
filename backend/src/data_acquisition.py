@@ -41,11 +41,16 @@ class DataAcquisition:
         self._cached_snapshot: Optional[MarketSnapshot] = None
 
         # Initialize tiered data components
-        self.orderbook_analyzer = OrderBookAnalyzer(self.exchange_adapter.exchange)
+        try:
+            self.orderbook_analyzer = OrderBookAnalyzer(self.exchange_adapter.exchange)
+        except Exception as e:
+            self.orderbook_analyzer = None
+            logger.warning(f"OrderBookAnalyzer initialization failed: {e}")
         self.regime_classifier = RegimeClassifier()
 
         # Connect snapshot builder to analyzers
-        self.snapshot_builder.orderbook_analyzer = self.orderbook_analyzer
+        if self.orderbook_analyzer:
+            self.snapshot_builder.orderbook_analyzer = self.orderbook_analyzer
         self.snapshot_builder.regime_classifier = self.regime_classifier
 
     def _get_limit_for_timeframe(self, timeframe: str) -> int:

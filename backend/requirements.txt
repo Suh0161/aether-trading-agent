@@ -1,10 +1,19 @@
+## Core trading/AI stack (pinned for stability)
+openai==1.51.2
+httpx==0.27.2
+idna==3.7
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+requests==2.32.3
+
+## Data/indicators (optional but recommended)
+numpy==1.26.4
+pandas==2.1.4
+scipy==1.11.4
+websockets==12.0
+
+## Environment/config
+python-dotenv==1.2.1
+
+## Exchange (optional). If not installed, app uses HTTP fallback for market data
 ccxt
-python-dotenv
-openai
-pandas
-fastapi
-uvicorn[standard]
-requests
-websockets
-numpy
-scipy

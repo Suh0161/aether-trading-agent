@@ -2,7 +2,13 @@
 
 import logging
 from typing import Dict, Optional, List
-import pandas as pd
+
+try:
+    import pandas as pd
+    _pandas_available = True
+except ImportError:
+    pd = None
+    _pandas_available = False
 
 logger = logging.getLogger(__name__)
 

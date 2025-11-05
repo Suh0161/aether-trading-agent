@@ -151,7 +151,9 @@ class CycleController:
             cycle_count += 1
             cycle_start_time = time.time()
 
-            logger.info(f"\nCYCLE {cycle_count} - {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
+            # Only log cycle header on first cycle or every 5 cycles to reduce spam
+            if cycle_count == 1 or cycle_count % 5 == 0:
+                logger.info(f"\nCYCLE {cycle_count} - {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
 
             try:
                 # Check if agent is paused
@@ -209,12 +211,13 @@ class CycleController:
                     self.all_snapshots = snapshots
                     # Store first snapshot for interactive chat (backward compatibility)
                     self.last_snapshot = list(snapshots.values())[0] if snapshots else None
-                    # Aggregate prices into one line for cleaner output
-                    price_summary = ", ".join([
-                        f"{sym}: ${get_price_from_snapshot(snap):,.2f}"
-                        for sym, snap in snapshots.items()
-                    ])
-                    logger.info(f"  Markets: {price_summary}")
+                    # Aggregate prices into one line for cleaner output (only log on first cycle or every 10 cycles to reduce spam)
+                    if cycle_count == 1 or cycle_count % 10 == 0:
+                        price_summary = ", ".join([
+                            f"{sym}: ${get_price_from_snapshot(snap):,.2f}"
+                            for sym, snap in snapshots.items()
+                        ])
+                        logger.info(f"  Markets: {price_summary}")
 
                     # Step 1.5: Update frontend with initial balance (if cycle 1 and no positions yet)
                     # This ensures balance appears at startup, not just after trades
@@ -273,16 +276,41 @@ class CycleController:
                     self._sleep_until_next_cycle(cycle_start_time)
                     continue
 
-                # Step 2: Process each symbol
+                # Step 2: Process each symbol (PARALLELIZED for speed)
                 logger.info("Step 2: Processing symbols...")
                 positions = {}
                 equity = self.position_manager.tracked_equity
 
-                for symbol in self.config.symbols:
-                    self.symbol_processor.process_symbol(
-                        symbol, snapshots, positions, equity, cycle_count,
-                        self.api_client, self.all_snapshots
-                    )
+                # Process symbols in parallel using ThreadPoolExecutor to reduce cycle time
+                # Each symbol takes ~15s for 2 AI calls (swing + scalp), so parallelizing saves ~150s!
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                import threading
+                
+                positions_lock = threading.Lock()
+                
+                def process_single_symbol(symbol):
+                    """Process a single symbol and return results."""
+                    try:
+                        symbol_positions = {}
+                        self.symbol_processor.process_symbol(
+                            symbol, snapshots, symbol_positions, equity, cycle_count,
+                            self.api_client, self.all_snapshots
+                        )
+                        return symbol, symbol_positions
+                    except Exception as e:
+                        logger.error(f"Error processing {symbol}: {e}")
+                        return symbol, {}
+                
+                # Process all symbols in parallel (max 6 workers for 6 symbols)
+                with ThreadPoolExecutor(max_workers=min(len(self.config.symbols), 6)) as executor:
+                    future_to_symbol = {executor.submit(process_single_symbol, symbol): symbol 
+                                       for symbol in self.config.symbols}
+                    
+                    for future in as_completed(future_to_symbol):
+                        symbol, symbol_positions = future.result()
+                        with positions_lock:
+                            positions.update(symbol_positions)
+                        logger.debug(f"  Completed {symbol}")
 
                 # Step 3: Update frontend with all positions
                 logger.info("Step 3: Updating frontend...")
@@ -312,14 +340,13 @@ class CycleController:
                     logger.info("  Frontend updated with positions")
                 except Exception as e:
                     logger.warning(f"Failed to refresh positions/update frontend: {e}")
-                
+
                 # Send consolidated cycle summary message
                 self.ai_message_service.send_cycle_summary_message(cycle_count)
 
-                # Log cycle completion
-                logger.info("=" * 60)
-                logger.info(f"CYCLE {cycle_count} COMPLETE")
-                logger.info("=" * 60)
+                # Log cycle completion only on first cycle or every 5 cycles to reduce spam
+                if cycle_count == 1 or cycle_count % 5 == 0:
+                    logger.info(f"CYCLE {cycle_count} COMPLETE")
 
             except Exception as e:
                 logger.error(f"Cycle {cycle_count} failed: {e}")

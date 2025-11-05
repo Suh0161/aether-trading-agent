@@ -61,6 +61,34 @@ class RiskManager:
             logger.info("Risk check: hold action auto-approved")
             return True, ""
         
+        # Rule 1b: Minimum confidence gate (uses AI-overridden confidence if present)
+        # Aligns with AI filter guidance: Scalp >= 0.55, Swing >= 0.60
+        if decision.action in ["long", "short"]:
+            position_type = getattr(decision, 'position_type', 'swing')
+            min_conf = 0.55 if position_type == 'scalp' else 0.60
+            conf = getattr(decision, 'confidence', 0.0)
+            if conf < min_conf:
+                logger.warning(
+                    f"Risk check: denied - confidence {conf:.2f} below minimum {min_conf:.2f} for {position_type}"
+                )
+                return False, "confidence below minimum"
+
+            # Rule 1c: Minimum entry quality gate (precision mode)
+            try:
+                from src.decision_filters.entry_qualifier import compute_entry_qualifier
+                direction = 'long' if decision.action == 'long' else 'short'
+                qualifier = getattr(decision, 'entry_qualifier', None)
+                if qualifier is None:
+                    qualifier = compute_entry_qualifier(snapshot, position_type, direction)
+                min_q = 0.60 if position_type == 'scalp' else 0.50
+                if qualifier < min_q:
+                    logger.warning(
+                        f"Risk check: denied - entry qualifier {qualifier:.2f} below minimum {min_q:.2f} for {position_type}"
+                    )
+                    return False, "entry quality below minimum"
+            except Exception as e:
+                logger.debug(f"Precision gate skipped (qualifier failed): {e}")
+
         # Rule 2: Prevent new entries if position already exists (same direction)
         # Allow adding to position ONLY if it's the same direction (long+long or short+short)
         # But prevent opening NEW position if one already exists

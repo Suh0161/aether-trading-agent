@@ -1,7 +1,7 @@
 # AETHER - Autonomous AI Trading Agent
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
 [![React 18](https://img.shields.io/badge/react-18-blue.svg)](https://reactjs.org/)
 [![DeepSeek AI](https://img.shields.io/badge/AI-DeepSeek-purple.svg)](https://www.deepseek.com/)
 
@@ -162,7 +162,7 @@ Market Data → Strategy Signal → AI Filter → Risk Manager → Execute
 
 ## Prerequisites
 
-- **Python 3.8+** with pip
+- **Python 3.11** with pip
 - **Node.js 16+** and npm
 - **Exchange Account**: 
   - **Demo Mode**: No account needed! Uses mock equity for testing

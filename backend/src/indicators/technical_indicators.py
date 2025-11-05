@@ -292,8 +292,21 @@ def check_volatility_filter(indicators: Dict[str, Any], price: float = 0.0) -> b
     if current_price == 0:
         return False
 
-    # Minimum volatility threshold: 0.15% (ATR/price must be at least 0.15% for scalping to be viable)
-    min_vol_threshold_pct = 0.0015  # 0.15%
+    # Dynamic volatility threshold by regime using daily ATR/price
+    atr_1d = indicators.get("atr_14_1d", indicators.get("atr_14", 0.0))
+    price_1d = indicators.get("close_1d", price) or price
+    daily_vol = (atr_1d / price_1d) if price_1d else 0.0
+
+    # Regime mapping (low/med/high) → threshold for 5m ATR/price
+    # - Low vol (daily < 1%): 0.03%
+    # - Medium vol (1-2%): 0.05%
+    # - High vol (>= 2%): 0.10%
+    if daily_vol >= 0.02:
+        min_vol_threshold_pct = 0.0010
+    elif daily_vol >= 0.01:
+        min_vol_threshold_pct = 0.0005
+    else:
+        min_vol_threshold_pct = 0.0003
     atr_to_price_ratio = atr_5m / current_price
 
     sufficient_volatility = atr_to_price_ratio >= min_vol_threshold_pct

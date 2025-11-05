@@ -47,7 +47,8 @@ class OrderExecutor:
                     'symbol': futures_symbol,
                     'side': 'BUY',
                     'type': 'MARKET',
-                    'quantity': order_size
+                    'quantity': order_size,
+                    'recvWindow': 10000
                 })
                 logger.debug(f"Demo order response: {order}")
                 result = self.order_parser.parse_futures_order_response(order, symbol)
@@ -70,8 +71,59 @@ class OrderExecutor:
 
         except Exception as e:
             error_msg = str(e)
+            error_type = type(e).__name__
+            # Handle timestamp errors - retry with time sync
+            is_timestamp_error = (
+                "-1021" in error_msg or 
+                "1000ms" in error_msg or 
+                "Timestamp" in error_msg or 
+                "timestamp" in error_msg.lower() or
+                error_type == "InvalidNonce"
+            )
+            
+            if is_timestamp_error:
+                logger.warning(f"Timestamp sync error detected (type: {error_type}), retrying with time sync...")
+                try:
+                    # Sync time with Binance server
+                    server_time_ms = None
+                    if hasattr(self.exchange, 'fapiPublicGetTime'):
+                        server_time = self.exchange.fapiPublicGetTime()
+                        if isinstance(server_time, dict) and 'serverTime' in server_time:
+                            server_time_ms = server_time['serverTime']
+                            # Convert to int if needed
+                            if isinstance(server_time_ms, str):
+                                server_time_ms = int(server_time_ms)
+                            elif not isinstance(server_time_ms, (int, float)):
+                                server_time_ms = int(time.time() * 1000)
+                            local_time_ms = int(time.time() * 1000)
+                            time_diff_ms = local_time_ms - server_time_ms
+                            logger.info(f"Time sync retry: Local={local_time_ms}, Server={server_time_ms}, Diff={time_diff_ms}ms")
+                    # Wait a bit longer and retry
+                    time.sleep(1.0)
+                    # Retry the order
+                    futures_symbol = symbol.replace('/', '')
+                    retry_params = {
+                        'symbol': futures_symbol,
+                        'side': 'BUY',
+                        'type': 'MARKET',
+                        'quantity': order_size,
+                        'recvWindow': 10000
+                    }
+                    # If we have server time, send timestamp slightly behind server to avoid ahead-of-time
+                    if server_time_ms is not None:
+                        retry_params['timestamp'] = int(server_time_ms) - 50
+                    order = self.exchange.fapiPrivatePostOrder(retry_params)
+                    logger.info(f"Retry successful after time sync")
+                    result = self.order_parser.parse_futures_order_response(order, symbol)
+                    if not result.executed and order.get('status') == 'NEW' and order.get('orderId'):
+                        time.sleep(0.5)
+                        result = self.order_parser.check_order_status(futures_symbol, order.get('orderId'), symbol)
+                    return result
+                except Exception as retry_error:
+                    logger.error(f"Retry after time sync also failed: {retry_error}")
+            
             logger.error(f"Long execution failed: {error_msg}")
-            logger.error(f"Full exception: {type(e).__name__}: {e}", exc_info=True)
+            logger.error(f"Full exception: {error_type}: {e}", exc_info=True)
             return ExecutionResult(
                 executed=False,
                 order_id=None,
@@ -105,7 +157,8 @@ class OrderExecutor:
                     'symbol': futures_symbol,
                     'side': 'SELL',
                     'type': 'MARKET',
-                    'quantity': order_size
+                    'quantity': order_size,
+                    'recvWindow': 10000
                 })
                 logger.debug(f"Demo order response: {order}")
                 result = self.order_parser.parse_futures_order_response(order, symbol)
@@ -128,8 +181,59 @@ class OrderExecutor:
 
         except Exception as e:
             error_msg = str(e)
+            error_type = type(e).__name__
+            # Handle timestamp errors - retry with time sync
+            # Check for both error message and error code
+            is_timestamp_error = (
+                "-1021" in error_msg or 
+                "1000ms" in error_msg or 
+                "Timestamp" in error_msg or 
+                "timestamp" in error_msg.lower() or
+                error_type == "InvalidNonce"
+            )
+            
+            if is_timestamp_error:
+                logger.warning(f"Timestamp sync error detected (type: {error_type}, msg: {error_msg[:100]}), retrying with time sync...")
+                try:
+                    # Sync time with Binance server
+                    server_time_ms = None
+                    if hasattr(self.exchange, 'fapiPublicGetTime'):
+                        server_time = self.exchange.fapiPublicGetTime()
+                        if isinstance(server_time, dict) and 'serverTime' in server_time:
+                            server_time_ms = server_time['serverTime']
+                            # Convert to int if needed
+                            if isinstance(server_time_ms, str):
+                                server_time_ms = int(server_time_ms)
+                            elif not isinstance(server_time_ms, (int, float)):
+                                server_time_ms = int(time.time() * 1000)
+                            local_time_ms = int(time.time() * 1000)
+                            time_diff_ms = local_time_ms - server_time_ms
+                            logger.info(f"Time sync retry: Local={local_time_ms}, Server={server_time_ms}, Diff={time_diff_ms}ms")
+                    # Wait a bit longer and retry
+                    time.sleep(1.0)  # Increased from 0.5 to 1.0 seconds
+                    # Retry the order
+                    futures_symbol = symbol.replace('/', '')
+                    retry_params = {
+                        'symbol': futures_symbol,
+                        'side': 'SELL',
+                        'type': 'MARKET',
+                        'quantity': order_size,
+                        'recvWindow': 10000
+                    }
+                    if server_time_ms is not None:
+                        retry_params['timestamp'] = int(server_time_ms) - 50
+                    order = self.exchange.fapiPrivatePostOrder(retry_params)
+                    logger.info(f"Retry successful after time sync")
+                    result = self.order_parser.parse_futures_order_response(order, symbol)
+                    if not result.executed and order.get('status') == 'NEW' and order.get('orderId'):
+                        time.sleep(0.5)
+                        result = self.order_parser.check_order_status(futures_symbol, order.get('orderId'), symbol)
+                    return result
+                except Exception as retry_error:
+                    logger.error(f"Retry after time sync also failed: {retry_error}")
+            
             logger.error(f"Short execution failed: {error_msg}")
-            logger.error(f"Full exception: {type(e).__name__}: {e}", exc_info=True)
+            logger.error(f"Full exception: {error_type}: {e}", exc_info=True)
             return ExecutionResult(
                 executed=False,
                 order_id=None,
@@ -187,7 +291,8 @@ class OrderExecutor:
                     'symbol': futures_symbol,
                     'side': side,
                     'type': 'MARKET',
-                    'quantity': close_size
+                    'quantity': close_size,
+                    'recvWindow': 10000
                 })
                 logger.debug(f"Demo close order response: {order}")
                 result = self.order_parser.parse_futures_order_response(order, symbol)
@@ -215,8 +320,59 @@ class OrderExecutor:
 
         except Exception as e:
             error_msg = str(e)
+            error_type = type(e).__name__
+            # Handle timestamp errors - retry with time sync
+            is_timestamp_error = (
+                "-1021" in error_msg or 
+                "1000ms" in error_msg or 
+                "Timestamp" in error_msg or 
+                "timestamp" in error_msg.lower() or
+                error_type == "InvalidNonce"
+            )
+            
+            if is_timestamp_error:
+                logger.warning(f"Timestamp sync error detected (type: {error_type}), retrying with time sync...")
+                try:
+                    # Sync time with Binance server
+                    server_time_ms = None
+                    if hasattr(self.exchange, 'fapiPublicGetTime'):
+                        server_time = self.exchange.fapiPublicGetTime()
+                        if isinstance(server_time, dict) and 'serverTime' in server_time:
+                            server_time_ms = server_time['serverTime']
+                            # Convert to int if needed
+                            if isinstance(server_time_ms, str):
+                                server_time_ms = int(server_time_ms)
+                            elif not isinstance(server_time_ms, (int, float)):
+                                server_time_ms = int(time.time() * 1000)
+                            local_time_ms = int(time.time() * 1000)
+                            time_diff_ms = local_time_ms - server_time_ms
+                            logger.info(f"Time sync retry: Local={local_time_ms}, Server={server_time_ms}, Diff={time_diff_ms}ms")
+                    # Wait a bit longer and retry
+                    time.sleep(1.0)
+                    # Retry the order
+                    futures_symbol = symbol.replace('/', '')
+                    side = 'SELL' if position_size > 0 else 'BUY'
+                    retry_params = {
+                        'symbol': futures_symbol,
+                        'side': side,
+                        'type': 'MARKET',
+                        'quantity': close_size,
+                        'recvWindow': 10000
+                    }
+                    if server_time_ms is not None:
+                        retry_params['timestamp'] = int(server_time_ms) - 50
+                    order = self.exchange.fapiPrivatePostOrder(retry_params)
+                    logger.info(f"Retry successful after time sync")
+                    result = self.order_parser.parse_futures_order_response(order, symbol)
+                    if not result.executed and order.get('status') == 'NEW' and order.get('orderId'):
+                        time.sleep(0.5)
+                        result = self.order_parser.check_order_status(futures_symbol, order.get('orderId'), symbol)
+                    return result
+                except Exception as retry_error:
+                    logger.error(f"Retry after time sync also failed: {retry_error}")
+            
             logger.error(f"Close execution failed: {error_msg}")
-            logger.error(f"Full exception: {type(e).__name__}: {e}", exc_info=True)
+            logger.error(f"Full exception: {error_type}: {e}", exc_info=True)
             return ExecutionResult(
                 executed=False,
                 order_id=None,

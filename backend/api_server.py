@@ -3,8 +3,9 @@
 FastAPI server to expose trading data to the frontend.
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import logging
@@ -16,6 +17,24 @@ load_dotenv()
 
 app = FastAPI(title="Trading Agent API")
 
+# Initialize logger BEFORE exception handler
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+# Global exception handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch all unhandled exceptions and return 500 with error details"""
+    logger.error(f"Unhandled exception in {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "detail": str(exc),
+            "path": str(request.url.path)
+        }
+    )
+
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
@@ -26,6 +45,7 @@ app.add_middleware(
 )
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # In-memory storage (replace with database later)
 positions_data = []
@@ -49,32 +69,70 @@ async def root():
 @app.get("/api/balance")
 async def get_balance():
     """Get current account balance"""
-    return balance_data
+    try:
+        # Ensure balance_data exists and has correct structure
+        if not isinstance(balance_data, dict):
+            return {"cash": 0.00, "unrealizedPnL": 0.00}
+        return {
+            "cash": float(balance_data.get("cash", 0.00)),
+            "unrealizedPnL": float(balance_data.get("unrealizedPnL", 0.00))
+        }
+    except Exception as e:
+        logger.error(f"Error getting balance: {e}", exc_info=True)
+        return {"cash": 0.00, "unrealizedPnL": 0.00}
 
 
 @app.get("/api/positions")
 async def get_positions():
     """Get current open positions"""
-    return positions_data
+    try:
+        # Ensure positions_data is a list
+        if not isinstance(positions_data, list):
+            return []
+        return positions_data
+    except Exception as e:
+        logger.error(f"Error getting positions: {e}", exc_info=True)
+        return []
 
 
 @app.get("/api/trades")
 async def get_trades():
     """Get completed trades history"""
-    return trades_data
+    try:
+        # Ensure trades_data is a list
+        if not isinstance(trades_data, list):
+            return []
+        return trades_data
+    except Exception as e:
+        logger.error(f"Error getting trades: {e}", exc_info=True)
+        return []
 
 
 @app.get("/api/agent-messages")
 async def get_agent_messages():
     """Get agent chat messages"""
-    return agent_messages_data
+    try:
+        # Ensure agent_messages_data is a list
+        if not isinstance(agent_messages_data, list):
+            return []
+        return agent_messages_data
+    except Exception as e:
+        logger.error(f"Error getting agent messages: {e}", exc_info=True)
+        return []
 
 
 @app.post("/api/positions")
 async def add_position(position: Dict[str, Any]):
     """Add a new position"""
-    positions_data.append(position)
-    return {"status": "success", "position": position}
+    try:
+        global positions_data
+        if not isinstance(positions_data, list):
+            positions_data = []
+        positions_data.append(position)
+        return {"status": "success", "position": position}
+    except Exception as e:
+        logger.error(f"Error adding position: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
 
 
 @app.delete("/api/positions")
@@ -88,16 +146,29 @@ async def clear_positions():
 @app.put("/api/positions")
 async def sync_positions(positions: List[Dict[str, Any]]):
     """Replace all positions with new data"""
-    global positions_data
-    positions_data = positions
-    return {"status": "success", "count": len(positions)}
+    try:
+        global positions_data
+        if not isinstance(positions, list):
+            return {"status": "error", "message": "Invalid positions data: must be a list"}
+        positions_data = positions
+        return {"status": "success", "count": len(positions)}
+    except Exception as e:
+        logger.error(f"Error syncing positions: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
 
 
 @app.post("/api/trades")
 async def add_trade(trade: Dict[str, Any]):
     """Add a completed trade"""
-    trades_data.append(trade)
-    return {"status": "success", "trade": trade}
+    try:
+        global trades_data
+        if not isinstance(trades_data, list):
+            trades_data = []
+        trades_data.append(trade)
+        return {"status": "success", "trade": trade}
+    except Exception as e:
+        logger.error(f"Error adding trade: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
 
 
 @app.delete("/api/trades")
@@ -111,17 +182,36 @@ async def clear_trades():
 @app.post("/api/agent-messages")
 async def add_agent_message(message: Dict[str, Any]):
     """Add an agent message"""
-    message["timestamp"] = datetime.now().strftime("%d/%m %H:%M")
-    agent_messages_data.append(message)
-    return {"status": "success", "message": message}
+    try:
+        global agent_messages_data
+        if not isinstance(agent_messages_data, list):
+            agent_messages_data = []
+        if not isinstance(message, dict):
+            return {"status": "error", "message": "Invalid message format"}
+        message["timestamp"] = datetime.now().strftime("%d/%m %H:%M")
+        agent_messages_data.append(message)
+        return {"status": "success", "message": message}
+    except Exception as e:
+        logger.error(f"Error adding agent message: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
 
 
 @app.put("/api/balance")
 async def update_balance(balance: Dict[str, float]):
     """Update account balance"""
-    global balance_data
-    balance_data = balance
-    return {"status": "success", "balance": balance_data}
+    try:
+        global balance_data
+        if not isinstance(balance, dict):
+            return {"status": "error", "message": "Invalid balance data: must be a dictionary"}
+        # Ensure float values
+        balance_data = {
+            "cash": float(balance.get("cash", 0.00)),
+            "unrealizedPnL": float(balance.get("unrealizedPnL", 0.00))
+        }
+        return {"status": "success", "balance": balance_data}
+    except Exception as e:
+        logger.error(f"Error updating balance: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/api/chart/{symbol}")
@@ -196,10 +286,14 @@ async def resume_agent():
 @app.get("/api/agent/status")
 async def get_agent_status():
     """Get agent status"""
-    import os
-    flag_path = os.path.join(os.path.dirname(__file__), "agent_paused.flag")
-    is_paused = os.path.exists(flag_path)
-    return {"paused": is_paused}
+    try:
+        import os
+        flag_path = os.path.join(os.path.dirname(__file__), "agent_paused.flag")
+        is_paused = os.path.exists(flag_path)
+        return {"paused": is_paused}
+    except Exception as e:
+        logger.error(f"Error getting agent status: {e}", exc_info=True)
+        return {"paused": False}
 
 
 def _process_position_for_chat(
@@ -297,7 +391,7 @@ def _process_position_for_chat(
             risk_amount = risk_dict.get(position_type)
         else:
             risk_amount = risk_dict if position_type == 'swing' else None
-
+    
     if hasattr(loop_controller_instance, 'cycle_controller') and loop_controller_instance.cycle_controller:
         reward_dict = loop_controller_instance.cycle_controller.position_manager.position_reward_amounts.get(symbol, {})
         if isinstance(reward_dict, dict):
