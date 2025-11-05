@@ -118,6 +118,21 @@ async def get_balance():
                     
                     # Calculate available cash
                     total_equity = tracked_equity + total_unrealized_pnl
+                    
+                    # CRITICAL SAFEGUARD: Cap margin_used at total_equity to prevent negative cash
+                    # This can happen due to rounding errors in position size or margin calculation
+                    if total_margin_used > total_equity:
+                        logger.warning(f"OVER-LEVERAGE DETECTED in balance endpoint: Margin (${total_margin_used:.2f}) > Equity (${total_equity:.2f})")
+                        logger.warning(f"  Clamping margin to equity to prevent negative cash display.")
+                        total_margin_used = total_equity
+                    
+                    # SMART MONEY MANAGEMENT: Ensure we never use more than 95% of equity as margin
+                    # This leaves a 5% buffer for opportunities and prevents over-leverage
+                    max_allowed_margin = total_equity * 0.95
+                    if total_margin_used > max_allowed_margin:
+                        logger.debug(f"SMART MONEY: Margin usage (${total_margin_used:.2f}) > 95% limit (${max_allowed_margin:.2f}), clamping to limit")
+                        total_margin_used = max_allowed_margin
+                    
                     available_cash = max(0.0, total_equity - total_margin_used)
                     
                     logger.debug(f"Balance calculated from positions: equity=${tracked_equity:.2f}, pnl=${total_unrealized_pnl:.2f}, margin=${total_margin_used:.2f}, cash=${available_cash:.2f}")

@@ -106,7 +106,7 @@ function App() {
     }
 
     fetchData()
-    const interval = setInterval(fetchData, 5000)
+    const interval = setInterval(fetchData, 2000) // Reduced from 5000ms to 2000ms for faster updates
     return () => clearInterval(interval)
   }, [isLoading])
 

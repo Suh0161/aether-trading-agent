@@ -187,6 +187,17 @@ class RiskManager:
                 tracked_equity = getattr(position_manager, 'tracked_equity', equity)
                 available_cash = tracked_equity - total_margin_used
                 
+                # CRITICAL: Enforce maximum margin usage (95% of equity) to leave buffer for smart money management
+                # This prevents using 100% of capital and ensures we always have some cash available
+                max_allowed_margin = tracked_equity * 0.95  # Use maximum 95% of equity as margin
+                
+                if total_margin_used > max_allowed_margin:
+                    logger.warning(
+                        f"Risk check: denied - margin usage ({total_margin_used:.2f}) exceeds maximum allowed ({max_allowed_margin:.2f}) "
+                        f"(95% of equity: ${tracked_equity:.2f}). This is smart money management - we keep 5% buffer."
+                    )
+                    return False, f"margin usage exceeds maximum (95% limit: ${max_allowed_margin:.2f})"
+                
                 # Require at least 10% buffer for new position
                 required_cash = proposed_margin * 1.1
                 

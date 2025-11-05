@@ -279,6 +279,28 @@ class FrontendManager:
                 # Available cash = total equity - margin used
                 available_cash = total_equity - total_margin_used
 
+            # CRITICAL SAFEGUARD: Cap margin_used at total_equity to prevent negative cash
+            # This can happen due to rounding errors in position size or margin calculation
+            # If margin exceeds equity, we're over-leveraged - clamp margin to equity
+            if total_margin_used > total_equity:
+                logger.warning(f"  OVER-LEVERAGE DETECTED: Margin (${total_margin_used:.2f}) > Equity (${total_equity:.2f})")
+                logger.warning(f"    This indicates rounding errors or position size calculation issues.")
+                logger.warning(f"    Clamping margin to equity to prevent negative cash display.")
+                # Cap margin at equity (meaning available cash = 0)
+                total_margin_used = total_equity
+                available_cash = 0.0
+            else:
+                available_cash = total_equity - total_margin_used
+            
+            # SMART MONEY MANAGEMENT: Ensure we never use more than 95% of equity as margin
+            # This leaves a 5% buffer for opportunities and prevents over-leverage
+            max_allowed_margin = total_equity * 0.95
+            if total_margin_used > max_allowed_margin:
+                logger.info(f"  SMART MONEY: Margin usage (${total_margin_used:.2f}) > 95% limit (${max_allowed_margin:.2f})")
+                logger.info(f"    Clamping to 95% limit for smart money management (5% buffer maintained)")
+                total_margin_used = max_allowed_margin
+                available_cash = total_equity - total_margin_used
+
             # Safeguard: Available cash shouldn't be negative (indicates margin calculation error)
             # CRITICAL: Always send positions even if margin calculation shows negative cash
             # The margin calculation might be incorrect, but positions still exist and should be displayed

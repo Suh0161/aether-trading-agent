@@ -517,105 +517,105 @@ class SymbolProcessor:
             self.current_cycle_decisions[symbol]['executed'] = executed
 
             if executed:
-                # Update parsed_decision with actual leverage used (may have been adjusted by order_sizer)
-                # This ensures leverage stored in position tracking matches what was actually used
-                actual_leverage = getattr(parsed_decision, 'leverage', getattr(decision, 'leverage', 1.0))
-                parsed_decision.leverage = actual_leverage
-                
-                # Update position tracking
-                self._update_position_tracking_after_trade(parsed_decision, snapshot, symbol, cycle_count, execution_result)
+                    # Update parsed_decision with actual leverage used (may have been adjusted by order_sizer)
+                    # This ensures leverage stored in position tracking matches what was actually used
+                    actual_leverage = getattr(parsed_decision, 'leverage', getattr(decision, 'leverage', 1.0))
+                    parsed_decision.leverage = actual_leverage
+                    
+                    # Update position tracking
+                    self._update_position_tracking_after_trade(parsed_decision, snapshot, symbol, cycle_count, execution_result)
 
-                # Log success with detailed information
-                fill_price = getattr(execution_result, 'fill_price', snapshot.price)
-                filled_size = getattr(execution_result, 'filled_size', 0.0)
-                order_id = getattr(execution_result, 'order_id', 'N/A')
-                leverage_used = getattr(parsed_decision, 'leverage', 1.0)
+                    # Log success with detailed information
+                    fill_price = getattr(execution_result, 'fill_price', snapshot.price)
+                    filled_size = getattr(execution_result, 'filled_size', 0.0)
+                    order_id = getattr(execution_result, 'order_id', 'N/A')
+                    leverage_used = getattr(parsed_decision, 'leverage', 1.0)
 
-                logger.info(f"  {symbol}: [SUCCESS] {decision.position_type.upper()} {decision.action.upper()} executed")
-                logger.info(f"  {symbol}:   Fill Price: ${fill_price:,.2f}, Size: {filled_size:.6f}")
-                logger.info(f"  {symbol}:   Order ID: {order_id}, Leverage: {leverage_used:.1f}x")
+                    logger.info(f"  {symbol}: [SUCCESS] {decision.position_type.upper()} {decision.action.upper()} executed")
+                    logger.info(f"  {symbol}:   Fill Price: ${fill_price:,.2f}, Size: {filled_size:.6f}")
+                    logger.info(f"  {symbol}:   Order ID: {order_id}, Leverage: {leverage_used:.1f}x")
 
-                # Send agent message to frontend when positions are opened (long/short) or closed
-                if api_client and self.ai_message_service:
-                    try:
-                        # Calculate available cash and unrealized P&L for messaging
-                        # Get current position size after update
-                        current_position_size = self.position_manager.get_position_by_type(symbol, parsed_decision.position_type)
-                        
-                        # Calculate total margin used across all positions
-                        total_margin_used = 0.0
+                    # Send agent message to frontend when positions are opened (long/short) or closed
+                    if api_client and self.ai_message_service:
                         try:
-                            if hasattr(self.position_manager, 'tracked_position_sizes'):
-                                for sym in self.position_manager.tracked_position_sizes:
-                                    positions = self.position_manager.tracked_position_sizes.get(sym, {})
-                                    if isinstance(positions, dict):
-                                        swing_pos = positions.get('swing', 0.0)
-                                        scalp_pos = positions.get('scalp', 0.0)
-                                    else:
-                                        swing_pos = positions if positions else 0.0
-                                        scalp_pos = 0.0
-                                    
-                                    entry_dict = self.position_manager.position_entry_prices.get(sym, {})
-                                    leverage_dict = self.position_manager.position_leverages.get(sym, {})
-                                    
-                                    if abs(swing_pos) > 0.0001:
-                                        if isinstance(entry_dict, dict):
-                                            swing_entry = entry_dict.get('swing', fill_price)
-                                        else:
-                                            swing_entry = entry_dict if entry_dict else fill_price
-                                        if isinstance(leverage_dict, dict):
-                                            lev = leverage_dict.get('swing', 1.0)
-                                        else:
-                                            lev = leverage_dict if leverage_dict else 1.0
-                                        swing_notional = abs(swing_pos) * swing_entry
-                                        total_margin_used += swing_notional / lev if lev > 0 else swing_notional
-                                    
-                                    if abs(scalp_pos) > 0.0001:
-                                        if isinstance(entry_dict, dict):
-                                            scalp_entry = entry_dict.get('scalp', fill_price)
-                                        else:
-                                            scalp_entry = fill_price
-                                        if isinstance(leverage_dict, dict):
-                                            lev = leverage_dict.get('scalp', 1.0)
-                                        else:
-                                            lev = 1.0
-                                        scalp_notional = abs(scalp_pos) * scalp_entry
-                                        total_margin_used += scalp_notional / lev if lev > 0 else scalp_notional
-                        except Exception:
+                            # Calculate available cash and unrealized P&L for messaging
+                            # Get current position size after update
+                            current_position_size = self.position_manager.get_position_by_type(symbol, parsed_decision.position_type)
+                        
+                            # Calculate total margin used across all positions
                             total_margin_used = 0.0
-                        
-                        tracked_equity = getattr(self.position_manager, 'tracked_equity', equity)
-                        available_cash = max(0.0, tracked_equity - total_margin_used)
-                        
-                        # Calculate unrealized P&L for this position
-                        entry_price = fill_price  # Use fill price as entry
-                        current_price = get_price_from_snapshot(snapshot)
-                        if decision.action == "long":
-                            unrealized_pnl = current_position_size * (current_price - entry_price)
-                        elif decision.action == "short":
-                            unrealized_pnl = abs(current_position_size) * (entry_price - current_price)
-                        else:
-                            unrealized_pnl = 0.0
-                        
-                        # Send agent message ONLY for successfully executed trades (long/short/close)
-                        # Skip messages for failed executions to prevent spam
-                        if decision.action in ["long", "short", "close"] and executed:
                             try:
-                                self.ai_message_service.collect_cycle_decision(
-                                    parsed_decision, snapshot, current_position_size, equity,
-                                    available_cash, unrealized_pnl, cycle_count, api_client,
-                                    all_snapshots, realized_pnl=None if decision.action != "close" else None
-                                )
-                                logger.debug(f"  {symbol}: Agent message sent for {decision.action.upper()} action")
-                            except Exception as msg_error:
-                                logger.warning(f"  {symbol}: Failed to send agent message: {msg_error}")
-                    except Exception as e:
-                        logger.warning(f"  {symbol}: Failed to send agent message: {e}")
+                                if hasattr(self.position_manager, 'tracked_position_sizes'):
+                                    for sym in self.position_manager.tracked_position_sizes:
+                                        positions = self.position_manager.tracked_position_sizes.get(sym, {})
+                                        if isinstance(positions, dict):
+                                            swing_pos = positions.get('swing', 0.0)
+                                            scalp_pos = positions.get('scalp', 0.0)
+                                        else:
+                                            swing_pos = positions if positions else 0.0
+                                            scalp_pos = 0.0
+                                        
+                                        entry_dict = self.position_manager.position_entry_prices.get(sym, {})
+                                        leverage_dict = self.position_manager.position_leverages.get(sym, {})
+                                        
+                                        if abs(swing_pos) > 0.0001:
+                                            if isinstance(entry_dict, dict):
+                                                swing_entry = entry_dict.get('swing', fill_price)
+                                            else:
+                                                swing_entry = entry_dict if entry_dict else fill_price
+                                            if isinstance(leverage_dict, dict):
+                                                lev = leverage_dict.get('swing', 1.0)
+                                            else:
+                                                lev = leverage_dict if leverage_dict else 1.0
+                                            swing_notional = abs(swing_pos) * swing_entry
+                                            total_margin_used += swing_notional / lev if lev > 0 else swing_notional
+                                        
+                                        if abs(scalp_pos) > 0.0001:
+                                            if isinstance(entry_dict, dict):
+                                                scalp_entry = entry_dict.get('scalp', fill_price)
+                                            else:
+                                                scalp_entry = fill_price
+                                            if isinstance(leverage_dict, dict):
+                                                lev = leverage_dict.get('scalp', 1.0)
+                                            else:
+                                                lev = 1.0
+                                            scalp_notional = abs(scalp_pos) * scalp_entry
+                                            total_margin_used += scalp_notional / lev if lev > 0 else scalp_notional
+                            except Exception:
+                                total_margin_used = 0.0
+                            
+                            tracked_equity = getattr(self.position_manager, 'tracked_equity', equity)
+                            available_cash = max(0.0, tracked_equity - total_margin_used)
+                            
+                            # Calculate unrealized P&L for this position
+                            entry_price = fill_price  # Use fill price as entry
+                            current_price = get_price_from_snapshot(snapshot)
+                            if decision.action == "long":
+                                unrealized_pnl = current_position_size * (current_price - entry_price)
+                            elif decision.action == "short":
+                                unrealized_pnl = abs(current_position_size) * (entry_price - current_price)
+                            else:
+                                unrealized_pnl = 0.0
+                            
+                            # Send agent message ONLY for successfully executed trades (long/short/close)
+                            # Skip messages for failed executions to prevent spam
+                            if decision.action in ["long", "short", "close"] and executed:
+                                try:
+                                    self.ai_message_service.collect_cycle_decision(
+                                        parsed_decision, snapshot, current_position_size, equity,
+                                        available_cash, unrealized_pnl, cycle_count, api_client,
+                                        all_snapshots, realized_pnl=None if decision.action != "close" else None
+                                    )
+                                    logger.debug(f"  {symbol}: Agent message sent for {decision.action.upper()} action")
+                                except Exception as msg_error:
+                                    logger.warning(f"  {symbol}: Failed to send agent message: {msg_error}")
+                        except Exception as e:
+                            logger.warning(f"  {symbol}: Failed to send agent message: {e}")
 
-                # Send completed trade to frontend (for close actions only)
-                if api_client and decision.action == "close":
-                    position_type = getattr(parsed_decision, 'position_type', 'swing')
-                    self._log_completed_trade(symbol, parsed_decision, snapshot, execution_result, position_type, api_client)
+                    # Send completed trade to frontend (for close actions only)
+                    if api_client and decision.action == "close":
+                        position_type = getattr(parsed_decision, 'position_type', 'swing')
+                        self._log_completed_trade(symbol, parsed_decision, snapshot, execution_result, position_type, api_client)
             else:
                 logger.warning(f"  {symbol}: [FAILED] {decision.position_type.upper()} {decision.action.upper()} not executed")
 
