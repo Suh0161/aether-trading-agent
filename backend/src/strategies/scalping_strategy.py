@@ -298,10 +298,14 @@ class ScalpingStrategy:
         strong_reversal = (trend_5m == "bearish" and trend_1m == "bearish") and price_below_vwap_significant
 
         if strong_reversal:
+            # Close long and hint to flip to SHORT immediately
             return StrategySignal(
                 action="close",
                 size_pct=1.0,
-                reason=f"Scalp long exit: Strong reversal signal (5m={trend_5m}, 1m={trend_1m}, price ${price:.2f} below VWAP ${vwap_5m:.2f})",
+                reason=(
+                    f"Scalp long exit: Strong reversal signal (5m={trend_5m}, 1m={trend_1m}, price ${price:.2f} below VWAP ${vwap_5m:.2f})"
+                    f" | flip_to=short"
+                ),
                 confidence=0.8,
                 position_type="scalp",
                 symbol=snapshot.symbol
@@ -375,11 +379,15 @@ class ScalpingStrategy:
         strong_reversal = (trend_5m == "bullish" and trend_1m == "bullish") and price_above_vwap_significant
 
         if strong_reversal:
+            # Close short and hint to flip to LONG immediately
             return StrategySignal(
                 action="close",
                 size_pct=1.0,
-                reason=f"Scalp short exit: Strong reversal signal (5m={trend_5m}, 1m={trend_1m}, price ${price:.2f} above VWAP ${vwap_5m:.2f})",
-                confidence=0.8,
+                reason=(
+                    f"Scalp short exit: Strong reversal signal (5m={trend_5m}, 1m={trend_1m}, price ${price:.2f} above VWAP ${vwap_5m:.2f})"
+                    f" | flip_to=long"
+                ),
+            	confidence=0.8,
                 position_type="scalp",
                 symbol=snapshot.symbol
             )

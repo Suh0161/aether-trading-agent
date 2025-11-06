@@ -47,8 +47,18 @@ class OrderSizer:
                             min_qty = float(filt.get('minQty', '0.001'))
                             step_size = float(filt.get('stepSize', '0.001'))
                     break
-            # If API omitted MIN_NOTIONAL (seen on demo), use safer $20 fallback
-            if not min_notional or min_notional <= 0:
+            # Demo safety: Futures demo often enforces $20 minimum even if API reports lower
+            try:
+                api_urls = getattr(self.exchange, 'urls', {}).get('api', {})
+                url_blob = ' '.join(api_urls.values()) if isinstance(api_urls, dict) else str(api_urls)
+                is_demo = ('demo' in url_blob.lower()) or ('testnet' in url_blob.lower())
+            except Exception:
+                is_demo = False
+
+            # Floor to $20 for demo; also guard against missing/invalid values
+            if is_demo:
+                min_notional = max(min_notional or 0.0, 20.0)
+            elif not min_notional or min_notional <= 0:
                 min_notional = 20.0
             return min_notional, min_qty, step_size
         except Exception as e:
@@ -170,7 +180,7 @@ class OrderSizer:
                     f"Account too small to place minimum order (capital: ${capital_amount:.2f}, equity: ${equity:.2f}). "
                     f"Need at least ${min_notional_usd/MAX_LEVERAGE_FOR_MINIMUM:.2f} capital per position."
                 )
-                return 0.0, leverage  # Return 0 to indicate order cannot be placed
+                return 0.0, int(round(min(max(leverage, 1.0), 2.0))), capital_amount  # Cannot place order
 
             # Can reach minimum with higher leverage - adjust leverage up to maximum allowed
             if required_leverage > leverage:
@@ -211,6 +221,11 @@ class OrderSizer:
         # CRITICAL: After rounding, recalculate actual notional value
         # If it's less than minimum, increase order size to meet minimum
         actual_notional = order_size * price
+        # Guard: if precision rounding zeroed quantity, lift to min order qty immediately
+        min_order_qty = max(min_qty, min_notional_usd / price)
+        if order_size <= 0 and min_order_qty > 0:
+            order_size = min_order_qty
+            actual_notional = order_size * price
         if actual_notional < min_notional_usd:
             logger.warning(
                 f"Order notional ${actual_notional:.2f} below minimum ${min_notional_usd:.2f} after rounding. "
@@ -250,6 +265,9 @@ class OrderSizer:
                     # Round up to next step
                     order_size = ((int(order_size / step_size) + 1) * step_size)
                 order_size = self._round_to_precision(symbol, order_size)
+                # If rounding zeroed again, force min_order_qty
+                if order_size <= 0 and min_order_qty > 0:
+                    order_size = max(min_order_qty, step_size or 0)
                 actual_notional = order_size * price
                 logger.info(f"Adjusted order size via calculation: {order_size:.8f} = ${actual_notional:.2f} notional")
             

@@ -74,7 +74,17 @@ def get_strategy_decision(processor, symbol: str, snapshot: Any, position_size: 
             decision.position_type = 'swing'
         elif strategy_type == 'scalp':
             from src.strategies.scalping_strategy import ScalpingStrategy
+            fast_mode = False
+            try:
+                fast_mode = bool(getattr(processor.config, 'scalp_fast_mode', False))
+            except Exception:
+                fast_mode = False
             strategy = ScalpingStrategy()
+            try:
+                # Backward compatibility: if strategy supports fast_mode, set it
+                setattr(strategy, 'fast_mode', fast_mode)
+            except Exception:
+                pass
             swing_pos_for_pullback = 0.0
             try:
                 swing_pos_for_pullback = processor.position_manager.get_position_by_type(symbol, 'swing')
@@ -261,8 +271,14 @@ def execute_strategy_decision(processor, decision: Any, symbol: str, snapshot: A
             pass
 
         logger.info(f"  {symbol}: Step 5: Validating with risk manager...")
+        # Pass SIGNED current position to risk manager so it can detect direction correctly
+        current_signed_size = 0.0
+        try:
+            current_signed_size = processor.position_manager.get_position_by_type(symbol, decision.position_type)
+        except Exception:
+            current_signed_size = 0.0
         risk_approved, risk_reason = processor.risk_manager.validate_decision(
-            parsed_decision, snapshot, abs(processor.position_manager.get_position_by_type(symbol, decision.position_type)), equity, symbol, processor.position_manager
+            parsed_decision, snapshot, current_signed_size, equity, symbol, processor.position_manager
         )
         if not risk_approved:
             logger.warning(f"  {symbol}: {decision.position_type.upper()} decision BLOCKED by risk manager: {risk_reason}")
@@ -323,6 +339,51 @@ def execute_strategy_decision(processor, decision: Any, symbol: str, snapshot: A
             logger.info(f"  {symbol}: [SUCCESS] {decision.position_type.upper()} {decision.action.upper()} executed")
             logger.info(f"  {symbol}:   Fill Price: ${fill_price:,.2f}, Size: {filled_size:.6f}")
             logger.info(f"  {symbol}:   Order ID: {order_id}, Leverage: {leverage_used:.1f}x")
+
+            # Persist to AgentMemory
+            try:
+                from src.memory.agent_memory import get_memory
+                mem = get_memory()
+                ptype = getattr(parsed_decision, 'position_type', 'swing')
+                side = 'long' if decision.action == 'long' else ('short' if decision.action == 'short' else 'flat')
+                if decision.action in ('long', 'short'):
+                    mem.record_trade(
+                        symbol=symbol,
+                        position_type=ptype,
+                        event='open',
+                        side=side,
+                        price=fill_price,
+                        size=filled_size or 0.0,
+                        leverage=leverage_used,
+                        reason=getattr(decision, 'reason', None),
+                        confidence=getattr(decision, 'confidence', None),
+                    )
+                elif decision.action == 'close':
+                    # Try to compute realized PnL if we captured previous entry
+                    pnl_val = None
+                    try:
+                        prev_entry = prev_entry_for_close if prev_entry_for_close is not None else getattr(snapshot, 'entry_price', None)
+                        if prev_entry and prev_size_for_close:
+                            if prev_size_for_close > 0:
+                                pnl_val = prev_size_for_close * (fill_price - prev_entry)
+                            else:
+                                pnl_val = abs(prev_size_for_close) * (prev_entry - fill_price)
+                    except Exception:
+                        pnl_val = None
+                    mem.record_trade(
+                        symbol=symbol,
+                        position_type=ptype,
+                        event='close',
+                        side=side if side in ('long','short') else ('long' if (prev_size_for_close or 0) > 0 else 'short'),
+                        price=fill_price,
+                        size=abs(prev_size_for_close or 0.0),
+                        leverage=leverage_used,
+                        reason=getattr(decision, 'reason', None),
+                        confidence=getattr(decision, 'confidence', None),
+                        pnl=pnl_val,
+                    )
+            except Exception:
+                pass
 
             if api_client and processor.ai_message_service:
                 try:
@@ -393,6 +454,19 @@ def execute_strategy_decision(processor, decision: Any, symbol: str, snapshot: A
                 except Exception as e:
                     logger.warning(f"  {symbol}: Failed to send agent message: {e}")
 
+            # Record cooldown timestamp on close regardless of frontend availability
+            try:
+                if parsed_decision.action == 'close':
+                    processor.risk_manager.record_position_close(symbol, getattr(parsed_decision, 'position_type', 'swing'))
+                    # Also persist action in memory
+                    try:
+                        from src.memory.agent_memory import get_memory
+                        get_memory().record_action(symbol=symbol, position_type=getattr(parsed_decision, 'position_type', 'swing'), action='close')
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             if api_client and decision.action == 'close':
                 position_type = getattr(parsed_decision, 'position_type', 'swing')
                 log_completed_trade(
@@ -406,6 +480,41 @@ def execute_strategy_decision(processor, decision: Any, symbol: str, snapshot: A
                     prev_size_for_close,
                     prev_entry_for_close,
                 )
+
+            # Record action time to support anti-churn cooldowns (especially for scalp)
+            try:
+                processor.risk_manager.record_action(symbol, getattr(parsed_decision, 'position_type', 'swing'))
+            except Exception:
+                pass
+
+            # Auto-flip for scalp reversals: attempt immediate opposite scalp entry
+            try:
+                # Only attempt auto-flip if enabled via config
+                if getattr(processor.config, 'scalp_autoflip_enabled', False) and getattr(parsed_decision, 'position_type', 'swing') == 'scalp' and parsed_decision.action == 'close':
+                    import re
+                    reason_text = str(getattr(decision, 'reason', '') or '')
+                    m = re.search(r"flip_to=(long|short)", reason_text, re.IGNORECASE)
+                    if m:
+                        flip_to = m.group(1).lower()
+                        logger.info(f"  {symbol}: Auto-flip hint detected -> {flip_to.upper()} (scalp)")
+                        try:
+                            current_price = get_price_from_snapshot(snapshot)
+                            # After close, size should be zero; request a fresh scalp decision
+                            next_decision = processor._get_strategy_decision(
+                                symbol, snapshot, 0.0, equity, cycle_count, 'scalp', current_price
+                            )
+                            if next_decision and next_decision.action in ['long', 'short']:
+                                if next_decision.action != flip_to:
+                                    logger.info(f"  {symbol}: Strategy suggests {next_decision.action.upper()} (flip requested {flip_to.upper()})")
+                                processor._execute_strategy_decision(
+                                    next_decision, symbol, snapshot, cycle_count, equity, api_client, 'scalp', all_snapshots
+                                )
+                            else:
+                                logger.info(f"  {symbol}: Flip requested but no valid scalp entry found this cycle")
+                        except Exception as _e:
+                            logger.warning(f"  {symbol}: Auto-flip execution failed: {_e}")
+            except Exception:
+                pass
         else:
             logger.warning(f"  {symbol}: [FAILED] {decision.position_type.upper()} {decision.action.upper()} not executed")
     except Exception as e:

@@ -25,6 +25,13 @@ class RiskManager:
         self.max_leverage = config.max_leverage
         self.daily_loss_cap_pct = config.daily_loss_cap_pct
         self.cooldown_seconds = config.cooldown_seconds
+        # Minimum hold requirements to reduce churn (seconds)
+        self.min_hold_seconds_swing = getattr(config, 'min_hold_seconds_swing', 900)
+        self.min_hold_seconds_scalp = getattr(config, 'min_hold_seconds_scalp', 300)
+        # Anti-churn: cooldown between any scalp actions (open/close)
+        self.min_action_interval_scalp = getattr(config, 'scalp_action_cooldown_seconds', 180)
+        self.min_action_interval_swing = getattr(config, 'swing_action_cooldown_seconds', 300)
+        self.allow_scalp_reversal_bypass = getattr(config, 'allow_scalp_reversal_bypass', False)
         
         # State tracking
         self.last_open_time: Optional[int] = None
@@ -33,11 +40,17 @@ class RiskManager:
         
         # Per-symbol, per-strategy cooldown tracking (prevents spam trading)
         self.last_close_time = {}  # {symbol: {'swing': timestamp, 'scalp': timestamp}}
+        self.last_action_time = {}  # { (symbol, ptype): timestamp }
         
         # Scalp-specific cooldown (faster re-entry for scalping)
         self.scalp_cooldown_seconds = 60  # 1 minute minimum between scalp trades
         self.swing_cooldown_seconds = 300  # 5 minutes minimum between swing trades
         self.consecutive_100pct_count: int = 0
+        # Portfolio-level controls
+        # Hard defaults (no env required)
+        self.max_open_positions_total = getattr(config, 'max_open_positions_total', 2)
+        self.min_global_open_interval_seconds = getattr(config, 'min_global_open_interval_seconds', 180)
+        self.symbol_cooldown_seconds = 300  # Do not reopen same symbol within 5 min after a close
     
     def validate_decision(
         self,
@@ -69,6 +82,92 @@ class RiskManager:
         if decision.action == "hold":
             logger.info("Risk check: hold action auto-approved")
             return True, ""
+        
+        # Resolve position_type early
+        position_type = getattr(decision, 'position_type', 'swing')
+
+        # Rule 0: Anti-churn action spacing for scalp and swing (applies to open/close unless forced)
+        try:
+            ptype = getattr(decision, 'position_type', 'swing')
+            if ptype in ('scalp', 'swing') and decision.action in ("long", "short", "close"):
+                key = (symbol, ptype)
+                last_act = self.last_action_time.get(key)
+                if last_act is not None:
+                    now_ts = int(datetime.now(timezone.utc).timestamp())
+                    elapsed = now_ts - int(last_act)
+                    reason_lower = (getattr(decision, 'reason', '') or '').lower()
+                    forced = (
+                        ('stop loss' in reason_lower) or
+                        ('take profit' in reason_lower) or
+                        ('emergency' in reason_lower) or
+                        (self.allow_scalp_reversal_bypass and ('reversal' in reason_lower))
+                    )
+                    min_interval = self.min_action_interval_scalp if ptype == 'scalp' else self.min_action_interval_swing
+                    if not forced and elapsed < min_interval:
+                        logger.warning(
+                            f"Risk check: denied - {ptype} action cooldown {elapsed}s < {min_interval}s for {symbol}"
+                        )
+                        return False, f"{ptype} action cooldown ({elapsed}s/{min_interval}s)"
+        except Exception:
+            pass
+
+        # Rule 1a: Enforce minimum hold time before generic closes (prevents quick churn)
+        # Always allow emergency/SL/TP-driven closes
+        if decision.action == "close" and position_manager is not None:
+            try:
+                current_size_signed = position_manager.get_position_by_type(symbol, position_type)
+                if abs(current_size_signed) > 0.0001:
+                    ts = None
+                    ts_dict = position_manager.position_entry_timestamps.get(symbol, {})
+                    if isinstance(ts_dict, dict):
+                        ts = ts_dict.get(position_type)
+                    now_ts = int(datetime.now(timezone.utc).timestamp())
+                    if ts:
+                        held_secs = max(0, now_ts - int(ts))
+                    else:
+                        # Fallback: use last action timestamp if entry ts missing
+                        held_secs = max(0, now_ts - int(self.last_action_time.get((symbol, position_type), now_ts)))
+                        min_hold = self.min_hold_seconds_scalp if position_type == 'scalp' else self.min_hold_seconds_swing
+                        reason_lower = (getattr(decision, 'reason', '') or '').lower()
+                        # Forced exceptions: SL/TP/Emergency (+ optional reversal if enabled)
+                        forced = (
+                            ('stop loss' in reason_lower) or
+                            ('take profit' in reason_lower) or
+                            ('emergency' in reason_lower) or
+                            (self.allow_scalp_reversal_bypass and ('reversal' in reason_lower))
+                        )
+                        if not forced and held_secs < min_hold:
+                            logger.warning(
+                                f"Risk check: denied - {position_type} min hold not satisfied for {symbol} ({held_secs}s < {min_hold}s)"
+                            )
+                            return False, f"min hold not satisfied ({held_secs}s/{min_hold}s)"
+            except Exception:
+                # On any error, be permissive to avoid trapping positions
+                pass
+
+        # Rule 1b: Prevent same-direction adds/pyramiding for a given strategy type
+        if decision.action in ["long", "short"] and position_manager is not None:
+            try:
+                current_size_signed = position_manager.get_position_by_type(symbol, position_type)
+                if ((decision.action == "long" and current_size_signed > 0.0001) or
+                    (decision.action == "short" and current_size_signed < -0.0001)):
+                    logger.warning(f"Risk check: denied - {position_type} same-direction add disabled for {symbol}")
+                    return False, "same-direction add disabled"
+            except Exception:
+                pass
+
+        # Rule 1c: Scalp must be opposite to swing if swing is open (pullback-only)
+        if decision.action in ["long", "short"] and position_type == 'scalp' and position_manager is not None:
+            try:
+                swing_pos = position_manager.get_position_by_type(symbol, 'swing')
+                if abs(swing_pos) > 0.0001:
+                    if (swing_pos > 0 and decision.action == 'long') or (swing_pos < 0 and decision.action == 'short'):
+                        logger.warning(
+                            f"Risk check: denied - scalp matches swing direction for {symbol}; only opposite pullbacks allowed"
+                        )
+                        return False, "scalp must be opposite to swing"
+            except Exception:
+                pass
         
         # Rule 1b: Minimum confidence gate (uses AI-overridden confidence if present)
         # Aligns with AI filter guidance: Scalp >= 0.55, Swing >= 0.60
@@ -257,7 +356,42 @@ class RiskManager:
                 )
                 return False, "daily loss cap reached"
         
-        # Rule 7a: Per-symbol, per-strategy cooldown (PREVENTS SPAM TRADING)
+        # Rule 7: Global open spacing (portfolio-wide) and per-symbol cooldowns
+        # 7a. Global interval between ANY opens
+        if decision.action in ["long", "short"]:
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            # Prefer memory-backed last open (persists across restarts)
+            elapsed = None
+            try:
+                from src.memory.agent_memory import get_memory
+                mem_last = get_memory().get_last_open_time()
+                if mem_last:
+                    elapsed = now_ts - int(mem_last)
+            except Exception:
+                elapsed = None
+            if elapsed is None and self.last_open_time is not None:
+                elapsed = now_ts - int(self.last_open_time)
+            if elapsed is not None and elapsed < self.min_global_open_interval_seconds:
+                logger.warning(
+                    f"Risk check: denied - global open cooldown {elapsed}s < {self.min_global_open_interval_seconds}s"
+                )
+                return False, f"global open cooldown ({elapsed}s/{self.min_global_open_interval_seconds}s)"
+
+            # Also, symbol-level cooldown based on last close (any type)
+            try:
+                from src.memory.agent_memory import get_memory
+                last_close_any = get_memory().get_last_close_time_any(symbol)
+                if last_close_any is not None:
+                    since_close = now_ts - int(last_close_any)
+                    if since_close < self.symbol_cooldown_seconds:
+                        logger.warning(
+                            f"Risk check: denied - symbol cooldown {since_close}s < {self.symbol_cooldown_seconds}s for {symbol}"
+                        )
+                        return False, f"symbol cooldown ({since_close}s/{self.symbol_cooldown_seconds}s)"
+            except Exception:
+                pass
+
+        # 7b. Per-symbol, per-strategy cooldown (PREVENTS SPAM TRADING)
         if decision.action in ["long", "short"]:
             position_type = getattr(decision, 'position_type', 'swing')
             current_time = int(datetime.now(timezone.utc).timestamp())
@@ -280,6 +414,47 @@ class RiskManager:
                                 f"({time_since_close}s < {required_cooldown}s) - prevents spam trading"
                             )
                             return False, f"{position_type} cooldown active ({time_since_close}s/{required_cooldown}s)"
+                else:
+                    # No in-memory close time; try to hydrate from persistent memory
+                    try:
+                        from src.memory.agent_memory import get_memory
+                        ts = get_memory().get_last_close_time(symbol, position_type)
+                        if ts is not None:
+                            if symbol not in self.last_close_time:
+                                self.last_close_time[symbol] = {}
+                            self.last_close_time[symbol][position_type] = int(ts)
+                            time_since_close = current_time - int(ts)
+                            required_cooldown = self.scalp_cooldown_seconds if position_type == 'scalp' else self.swing_cooldown_seconds
+                            if time_since_close < required_cooldown:
+                                logger.warning(
+                                    f"Risk check: denied - {position_type} cooldown active for {symbol} "
+                                    f"({time_since_close}s < {required_cooldown}s) - prevents spam trading"
+                                )
+                                return False, f"{position_type} cooldown active ({time_since_close}s/{required_cooldown}s)"
+                    except Exception:
+                        pass
+
+        # 7c. Portfolio max concurrent open positions (across all symbols & types)
+        if decision.action in ["long", "short"] and position_manager is not None:
+            try:
+                open_count = 0
+                if hasattr(position_manager, 'tracked_position_sizes'):
+                    for sym, pos in position_manager.tracked_position_sizes.items():
+                        if isinstance(pos, dict):
+                            if abs(pos.get('swing', 0.0)) > 0.0001:
+                                open_count += 1
+                            if abs(pos.get('scalp', 0.0)) > 0.0001:
+                                open_count += 1
+                        else:
+                            if abs(pos or 0.0) > 0.0001:
+                                open_count += 1
+                if open_count >= int(self.max_open_positions_total):
+                    logger.warning(
+                        f"Risk check: denied - max open positions {open_count} >= {self.max_open_positions_total}"
+                    )
+                    return False, f"max open positions reached ({open_count}/{self.max_open_positions_total})"
+            except Exception:
+                pass
         
         # Rule 7b: Global cooldown (legacy, kept for backward compatibility)
         if self.cooldown_seconds is not None and decision.action in ["long", "short"]:
@@ -339,6 +514,16 @@ class RiskManager:
             f"[COOLDOWN] {symbol} {position_type} closed - "
             f"next entry allowed in {cooldown}s to prevent spam trading"
         )
+
+    def record_action(self, symbol: str, position_type: str) -> None:
+        """Record time of any executed action for anti-churn spacing."""
+        try:
+            from datetime import datetime, timezone
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            key = (symbol, position_type)
+            self.last_action_time[key] = now_ts
+        except Exception:
+            pass
     
     def _calculate_smart_leverage(self, equity: float) -> float:
         """

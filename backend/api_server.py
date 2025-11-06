@@ -880,6 +880,32 @@ AGENT CAPABILITIES:
 - Strategy Mode: {strategy_mode}
 - Decision Cycle: Every 30 seconds
 - Features: Multi-timeframe analysis, VWAP filtering, volume confirmation, support/resistance detection, swing/scalp adaptive strategy, automatic stop-loss/take-profit"""
+            # Append AgentMemory summary (recent closed trades and reasons)
+            try:
+                from src.memory.agent_memory import get_memory
+                mem = get_memory()
+                mem_sum = mem.summarize_recent_closes(limit=20)
+                recent = mem_sum.get("trades", [])
+                lines = []
+                for t in recent[-12:][::-1]:
+                    sym = t.get("symbol")
+                    ptype = (t.get("position_type") or '').upper()
+                    side = (t.get("side") or '').upper()
+                    pnl = t.get("pnl")
+                    dur = t.get("duration_secs")
+                    rsn = (t.get("reason") or '').strip()
+                    if len(rsn) > 120:
+                        rsn = rsn[:117] + "..."
+                    pnl_str = f"${pnl:+.2f}" if pnl is not None else "n/a"
+                    dur_str = f"{int(dur)}s" if isinstance(dur, (int, float)) else "n/a"
+                    lines.append(f"- {sym} {ptype} {side}: PnL {pnl_str}, duration {dur_str}, reason: {rsn}")
+                mem_context = f"\nRECENT CLOSED TRADES (last {mem_sum.get('count',0)}):\n" \
+                              f"- Win rate: {mem_sum.get('win_rate',0.0)*100:.1f}% | Total PnL: ${mem_sum.get('pnl_sum',0.0):+.2f} | Avg duration: {int(mem_sum.get('avg_duration_secs') or 0)}s\n" \
+                              + ("\n".join(lines) if lines else "- none yet")
+            except Exception:
+                mem_context = "\nRECENT CLOSED TRADES: unavailable"
+
+            context += mem_context
             
             # Build ALL 6 COINS market overview (COMPREHENSIVE - ALL INDICATORS)
             all_coins_context = ""

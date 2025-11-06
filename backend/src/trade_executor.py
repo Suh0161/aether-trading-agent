@@ -107,6 +107,12 @@ class TradeExecutor:
             # Note: order_sizer already validates, but this is a final safety check
             try:
                 min_notional, _, _ = self.order_sizer._get_symbol_minimums(snapshot.symbol)
+                # Demo safety floor: enforce $20 even if API reports lower
+                try:
+                    if str(self.config.exchange_type).lower() == 'binance_demo' and (min_notional is None or min_notional < 20):
+                        min_notional = 20.0
+                except Exception:
+                    pass
                 actual_notional = order_size * snapshot.price
                 if actual_notional < min_notional:
                     logger.warning(

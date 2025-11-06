@@ -416,8 +416,8 @@ class PositionManager:
                         logger.warning(f"  Exchange: No position")
                         logger.info(f"  -> Debouncing clear to avoid false positives")
 
-                        # Debounce logic: if the position was opened very recently, or this is the first miss,
-                        # do NOT clear yet. Require two consecutive 'no position' syncs and older than 120s.
+                        # Debounce logic (robust): if the position was opened recently, or misses are not confirmed,
+                        # do NOT clear yet. Require two consecutive 'no position' syncs and at least 120s since open.
                         def _should_clear(ptype: str, size: float) -> bool:
                             if abs(size) <= 0.001:
                                 # Nothing to clear
@@ -428,8 +428,9 @@ class PositionManager:
                                 ts = self.position_entry_timestamps.get(symbol, {}).get(ptype)
                             except Exception:
                                 ts = None
-                            if ts is not None and current_time - int(ts) < 120:
-                                logger.info(f"  -> Skipping {ptype} clear (opened {int(current_time - int(ts))}s ago < 120s)")
+                            short_window = 120
+                            if ts is not None and current_time - int(ts) < short_window:
+                                logger.info(f"  -> Skipping {ptype} clear (opened {int(current_time - int(ts))}s ago < {short_window}s)")
                                 # Reset miss counter since we consider it valid
                                 self._no_position_miss_count[(symbol, ptype)] = 0
                                 return False
@@ -439,7 +440,7 @@ class PositionManager:
                             if self._no_position_miss_count[key] < 2:
                                 logger.info(f"  -> {ptype} miss #{self._no_position_miss_count[key]} (waiting for confirmation)")
                                 return False
-                            # Confirmed by 2 consecutive misses
+                            # Confirmed by two misses beyond the time window
                             return True
 
                         # Evaluate for each type independently

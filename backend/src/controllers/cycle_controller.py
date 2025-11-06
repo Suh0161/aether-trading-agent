@@ -265,8 +265,15 @@ class CycleController:
                     continue
 
                 # Step 1.6: Check for emergency close and process immediately if detected (RIGHT AFTER snapshots)
-                emergency_flag = os.path.join(os.path.dirname(os.path.dirname(__file__)), "emergency_close.flag")
-                if os.path.exists(emergency_flag):
+                # Support flag in either backend/src or backend root
+                src_dir = os.path.dirname(os.path.dirname(__file__))  # .../backend/src
+                backend_dir = os.path.dirname(src_dir)                # .../backend
+                flag_candidates = [
+                    os.path.join(src_dir, "emergency_close.flag"),
+                    os.path.join(backend_dir, "emergency_close.flag"),
+                ]
+                found_flags = [p for p in flag_candidates if os.path.exists(p)]
+                if found_flags:
                     logger.warning("[EMERGENCY CLOSE] Processing immediate position closure...")
 
                     # Process all symbols for emergency close
@@ -275,12 +282,13 @@ class CycleController:
                             symbol, snapshots, {}, 0, cycle_count, self.api_client, self.all_snapshots
                         )
 
-                    # Clear emergency flag after processing all symbols
-                    try:
-                        os.remove(emergency_flag)
-                        logger.info("Emergency close flag cleared")
-                    except Exception as e:
-                        logger.warning(f"Failed to clear emergency flag: {e}")
+                    # Clear all detected flags after processing all symbols
+                    for flag_path in found_flags:
+                        try:
+                            os.remove(flag_path)
+                            logger.info(f"Emergency close flag cleared: {flag_path}")
+                        except Exception as e:
+                            logger.warning(f"Failed to clear emergency flag {flag_path}: {e}")
 
                     self._sleep_until_next_cycle(cycle_start_time)
                     continue

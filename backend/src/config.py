@@ -30,6 +30,18 @@ class Config:
     # Optional risk
     daily_loss_cap_pct: Optional[float]
     cooldown_seconds: Optional[int]
+    # Minimum hold before allowing discretionary closes
+    min_hold_seconds_swing: int
+    min_hold_seconds_scalp: int
+    # Strategy toggles
+    scalp_fast_mode: bool
+    scalp_autoflip_enabled: bool
+    allow_scalp_reversal_bypass: bool
+    scalp_action_cooldown_seconds: int
+    swing_action_cooldown_seconds: int
+    # Portfolio-level controls
+    max_open_positions_total: int
+    min_global_open_interval_seconds: int
     
     # Demo mode (only used for binance_demo exchange type)
     mock_starting_equity: float  # Starting equity for demo mode (default: 100.0)
@@ -135,6 +147,16 @@ class Config:
                 cooldown_seconds = int(cooldown_str)
             except ValueError:
                 raise ValueError("COOLDOWN_SECONDS must be a valid integer")
+
+        # Minimum hold durations (defaults: swing 900s=15m, scalp 300s=5m)
+        try:
+            min_hold_seconds_swing = int(os.getenv("MIN_HOLD_SECONDS_SWING", "900"))
+        except ValueError:
+            raise ValueError("MIN_HOLD_SECONDS_SWING must be a valid integer")
+        try:
+            min_hold_seconds_scalp = int(os.getenv("MIN_HOLD_SECONDS_SCALP", "300"))
+        except ValueError:
+            raise ValueError("MIN_HOLD_SECONDS_SCALP must be a valid integer")
         
         # Validate numeric ranges
         if loop_interval_seconds <= 0:
@@ -176,6 +198,36 @@ class Config:
         
         if scalp_profit_threshold_pct < 0:
             raise ValueError("SCALP_PROFIT_THRESHOLD_PCT must be non-negative")
+
+        # Strategy toggles
+        scalp_fast_mode = os.getenv("SCALP_FAST_MODE", "false").strip().lower() in ("1", "true", "yes", "y")
+        # Accept multiple spellings for safety
+        _auto_names = [
+            "SCALP_AUTOFLIP_ENABLED",
+            "SCALP_AUTOFILP_ENABLED",
+            "SCALP_AUTofLIP_ENABLED",
+        ]
+        scalp_autoflip_enabled = any(
+            os.getenv(name, "false").strip().lower() in ("1", "true", "yes", "y") for name in _auto_names
+        )
+        allow_scalp_reversal_bypass = os.getenv("ALLOW_SCALP_REVERSAL_BYPASS", "false").strip().lower() in ("1", "true", "yes", "y")
+        try:
+            scalp_action_cooldown_seconds = int(os.getenv("SCALP_ACTION_COOLDOWN_SECONDS", "180"))
+        except ValueError:
+            raise ValueError("SCALP_ACTION_COOLDOWN_SECONDS must be a valid integer")
+        try:
+            swing_action_cooldown_seconds = int(os.getenv("SWING_ACTION_COOLDOWN_SECONDS", "300"))
+        except ValueError:
+            raise ValueError("SWING_ACTION_COOLDOWN_SECONDS must be a valid integer")
+        # Portfolio-level controls
+        try:
+            max_open_positions_total = int(os.getenv("MAX_OPEN_POSITIONS_TOTAL", "2"))
+        except ValueError:
+            raise ValueError("MAX_OPEN_POSITIONS_TOTAL must be a valid integer")
+        try:
+            min_global_open_interval_seconds = int(os.getenv("MIN_GLOBAL_OPEN_INTERVAL_SECONDS", "180"))
+        except ValueError:
+            raise ValueError("MIN_GLOBAL_OPEN_INTERVAL_SECONDS must be a valid integer")
         
         # Validate run mode
         if run_mode not in ["testnet", "live", "demo"]:
@@ -193,6 +245,8 @@ class Config:
             run_mode=run_mode,
             daily_loss_cap_pct=daily_loss_cap_pct,
             cooldown_seconds=cooldown_seconds,
+            min_hold_seconds_swing=min_hold_seconds_swing,
+            min_hold_seconds_scalp=min_hold_seconds_scalp,
             mock_starting_equity=mock_starting_equity,
             decision_provider=decision_provider,
             strategy_mode=strategy_mode,
@@ -200,4 +254,11 @@ class Config:
             swing_target_pct=swing_target_pct,
             scalp_target_pct=scalp_target_pct,
             min_allocation_usd=min_allocation_usd,
+            scalp_fast_mode=scalp_fast_mode,
+            scalp_autoflip_enabled=scalp_autoflip_enabled,
+            allow_scalp_reversal_bypass=allow_scalp_reversal_bypass,
+            scalp_action_cooldown_seconds=scalp_action_cooldown_seconds,
+            swing_action_cooldown_seconds=swing_action_cooldown_seconds,
+            max_open_positions_total=max_open_positions_total,
+            min_global_open_interval_seconds=min_global_open_interval_seconds,
         )
