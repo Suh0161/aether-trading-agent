@@ -93,18 +93,35 @@ class ATRBreakoutStrategy:
 
         # If we have a LONG position, check exit conditions
         if position_size > 0:
-            # Exit if trend reverses
-            if trend_alignment in ["neutral", "weak"] or price < ema_50:
+            # SWING TRADES: Only exit on STRONG trend reversal, not weak/neutral signals
+            # Swing trades should ride through minor pullbacks and neutral periods
+            # Exit conditions:
+            # 1. Strong bearish reversal (trend_alignment == "strong" AND opposite direction)
+            # 2. Price breaks below key support (EMA50 + significant distance)
+            # 3. Major structural break (let SL/TP handle normal exits)
+            
+            # Check for strong bearish reversal (opposite of long)
+            strong_bearish_reversal = (
+                trend_alignment == "strong" and 
+                indicators.get("trend_1d", "neutral") == "bearish" and
+                indicators.get("trend_4h", "neutral") == "bearish" and
+                price < ema_50 * 0.98  # Price dropped at least 2% below EMA50
+            )
+            
+            # Check for major support break (price significantly below EMA50)
+            major_support_break = price < ema_50 * 0.95  # 5% below EMA50 = major break
+            
+            if strong_bearish_reversal or major_support_break:
                 return StrategySignal(
                     action="close",
                     size_pct=1.0,
-                    reason=f"Long exit: Trend reversal (price ${price:.2f}, EMA50 ${ema_50:.2f}, {timeframe_info})",
+                    reason=f"Long exit: Strong trend reversal (price ${price:.2f}, EMA50 ${ema_50:.2f}, {timeframe_info})",
                     confidence=0.9,
                     position_type="swing",
                     symbol=snapshot.symbol
                 )
 
-            # Otherwise hold long
+            # Otherwise hold long - let SL/TP handle normal exits
             return StrategySignal(
                 action="hold",
                 size_pct=0.0,
@@ -116,18 +133,35 @@ class ATRBreakoutStrategy:
 
         # If we have a SHORT position, check exit conditions
         elif position_size < 0:
-            # Exit if downtrend reverses
-            if trend_alignment in ["neutral", "weak"] or price > ema_50:
+            # SWING TRADES: Only exit on STRONG trend reversal, not weak/neutral signals
+            # Swing trades should ride through minor bounces and neutral periods
+            # Exit conditions:
+            # 1. Strong bullish reversal (trend_alignment == "strong" AND opposite direction)
+            # 2. Price breaks above key resistance (EMA50 + significant distance)
+            # 3. Major structural break (let SL/TP handle normal exits)
+            
+            # Check for strong bullish reversal (opposite of short)
+            strong_bullish_reversal = (
+                trend_alignment == "strong" and 
+                indicators.get("trend_1d", "neutral") == "bullish" and
+                indicators.get("trend_4h", "neutral") == "bullish" and
+                price > ema_50 * 1.02  # Price rose at least 2% above EMA50
+            )
+            
+            # Check for major resistance break (price significantly above EMA50)
+            major_resistance_break = price > ema_50 * 1.05  # 5% above EMA50 = major break
+            
+            if strong_bullish_reversal or major_resistance_break:
                 return StrategySignal(
                     action="close",
                     size_pct=1.0,
-                    reason=f"Short exit: Trend reversal (price ${price:.2f}, EMA50 ${ema_50:.2f}, {timeframe_info})",
+                    reason=f"Short exit: Strong trend reversal (price ${price:.2f}, EMA50 ${ema_50:.2f}, {timeframe_info})",
                     confidence=0.9,
                     position_type="swing",
                     symbol=snapshot.symbol
                 )
 
-            # Otherwise hold short
+            # Otherwise hold short - let SL/TP handle normal exits
             return StrategySignal(
                 action="hold",
                 size_pct=0.0,

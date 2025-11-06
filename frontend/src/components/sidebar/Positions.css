@@ -143,6 +143,30 @@
   border: 1px solid rgba(220, 38, 38, 0.2);
 }
 
+/* Small badge for SWING/SCALP type in row */
+.position-type-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.position-type-badge.swing {
+  background-color: #dbeafe;
+  color: #1e40af;
+  border: 1px solid rgba(37, 99, 235, 0.25);
+}
+
+.position-type-badge.scalp {
+  background-color: #ede9fe;
+  color: #6d28d9;
+  border: 1px solid rgba(109, 40, 217, 0.25);
+}
+
 /* Center: Metrics */
 .position-card-body {
   display: grid;

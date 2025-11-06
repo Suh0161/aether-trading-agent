@@ -26,7 +26,8 @@ class RiskManager:
         self.daily_loss_cap_pct = config.daily_loss_cap_pct
         self.cooldown_seconds = config.cooldown_seconds
         # Minimum hold requirements to reduce churn (seconds)
-        self.min_hold_seconds_swing = getattr(config, 'min_hold_seconds_swing', 900)
+        # Swing trades should last hours/days - minimum 1 hour prevents premature exits
+        self.min_hold_seconds_swing = getattr(config, 'min_hold_seconds_swing', 3600)
         self.min_hold_seconds_scalp = getattr(config, 'min_hold_seconds_scalp', 300)
         # Anti-churn: cooldown between any scalp actions (open/close)
         self.min_action_interval_scalp = getattr(config, 'scalp_action_cooldown_seconds', 180)
@@ -122,25 +123,27 @@ class RiskManager:
                     if isinstance(ts_dict, dict):
                         ts = ts_dict.get(position_type)
                     now_ts = int(datetime.now(timezone.utc).timestamp())
+                    held_secs = 0
                     if ts:
                         held_secs = max(0, now_ts - int(ts))
                     else:
                         # Fallback: use last action timestamp if entry ts missing
                         held_secs = max(0, now_ts - int(self.last_action_time.get((symbol, position_type), now_ts)))
-                        min_hold = self.min_hold_seconds_scalp if position_type == 'scalp' else self.min_hold_seconds_swing
-                        reason_lower = (getattr(decision, 'reason', '') or '').lower()
-                        # Forced exceptions: SL/TP/Emergency (+ optional reversal if enabled)
-                        forced = (
-                            ('stop loss' in reason_lower) or
-                            ('take profit' in reason_lower) or
-                            ('emergency' in reason_lower) or
-                            (self.allow_scalp_reversal_bypass and ('reversal' in reason_lower))
+
+                    min_hold = self.min_hold_seconds_scalp if position_type == 'scalp' else self.min_hold_seconds_swing
+                    reason_lower = (getattr(decision, 'reason', '') or '').lower()
+                    # Forced exceptions: SL/TP/Emergency (+ optional reversal if enabled)
+                    forced = (
+                        ('stop loss' in reason_lower) or
+                        ('take profit' in reason_lower) or
+                        ('emergency' in reason_lower) or
+                        (self.allow_scalp_reversal_bypass and ('reversal' in reason_lower))
+                    )
+                    if not forced and held_secs < min_hold:
+                        logger.warning(
+                            f"Risk check: denied - {position_type} min hold not satisfied for {symbol} ({held_secs}s < {min_hold}s)"
                         )
-                        if not forced and held_secs < min_hold:
-                            logger.warning(
-                                f"Risk check: denied - {position_type} min hold not satisfied for {symbol} ({held_secs}s < {min_hold}s)"
-                            )
-                            return False, f"min hold not satisfied ({held_secs}s/{min_hold}s)"
+                        return False, f"min hold not satisfied ({held_secs}s/{min_hold}s)"
             except Exception:
                 # On any error, be permissive to avoid trapping positions
                 pass

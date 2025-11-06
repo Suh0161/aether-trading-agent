@@ -528,9 +528,13 @@ class SymbolProcessor:
                 else:
                     realized_pnl = (entry_price - exit_price) * quantity
                     side_str = "SHORT"
-                # Skip micro-noise trades to avoid cluttering Completed Trades with $0.00
-                if abs(realized_pnl) < 0.01:
-                    logger.info(f"  {symbol}: Completed trade P&L ${realized_pnl:.4f} < $0.01 - suppressing UI entry")
+                # Skip micro-noise trades to avoid cluttering Completed Trades (configurable threshold)
+                try:
+                    min_abs = float(getattr(self.config, 'completed_trades_min_abs_pnl', 0.0))
+                except Exception:
+                    min_abs = 0.0
+                if abs(realized_pnl) < min_abs:
+                    logger.info(f"  {symbol}: Completed trade P&L ${realized_pnl:.4f} < ${min_abs:.2f} - suppressing UI entry")
                     return
                 
                 # Calculate holding time

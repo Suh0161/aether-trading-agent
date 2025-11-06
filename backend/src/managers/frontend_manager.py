@@ -177,6 +177,7 @@ class FrontendManager:
                     positions_list.append({
                         "side": "LONG" if was_long else "SHORT",
                         "coin": base_currency,
+                        "symbol": symbol,
                         "leverage": f"{leverage_whole}X",  # Whole number only (1x or 2x)
                         "notional": display_notional,
                         "unrealPnL": unrealized_pnl,
@@ -270,6 +271,7 @@ class FrontendManager:
                     positions_list.append({
                         "side": "LONG" if was_long else "SHORT",
                         "coin": base_currency,
+                        "symbol": symbol,
                         "leverage": f"{leverage_whole}X",  # Whole number only (1x or 2x)
                         "notional": display_notional,
                         "unrealPnL": unrealized_pnl,

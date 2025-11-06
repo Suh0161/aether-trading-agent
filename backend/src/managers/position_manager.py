@@ -27,6 +27,14 @@ class PositionManager:
         # NEW: Track swing and scalp positions separately - can coexist!
         self.tracked_position_sizes = {}  # {symbol: {'swing': size, 'scalp': size}} - positive for long, negative for short
 
+        # Retain config and sync/logging knobs
+        self.config = config
+        # Demo/exchange sync behavior
+        self.disable_sync_in_demo = getattr(config, 'disable_position_sync_in_demo', True)
+        self.sync_grace_seconds = getattr(config, 'sync_grace_seconds', 900)
+        self.sync_confirm_misses = getattr(config, 'sync_confirm_misses', 3)
+        self.completed_trades_min_abs_pnl = getattr(config, 'completed_trades_min_abs_pnl', 0.0)
+
         # Track equity dynamically for demo mode (starts at mock equity from config, updates with realized P&L)
         self.tracked_equity = config.mock_starting_equity  # Starting equity for demo mode (will update with realized P&L)
         self.starting_equity = config.mock_starting_equity  # Track starting equity for daily reset
@@ -367,6 +375,16 @@ class PositionManager:
             exchange_adapter: ExchangeAdapter instance with fetch_futures_positions() method
             tracked_symbols: List of symbols we're tracking (e.g., ['BTC/USDT', 'ETH/USDT'])
         """
+        # If running in demo and configured to disable sync, skip entirely (prevents false external-closes
+        # on unsupported alt symbols that demo never returns in account positions)
+        try:
+            if self.disable_sync_in_demo and getattr(exchange_adapter, 'config', None):
+                et = getattr(exchange_adapter.config, 'exchange_type', '').lower()
+                rm = getattr(exchange_adapter.config, 'run_mode', '').lower()
+                if et == 'binance_demo' or rm == 'demo':
+                    return
+        except Exception:
+            pass
         import time
         current_time = time.time()
         
@@ -428,7 +446,7 @@ class PositionManager:
                                 ts = self.position_entry_timestamps.get(symbol, {}).get(ptype)
                             except Exception:
                                 ts = None
-                            short_window = 120
+                            short_window = int(self.sync_grace_seconds or 120)
                             if ts is not None and current_time - int(ts) < short_window:
                                 logger.info(f"  -> Skipping {ptype} clear (opened {int(current_time - int(ts))}s ago < {short_window}s)")
                                 # Reset miss counter since we consider it valid
@@ -437,7 +455,8 @@ class PositionManager:
                             # Increment consecutive miss count
                             key = (symbol, ptype)
                             self._no_position_miss_count[key] = self._no_position_miss_count.get(key, 0) + 1
-                            if self._no_position_miss_count[key] < 2:
+                            required_misses = int(self.sync_confirm_misses or 2)
+                            if self._no_position_miss_count[key] < required_misses:
                                 logger.info(f"  -> {ptype} miss #{self._no_position_miss_count[key]} (waiting for confirmation)")
                                 return False
                             # Confirmed by two misses beyond the time window
@@ -503,8 +522,12 @@ class PositionManager:
                                         sec = int(_t.time()) - int(ts)
                                         holding = f"{sec // 60}m" if sec < 3600 else f"{sec // 3600}h {(sec % 3600)//60}m"
                                     pnl = (exit_price - entry_price) * qty if size > 0 else (entry_price - exit_price) * qty
-                                    # Skip micro-noise trades to avoid spam
-                                    if abs(pnl) < 0.01:
+                                    # Skip micro-noise trades to avoid spam (configurable)
+                                    try:
+                                        min_abs = float(self.completed_trades_min_abs_pnl)
+                                    except Exception:
+                                        min_abs = 0.0
+                                    if abs(pnl) < min_abs:
                                         return
                                     try:
                                         api_client.add_trade(

@@ -146,6 +146,11 @@ function Positions({ positions }) {
                       <span className={`col-side ${position.side.toLowerCase()}`}>
                         {position.side}
                       </span>
+                      {position.positionType && (
+                        <span className={`position-type-badge ${position.positionType}`} title={position.positionType.toUpperCase()}>
+                          {position.positionType.toUpperCase()}
+                        </span>
+                      )}
                     </div>
                   </div>
 

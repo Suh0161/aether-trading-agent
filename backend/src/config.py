@@ -45,6 +45,11 @@ class Config:
     
     # Demo mode (only used for binance_demo exchange type)
     mock_starting_equity: float  # Starting equity for demo mode (default: 100.0)
+    # Position sync behavior and trade logging
+    disable_position_sync_in_demo: bool  # If true, skip exchange position sync in demo
+    sync_grace_seconds: int              # Seconds to wait before treating missing exchange pos as closed
+    sync_confirm_misses: int             # Number of consecutive misses required to confirm external close
+    completed_trades_min_abs_pnl: float  # Minimum absolute P&L to log a completed trade to frontend
     
     # Scalp profit threshold (default: 0.3%)
     scalp_profit_threshold_pct: float  # Minimum profit % to keep scalp position open after 5 min
@@ -150,7 +155,9 @@ class Config:
 
         # Minimum hold durations (defaults: swing 900s=15m, scalp 300s=5m)
         try:
-            min_hold_seconds_swing = int(os.getenv("MIN_HOLD_SECONDS_SWING", "900"))
+            # Swing trades should last hours/days, not minutes
+            # Minimum 1 hour (3600s) prevents premature exits
+            min_hold_seconds_swing = int(os.getenv("MIN_HOLD_SECONDS_SWING", "3600"))
         except ValueError:
             raise ValueError("MIN_HOLD_SECONDS_SWING must be a valid integer")
         try:
@@ -190,6 +197,21 @@ class Config:
         if mock_starting_equity <= 0:
             raise ValueError("MOCK_STARTING_EQUITY must be greater than 0")
         
+        # Position sync flags and completed-trade logging threshold
+        disable_position_sync_in_demo = os.getenv("DISABLE_POSITION_SYNC_IN_DEMO", "true").strip().lower() in ("1", "true", "yes", "y")
+        try:
+            sync_grace_seconds = int(os.getenv("SYNC_GRACE_SECONDS", "900"))
+        except ValueError:
+            raise ValueError("SYNC_GRACE_SECONDS must be a valid integer")
+        try:
+            sync_confirm_misses = int(os.getenv("SYNC_CONFIRM_MISSES", "3"))
+        except ValueError:
+            raise ValueError("SYNC_CONFIRM_MISSES must be a valid integer")
+        try:
+            completed_trades_min_abs_pnl = float(os.getenv("COMPLETED_TRADES_MIN_ABS_PNL", "0.00"))
+        except ValueError:
+            raise ValueError("COMPLETED_TRADES_MIN_ABS_PNL must be a valid float")
+
         # Load optional scalp profit threshold (default 0.3%)
         try:
             scalp_profit_threshold_pct = float(os.getenv("SCALP_PROFIT_THRESHOLD_PCT", "0.3"))
@@ -248,6 +270,10 @@ class Config:
             min_hold_seconds_swing=min_hold_seconds_swing,
             min_hold_seconds_scalp=min_hold_seconds_scalp,
             mock_starting_equity=mock_starting_equity,
+            disable_position_sync_in_demo=disable_position_sync_in_demo,
+            sync_grace_seconds=sync_grace_seconds,
+            sync_confirm_misses=sync_confirm_misses,
+            completed_trades_min_abs_pnl=completed_trades_min_abs_pnl,
             decision_provider=decision_provider,
             strategy_mode=strategy_mode,
             scalp_profit_threshold_pct=scalp_profit_threshold_pct,

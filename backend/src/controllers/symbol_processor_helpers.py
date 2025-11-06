@@ -340,6 +340,17 @@ def execute_strategy_decision(processor, decision: Any, symbol: str, snapshot: A
             logger.info(f"  {symbol}:   Fill Price: ${fill_price:,.2f}, Size: {filled_size:.6f}")
             logger.info(f"  {symbol}:   Order ID: {order_id}, Leverage: {leverage_used:.1f}x")
 
+            # NEW: Emit explicit Agent Chat message for every OPEN (long/short)
+            try:
+                if api_client and decision.action in ('long', 'short'):
+                    side_word = 'long' if decision.action == 'long' else 'short'
+                    ptype = getattr(parsed_decision, 'position_type', 'swing').upper()
+                    api_client.add_agent_message(
+                        f"Opened {ptype} {symbol} {side_word} at ${fill_price:,.2f} (qty {filled_size:g}). Leverage {leverage_used:.1f}x."
+                    )
+            except Exception:
+                pass
+
             # Persist to AgentMemory
             try:
                 from src.memory.agent_memory import get_memory

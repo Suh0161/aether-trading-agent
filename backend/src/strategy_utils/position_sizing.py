@@ -127,6 +127,12 @@ def calculate_leverage(confidence: float, position_type: str = "swing", base_lev
 def calculate_dynamic_sl_tp(price: float, atr_value: float, action: str) -> Tuple[float, float]:
     """
     Calculate dynamic stop loss and take profit based on ATR.
+    
+    For SWING trades:
+    - Stop loss: 2x ATR (allows for normal volatility)
+    - Take profit: 4x ATR (2:1 risk/reward ratio)
+    - Minimum SL distance: 1% of price (prevents SL too close to entry)
+    - Minimum TP distance: 2% of price (ensures meaningful profit target)
 
     Args:
         price: Current price
@@ -137,17 +143,41 @@ def calculate_dynamic_sl_tp(price: float, atr_value: float, action: str) -> Tupl
         Tuple of (stop_loss_price, take_profit_price)
     """
     # ATR-based stop loss (2x ATR for swing trades)
-    sl_distance = atr_value * 2.0
+    sl_distance_atr = atr_value * 2.0
+    
+    # Minimum SL distance: 1% of price (prevents SL=entry bugs)
+    sl_distance_min = price * 0.01
+    sl_distance = max(sl_distance_atr, sl_distance_min)
 
-    # Take profit at 2R (4x ATR distance)
-    tp_distance = atr_value * 4.0
+    # Take profit at 2R (4x ATR distance for 2:1 risk/reward)
+    tp_distance_atr = atr_value * 4.0
+    
+    # Minimum TP distance: 2% of price (ensures meaningful profit target)
+    tp_distance_min = price * 0.02
+    tp_distance = max(tp_distance_atr, tp_distance_min)
+    
+    # Ensure TP is at least 2x the SL distance (maintain 2:1 R:R minimum)
+    if tp_distance < sl_distance * 2.0:
+        tp_distance = sl_distance * 2.0
 
     if action == "long":
         stop_loss = price - sl_distance
         take_profit = price + tp_distance
+        
+        # Safety check: ensure SL < entry < TP
+        if stop_loss >= price:
+            stop_loss = price * 0.99  # Fallback: 1% below entry
+        if take_profit <= price:
+            take_profit = price * 1.02  # Fallback: 2% above entry
     else:  # short
         stop_loss = price + sl_distance
         take_profit = price - tp_distance
+        
+        # Safety check: ensure TP < entry < SL
+        if stop_loss <= price:
+            stop_loss = price * 1.01  # Fallback: 1% above entry
+        if take_profit >= price:
+            take_profit = price * 0.98  # Fallback: 2% below entry
 
     return stop_loss, take_profit
 
