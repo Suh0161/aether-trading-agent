@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { usePriceContext } from '../../contexts/PriceContext'
 import './Positions.css'
 
 function Positions({ positions }) {
+  const { getPrice, isPriceStale } = usePriceContext()
   const [hoveredRow, setHoveredRow] = useState(null)
   const [showExitPlan, setShowExitPlan] = useState(null)
   const rowRefs = useRef({})
@@ -89,7 +91,31 @@ function Positions({ positions }) {
               const showPlan = showExitPlan === index
               
               const entryPrice = position.entryPrice || 0
-              const currentPrice = position.currentPrice || 0
+              
+              // ENHANCED: Use WebSocket price from chart if available and fresh, otherwise use backend price
+              // This fixes the "stuck price" issue where position price doesn't update
+              const coinSymbol = position.coin
+              const wsPrice = getPrice(`${coinSymbol}/USDT`) || getPrice(coinSymbol)
+              const backendPrice = position.currentPrice || 0
+              
+              // Prefer WebSocket price if available and not stale, otherwise use backend price
+              let currentPrice = backendPrice
+              if (wsPrice && !isPriceStale(`${coinSymbol}/USDT`) && !isPriceStale(coinSymbol)) {
+                // WebSocket price is fresh, use it
+                currentPrice = wsPrice
+              } else if (wsPrice && backendPrice > 0) {
+                // WebSocket price exists but may be stale, use it if backend price seems stuck
+                // Check if backend price hasn't changed (stuck)
+                const priceDiff = Math.abs(wsPrice - backendPrice) / backendPrice
+                if (priceDiff > 0.001) { // More than 0.1% difference
+                  // WebSocket price is different, likely more current
+                  currentPrice = wsPrice
+                } else {
+                  // Prices are similar, use backend price
+                  currentPrice = backendPrice
+                }
+              }
+              
               const target = position.takeProfit || null
               const stop = position.stopLoss || null
               const side = position.side || 'LONG'

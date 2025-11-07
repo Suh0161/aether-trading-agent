@@ -290,20 +290,29 @@ class TPSLAdjuster:
             if risk > 0:
                 final_rr = reward / risk
                 
-                # If R:R is poor (<1.5:1), reject adjustments and use strategy defaults
-                if final_rr < 1.5:
+                # CRITICAL: For SWING trades, enforce 2:1 R:R minimum (swing trades need proper targets)
+                # For SCALP trades, 1.5:1 is acceptable (scalps are tighter by nature)
+                position_type = getattr(signal, 'position_type', 'swing')
+                min_rr_required = 2.0 if position_type == 'swing' else 1.5
+                
+                if final_rr < min_rr_required:
                     logger.warning(
-                        f"AI TP/SL adjustment rejected: R:R ratio {final_rr:.2f}:1 is below minimum 1.5:1. "
+                        f"AI TP/SL adjustment rejected for {position_type.upper()}: R:R ratio {final_rr:.2f}:1 is below minimum {min_rr_required:.1f}:1. "
                         f"Using strategy defaults (TP=${signal.take_profit:,.2f}, SL=${signal.stop_loss:,.2f})"
                     )
                     # Revert to strategy defaults
                     adjusted_tp = None
                     adjusted_sl = None
                     trailing_pct = None  # Also reset trailing if R:R is bad
+                elif position_type == 'swing' and final_rr < 2.0:
+                    logger.warning(f"AI TP/SL adjustment R:R: {final_rr:.2f}:1 for SWING trade is below 2:1 minimum - rejecting")
+                    adjusted_tp = None
+                    adjusted_sl = None
+                    trailing_pct = None
                 elif final_rr < 2.0:
-                    logger.info(f"AI TP/SL adjustment R:R: {final_rr:.2f}:1 (acceptable, but strategy might be better)")
+                    logger.info(f"AI TP/SL adjustment R:R: {final_rr:.2f}:1 (acceptable for {position_type})")
                 else:
-                    logger.info(f"AI TP/SL adjustment R:R: {final_rr:.2f}:1 (GOOD)")
+                    logger.info(f"AI TP/SL adjustment R:R: {final_rr:.2f}:1 (GOOD for {position_type})")
 
         return adjusted_tp, adjusted_sl, trailing_pct
 
@@ -337,9 +346,17 @@ CRITICAL PRINCIPLES:
    - High confidence (0.8+): You can widen TP targets, tighten SL slightly, or use tighter trailing stops
    - Medium confidence (0.6-0.8): Make conservative adjustments, stay close to strategy defaults
    - Lower confidence (<0.6): This function shouldn't be called, but if it is, be VERY conservative
-3. RISK:REWARD RATIO: Always maintain at least 1.5:1 R:R ratio (preferably 2:1 or better).
+3. RISK:REWARD RATIO - CRITICAL FOR POSITION TYPE:
+   - SWING TRADES: MUST maintain at least 2:1 R:R ratio (swing trades need proper swing-sized targets)
+     * Minimum TP distance: 6% of entry price (ensures meaningful swing profit targets)
+     * Minimum SL distance: 3% of entry price (prevents scalp-like tight stops)
+     * Example: Entry $0.16, SL $0.18 (12.5%), TP $0.15 (6.25%) = BAD (0.68:1 R:R) - REJECT THIS!
+     * Example: Entry $0.16, SL $0.18 (12.5%), TP $0.13 (18.75%) = GOOD (1.5:1 R:R) - acceptable
+     * Example: Entry $0.16, SL $0.18 (12.5%), TP $0.12 (25%) = EXCELLENT (2:1 R:R) - ideal
+   - SCALP TRADES: Must maintain at least 1.5:1 R:R ratio (scalps are tighter by nature)
    Strategy default R:R: {f'{strategy_rr:.2f}:1' if strategy_rr else 'N/A'}
    Your adjustments MUST maintain or improve this ratio - never make it worse!
+   CRITICAL: If you set TP/SL that results in R:R < 2.0 for SWING trades, your adjustment will be REJECTED!
 4. MAKE SENSE: Only adjust if:
    - Support/Resistance levels suggest different targets
    - Volatility (ATR) indicates TP/SL should be wider/tighter
@@ -359,7 +376,7 @@ TRADE DETAILS:
 - Symbol: {snapshot.symbol}
 - Entry Price: ${entry_price:,.2f}
 - Confidence: {signal.confidence:.2f} ({'HIGH - Can be aggressive' if signal.confidence >= 0.8 else 'MEDIUM - Be conservative' if signal.confidence >= 0.6 else 'LOW - Be very conservative'})
-- Position Type: {signal.position_type.upper()} ({'Swing trades use trailing stops' if signal.position_type == 'swing' else 'Scalp trades do not use trailing stops'})
+- Position Type: {signal.position_type.upper()} ({'SWING: Must have 2:1 R:R minimum, TP should be 6%+ from entry, SL should be 3%+ from entry' if signal.position_type == 'swing' else 'SCALP: Must have 1.5:1 R:R minimum, tighter targets acceptable'})
 - Strategy TP: ${signal.take_profit:,.2f} ({((signal.take_profit - entry_price)/entry_price*100):+.1f}% from entry)
 - Strategy SL: ${signal.stop_loss:,.2f} ({((signal.stop_loss - entry_price)/entry_price*100):+.1f}% from entry)
 - Strategy R:R: {f'{strategy_rr:.2f}:1' if strategy_rr else 'N/A'} {'(GOOD - maintain or improve)' if strategy_rr and strategy_rr >= 2.0 else '(OK - improve if possible)' if strategy_rr and strategy_rr >= 1.5 else '(POOR - MUST improve)' if strategy_rr else ''}

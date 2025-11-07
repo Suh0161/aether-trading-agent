@@ -358,6 +358,14 @@ class CycleController:
                 except Exception as e:
                     logger.warning(f"Failed to refresh positions/update frontend: {e}")
 
+                # Process any pending AI filter batches before cycle summary
+                try:
+                    if hasattr(self.decision_provider, 'ai_filter') and hasattr(self.decision_provider.ai_filter, 'batcher'):
+                        if self.decision_provider.ai_filter.batcher:
+                            self.decision_provider.ai_filter.batcher.process_pending_batches()
+                except Exception as e:
+                    logger.debug(f"Error processing pending batches: {e}")
+
                 # Send consolidated cycle summary message
                 self.ai_message_service.send_cycle_summary_message(cycle_count)
 

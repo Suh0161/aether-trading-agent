@@ -3,22 +3,27 @@
 import logging
 from typing import Optional
 
+from src.ai_processors.ai_filter_cache import AIFilterCache
+
 logger = logging.getLogger(__name__)
 
 
 class AIFilter:
     """Enhanced AI-powered filtering of trading signals with professional risk management."""
 
-    def __init__(self, client):
+    def __init__(self, client, enable_cache: bool = True, cache_ttl_seconds: int = 90):
         """
         Initialize AI filter.
 
         Args:
             client: OpenAI client for API calls
+            enable_cache: Enable response caching (default: True)
+            cache_ttl_seconds: Cache TTL in seconds (default: 90)
         """
         self.client = client
+        self.cache = AIFilterCache(ttl_seconds=cache_ttl_seconds) if enable_cache else None
 
-    def filter_signal(self, snapshot, signal, position_size: float, equity: float, total_margin_used: float = 0.0, all_symbols: list = None) -> tuple[bool, Optional[float], Optional[float]]:
+    def filter_signal(self, snapshot, signal, position_size: float, equity: float, total_margin_used: float = 0.0, all_symbols: list = None, symbol: str = None) -> tuple[bool, Optional[float], Optional[float]]:
         """
         Use enhanced AI to filter/veto strategy signals with superior critical thinking AND assess confidence dynamically.
 
@@ -29,6 +34,7 @@ class AIFilter:
             equity: Account equity
             total_margin_used: Total margin used across ALL symbols (for liquidity awareness)
             all_symbols: List of all symbols being traded (for capital allocation awareness)
+            symbol: Trading symbol (for caching, extracted from snapshot if not provided)
 
         Returns:
             Tuple of (approved: bool, suggested_leverage: Optional[float], ai_confidence: Optional[float])
@@ -39,6 +45,17 @@ class AIFilter:
         # IMPORTANT: AI will assess ALL decisions, including HOLD with 0.00 confidence
         # AI can find trades even when strategy says HOLD, or assess actual confidence
         # We removed auto-approve so AI can dynamically evaluate market conditions
+        
+        # Get symbol for caching
+        if symbol is None:
+            symbol = snapshot.symbol if hasattr(snapshot, 'symbol') else 'UNKNOWN'
+        
+        # Check cache first
+        if self.cache:
+            cached_result = self.cache.get(symbol, snapshot, signal, position_size)
+            if cached_result is not None:
+                logger.debug(f"AI filter cache HIT for {symbol} {signal.action}")
+                return cached_result
         
         try:
             # Build enhanced prompt for AI filter with capital awareness
@@ -195,7 +212,11 @@ class AIFilter:
                     logger.warning(f"  |-- WARNING: ai_confidence is None after parsing! Response snippet: {ai_response[:300]}")
                 # Return confidence even when vetoing (for HOLD decisions, this shows AI's assessment)
                 logger.debug(f"DEBUG: Returning (False, None, {ai_confidence}) from filter_signal")
-                return False, None, ai_confidence
+                result = (False, None, ai_confidence)
+                # Store in cache
+                if self.cache:
+                    self.cache.put(symbol, snapshot, signal, position_size, False, None, ai_confidence)
+                return result
             elif first_word == "approve":
                 # Fix Unicode encoding issue: replace ≥ with >= for Windows console
                 safe_response = sanitize_unicode(first_line[:150])
@@ -206,7 +227,11 @@ class AIFilter:
                     logger.info(f"  |-- AI leverage suggestion: {int(suggested_leverage)}x")
                 if ai_confidence is not None:
                     logger.info(f"  |-- AI confidence override: {ai_confidence:.2f} (strategy had: {signal.confidence:.2f})")
-                return True, suggested_leverage, ai_confidence
+                result = (True, suggested_leverage, ai_confidence)
+                # Store in cache
+                if self.cache:
+                    self.cache.put(symbol, snapshot, signal, position_size, True, suggested_leverage, ai_confidence)
+                return result
             else:
                 # Fallback: check if veto/reject appears early in response
                 if "veto" in ai_response_lower[:100] or "reject" in ai_response_lower[:100]:
@@ -215,16 +240,212 @@ class AIFilter:
                     logger.warning(f"AI VETOED (fallback): {safe_response}")
                     if ai_confidence is not None:
                         logger.info(f"  |-- AI assessed confidence: {ai_confidence:.2f} (strategy had: {signal.confidence:.2f})")
-                    return False, None, ai_confidence
+                    result = (False, None, ai_confidence)
+                    # Store in cache
+                    if self.cache:
+                        self.cache.put(symbol, snapshot, signal, position_size, False, None, ai_confidence)
+                    return result
                 # Default to approve if unclear (but log warning)
                 logger.warning(f"AI response unclear, defaulting to APPROVE: {sanitize_unicode(first_line[:100])}")
                 logger.warning(f"  |-- Full response: {sanitize_unicode(ai_response[:500])}")
-                return True, suggested_leverage, ai_confidence
+                result = (True, suggested_leverage, ai_confidence)
+                # Store in cache
+                if self.cache:
+                    self.cache.put(symbol, snapshot, signal, position_size, True, suggested_leverage, ai_confidence)
+                return result
 
         except Exception as e:
             logger.error(f"AI filter failed: {e}")
             # On error, approve by default (don't block strategy)
-            return True, None, None
+            result = (True, None, None)
+            # Don't cache errors
+            return result
+    
+    def _get_position_duration_info(self, snapshot, signal, position_size: float) -> str:
+        """
+        Get position duration information for AI prompt.
+        Validates duration and detects calculation errors.
+        
+        Returns:
+            Formatted string with duration info or empty if no position
+        """
+        try:
+            import time
+            import api_server
+            
+            if abs(position_size) < 0.0001:
+                return "No open position"
+            
+            # Get entry timestamp
+            entry_timestamp = None
+            position_type = getattr(signal, 'position_type', 'swing')
+            
+            try:
+                if hasattr(api_server, 'loop_controller_instance') and api_server.loop_controller_instance:
+                    loop_controller = api_server.loop_controller_instance
+                    if hasattr(loop_controller, 'cycle_controller') and loop_controller.cycle_controller:
+                        position_manager = loop_controller.cycle_controller.position_manager
+                        timestamp_dict = position_manager.position_entry_timestamps.get(snapshot.symbol, {})
+                        if isinstance(timestamp_dict, dict):
+                            entry_timestamp = timestamp_dict.get(position_type)
+                        else:
+                            entry_timestamp = timestamp_dict if timestamp_dict else None
+            except Exception:
+                pass
+            
+            if not entry_timestamp or entry_timestamp <= 0:
+                return "Position duration: Unknown (entry timestamp not available)"
+            
+            # Calculate duration
+            current_timestamp = int(time.time())
+            
+            # Handle timestamp conversion (entry_timestamp is in seconds, but validate)
+            if entry_timestamp > 1e10:
+                # Entry timestamp appears to be in milliseconds, convert
+                entry_timestamp_seconds = int(entry_timestamp / 1000)
+            else:
+                entry_timestamp_seconds = int(entry_timestamp)
+            
+            time_held_seconds = current_timestamp - entry_timestamp_seconds
+            
+            # Validate duration is reasonable
+            MAX_REASONABLE_DURATION = 31536000  # 1 year
+            if time_held_seconds > MAX_REASONABLE_DURATION:
+                return f"[WARNING] CALCULATION ERROR: Position duration appears corrupted ({time_held_seconds/60:.1f} minutes = {time_held_seconds/86400:.1f} days). Entry timestamp may be invalid. Ignore duration-based logic."
+            
+            # Format duration
+            if time_held_seconds < 60:
+                duration_str = f"{time_held_seconds}s"
+            elif time_held_seconds < 3600:
+                duration_str = f"{time_held_seconds // 60}m {time_held_seconds % 60}s"
+            elif time_held_seconds < 86400:
+                hours = time_held_seconds // 3600
+                minutes = (time_held_seconds % 3600) // 60
+                duration_str = f"{hours}h {minutes}m"
+            else:
+                days = time_held_seconds // 86400
+                hours = (time_held_seconds % 86400) // 3600
+                duration_str = f"{days}d {hours}h"
+            
+            return f"Position duration: {duration_str} (entry: {entry_timestamp_seconds}, current: {current_timestamp})"
+            
+        except Exception as e:
+            logger.debug(f"Error getting position duration: {e}")
+            return "Position duration: Unknown (error calculating)"
+
+    def _get_tp_sl_proximity_info(self, snapshot, signal, position_size: float) -> str:
+        """
+        Get TP/SL proximity information for AI prompt.
+        Shows how close current price is to take profit and stop loss targets.
+        
+        Returns:
+            Formatted string with TP/SL proximity info or empty if no position
+        """
+        try:
+            import api_server
+            
+            if abs(position_size) < 0.0001:
+                return ""
+            
+            position_type = getattr(signal, 'position_type', 'swing')
+            current_price = snapshot.price
+            is_long = position_size > 0
+            
+            # Get TP/SL from position manager
+            take_profit = None
+            stop_loss = None
+            entry_price = None
+            
+            try:
+                if hasattr(api_server, 'loop_controller_instance') and api_server.loop_controller_instance:
+                    loop_controller = api_server.loop_controller_instance
+                    if hasattr(loop_controller, 'cycle_controller') and loop_controller.cycle_controller:
+                        position_manager = loop_controller.cycle_controller.position_manager
+                        
+                        # Get TP
+                        tp_dict = position_manager.position_take_profits.get(snapshot.symbol, {})
+                        if isinstance(tp_dict, dict):
+                            take_profit = tp_dict.get(position_type)
+                        else:
+                            take_profit = tp_dict if position_type == 'swing' else None
+                        
+                        # Get SL
+                        sl_dict = position_manager.position_stop_losses.get(snapshot.symbol, {})
+                        if isinstance(sl_dict, dict):
+                            stop_loss = sl_dict.get(position_type)
+                        else:
+                            stop_loss = sl_dict if position_type == 'swing' else None
+                        
+                        # Get entry price
+                        entry_dict = position_manager.position_entry_prices.get(snapshot.symbol, {})
+                        if isinstance(entry_dict, dict):
+                            entry_price = entry_dict.get(position_type)
+                        else:
+                            entry_price = entry_dict if position_type == 'swing' else None
+            except Exception as e:
+                logger.debug(f"Error getting TP/SL from position manager: {e}")
+                return ""
+            
+            if not take_profit and not stop_loss:
+                return ""
+            
+            info_lines = []
+            info_lines.append(f"TP/SL TARGET PROXIMITY ({position_type.upper()} position):")
+            
+            if entry_price and entry_price > 0:
+                info_lines.append(f"Entry Price: ${entry_price:,.2f}")
+            
+            # Calculate TP proximity
+            if take_profit and take_profit > 0:
+                if is_long:
+                    distance_to_tp = ((take_profit - current_price) / current_price) * 100
+                    if current_price >= take_profit:
+                        info_lines.append(f"TAKE PROFIT REACHED: ${current_price:,.2f} >= TP ${take_profit:,.2f} (target hit!)")
+                    elif distance_to_tp <= 1.0:
+                        info_lines.append(f"TP VERY CLOSE: ${current_price:,.2f} (${take_profit:,.2f} target is {distance_to_tp:.2f}% away - almost there!)")
+                    elif distance_to_tp <= 3.0:
+                        info_lines.append(f"TP NEARBY: ${current_price:,.2f} (${take_profit:,.2f} target is {distance_to_tp:.2f}% away)")
+                    else:
+                        info_lines.append(f"TP Target: ${take_profit:,.2f} ({distance_to_tp:.2f}% away from current ${current_price:,.2f})")
+                else:  # short
+                    distance_to_tp = ((current_price - take_profit) / current_price) * 100
+                    if current_price <= take_profit:
+                        info_lines.append(f"TAKE PROFIT REACHED: ${current_price:,.2f} <= TP ${take_profit:,.2f} (target hit!)")
+                    elif distance_to_tp <= 1.0:
+                        info_lines.append(f"TP VERY CLOSE: ${current_price:,.2f} (${take_profit:,.2f} target is {distance_to_tp:.2f}% away - almost there!)")
+                    elif distance_to_tp <= 3.0:
+                        info_lines.append(f"TP NEARBY: ${current_price:,.2f} (${take_profit:,.2f} target is {distance_to_tp:.2f}% away)")
+                    else:
+                        info_lines.append(f"TP Target: ${take_profit:,.2f} ({distance_to_tp:.2f}% away from current ${current_price:,.2f})")
+            
+            # Calculate SL proximity
+            if stop_loss and stop_loss > 0:
+                if is_long:
+                    distance_to_sl = ((current_price - stop_loss) / current_price) * 100
+                    if current_price <= stop_loss:
+                        info_lines.append(f"STOP LOSS HIT: ${current_price:,.2f} <= SL ${stop_loss:,.2f} (loss triggered!)")
+                    elif distance_to_sl <= 1.0:
+                        info_lines.append(f"SL VERY CLOSE: ${current_price:,.2f} (${stop_loss:,.2f} stop is {distance_to_sl:.2f}% away - danger!)")
+                    elif distance_to_sl <= 3.0:
+                        info_lines.append(f"SL NEARBY: ${current_price:,.2f} (${stop_loss:,.2f} stop is {distance_to_sl:.2f}% away - watch closely)")
+                    else:
+                        info_lines.append(f"SL Stop: ${stop_loss:,.2f} ({distance_to_sl:.2f}% away from current ${current_price:,.2f})")
+                else:  # short
+                    distance_to_sl = ((stop_loss - current_price) / current_price) * 100
+                    if current_price >= stop_loss:
+                        info_lines.append(f"STOP LOSS HIT: ${current_price:,.2f} >= SL ${stop_loss:,.2f} (loss triggered!)")
+                    elif distance_to_sl <= 1.0:
+                        info_lines.append(f"SL VERY CLOSE: ${current_price:,.2f} (${stop_loss:,.2f} stop is {distance_to_sl:.2f}% away - danger!)")
+                    elif distance_to_sl <= 3.0:
+                        info_lines.append(f"SL NEARBY: ${current_price:,.2f} (${stop_loss:,.2f} stop is {distance_to_sl:.2f}% away - watch closely)")
+                    else:
+                        info_lines.append(f"SL Stop: ${stop_loss:,.2f} ({distance_to_sl:.2f}% away from current ${current_price:,.2f})")
+            
+            return "\n".join(info_lines) + "\n"
+            
+        except Exception as e:
+            logger.debug(f"Error getting TP/SL proximity: {e}")
+            return ""
 
     def _build_enhanced_filter_prompt(self, snapshot, signal, position_size: float, equity: float, total_margin_used: float = 0.0, all_symbols: list = None) -> str:
         """Build superior prompt for AI filter with enhanced critical thinking framework and capital awareness."""
@@ -408,6 +629,11 @@ SCALP Position ({snapshot.symbol}): {scalp_position:.4f} ({'LONG' if scalp_posit
 Available Cash: ${available_cash:,.2f}
 Required Cash: ${required_cash:,.2f} ({'SUFFICIENT' if available_cash >= required_cash else 'INSUFFICIENT'})
 {multi_symbol_info}
+
+POSITION DURATION (if position exists):
+{self._get_position_duration_info(snapshot, signal, position_size)}
+
+{self._get_tp_sl_proximity_info(snapshot, signal, position_size)}
 
 {timeframe_section}
 

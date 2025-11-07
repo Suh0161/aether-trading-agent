@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { PriceProvider } from './contexts/PriceContext'
 import './index.css'
 
 // Epic ASCII Art
@@ -19,6 +20,8 @@ o88o     o8888o o888ooooood8     o888o     o888o   o888o o888ooooood8 o888o  o88
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
+    <PriceProvider>
+      <App />
+    </PriceProvider>
   </React.StrictMode>
 )

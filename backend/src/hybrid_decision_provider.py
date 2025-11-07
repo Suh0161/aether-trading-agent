@@ -38,7 +38,17 @@ class HybridDecisionProvider:
         self.config = config
         
         # Initialize modular components
-        self.ai_filter = AIFilter(self.client)
+        # Enable caching by default (90s TTL)
+        self.ai_filter = AIFilter(self.client, enable_cache=True, cache_ttl_seconds=90)
+        
+        # Optionally enable batching (can be disabled if needed)
+        try:
+            from src.ai_processors.ai_filter_batch import AIFilterBatcher
+            self.ai_filter.batcher = AIFilterBatcher(self.ai_filter, batch_window_seconds=2.0, max_batch_size=6)
+        except Exception as e:
+            logger.debug(f"Batching not available: {e}")
+            self.ai_filter.batcher = None
+        
         self.tp_sl_adjuster = TPSLAdjuster(self.client)
         self.strategy_selector = StrategySelector(strategy_type, config)
         self.decision_filter = DecisionFilter()
@@ -148,9 +158,18 @@ class HybridDecisionProvider:
             total_margin_used = abs(position_size) * snapshot.price if position_size != 0 else 0.0
 
         # Always apply AI filter for reasoning, even on hold decisions
-        approved, ai_suggested_leverage, ai_confidence = self.ai_filter.filter_signal(
-            snapshot, final_signal, position_size, equity, total_margin_used, all_symbols
-        )
+        # Use batcher if available, otherwise direct call
+        if hasattr(self.ai_filter, 'batcher') and self.ai_filter.batcher:
+            # Use batcher for batching support
+            approved, ai_suggested_leverage, ai_confidence = self.ai_filter.batcher.filter_signal(
+                snapshot, final_signal, position_size, equity, total_margin_used, all_symbols,
+                force_immediate=(final_signal.action == 'close')  # Force immediate for closes
+            )
+        else:
+            # Direct call (pass symbol for caching)
+            approved, ai_suggested_leverage, ai_confidence = self.ai_filter.filter_signal(
+                snapshot, final_signal, position_size, equity, total_margin_used, all_symbols, symbol=snapshot.symbol
+            )
 
         # Use AI confidence if provided (AI overrides hardcoded strategy confidence)
         if ai_confidence is not None:

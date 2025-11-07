@@ -246,13 +246,50 @@ class ScalpingStrategy:
             entry_timestamp = indicators.get('position_entry_timestamp', None)
 
         if entry_timestamp:
-            current_timestamp = snapshot.timestamp if hasattr(snapshot, 'timestamp') else int(time_module.time())
+            # CRITICAL: snapshot.timestamp is in MILLISECONDS, entry_timestamp is in SECONDS
+            # Convert snapshot.timestamp to seconds for proper comparison
+            if hasattr(snapshot, 'timestamp') and snapshot.timestamp:
+                # Check if timestamp is in milliseconds (> 1e10) or seconds
+                if snapshot.timestamp > 1e10:
+                    # Timestamp is in milliseconds, convert to seconds
+                    current_timestamp = int(snapshot.timestamp / 1000)
+                else:
+                    # Timestamp is already in seconds
+                    current_timestamp = int(snapshot.timestamp)
+            else:
+                # Fallback to current time in seconds
+                current_timestamp = int(time_module.time())
 
             if isinstance(entry_timestamp, (int, float)) and entry_timestamp > 0:
+                # Both timestamps are now in seconds
                 time_held_seconds = current_timestamp - entry_timestamp
+                
+                # VALIDATION: Detect unrealistic durations (calculation errors)
+                # If duration > 1 year (31536000 seconds), it's definitely a bug
+                MAX_REASONABLE_DURATION_SECONDS = 31536000  # 1 year
+                if time_held_seconds > MAX_REASONABLE_DURATION_SECONDS:
+                    logger.error(
+                        f"TIMESTAMP CALCULATION ERROR: time_held_seconds={time_held_seconds} "
+                        f"(>1 year) for {snapshot.symbol}. "
+                        f"current_timestamp={current_timestamp}, entry_timestamp={entry_timestamp}. "
+                        f"Using fallback: current time - entry_timestamp"
+                    )
+                    # Fallback: recalculate using current time
+                    current_timestamp = int(time_module.time())
+                    time_held_seconds = current_timestamp - entry_timestamp
+                    
+                    # If still unreasonable, log and skip duration-based logic
+                    if time_held_seconds > MAX_REASONABLE_DURATION_SECONDS:
+                        logger.error(
+                            f"TIMESTAMP ERROR PERSISTS: Skipping duration-based exit logic. "
+                            f"Entry timestamp may be corrupted: {entry_timestamp}"
+                        )
+                        # Skip duration checks but continue with other exit logic
+                        time_held_seconds = None
+                
                 entry_price = indicators.get('position_entry_price', price)
 
-                if entry_price > 0:
+                if entry_price > 0 and time_held_seconds is not None:
                     profit_pct = ((price - entry_price) / entry_price) * 100
                     
                     # Check if trend is still bullish (reason to HOLD)
@@ -327,13 +364,50 @@ class ScalpingStrategy:
             entry_timestamp = indicators.get('position_entry_timestamp', None)
 
         if entry_timestamp:
-            current_timestamp = snapshot.timestamp if hasattr(snapshot, 'timestamp') else int(time_module.time())
+            # CRITICAL: snapshot.timestamp is in MILLISECONDS, entry_timestamp is in SECONDS
+            # Convert snapshot.timestamp to seconds for proper comparison
+            if hasattr(snapshot, 'timestamp') and snapshot.timestamp:
+                # Check if timestamp is in milliseconds (> 1e10) or seconds
+                if snapshot.timestamp > 1e10:
+                    # Timestamp is in milliseconds, convert to seconds
+                    current_timestamp = int(snapshot.timestamp / 1000)
+                else:
+                    # Timestamp is already in seconds
+                    current_timestamp = int(snapshot.timestamp)
+            else:
+                # Fallback to current time in seconds
+                current_timestamp = int(time_module.time())
 
             if isinstance(entry_timestamp, (int, float)) and entry_timestamp > 0:
+                # Both timestamps are now in seconds
                 time_held_seconds = current_timestamp - entry_timestamp
+                
+                # VALIDATION: Detect unrealistic durations (calculation errors)
+                # If duration > 1 year (31536000 seconds), it's definitely a bug
+                MAX_REASONABLE_DURATION_SECONDS = 31536000  # 1 year
+                if time_held_seconds > MAX_REASONABLE_DURATION_SECONDS:
+                    logger.error(
+                        f"TIMESTAMP CALCULATION ERROR: time_held_seconds={time_held_seconds} "
+                        f"(>1 year) for {snapshot.symbol}. "
+                        f"current_timestamp={current_timestamp}, entry_timestamp={entry_timestamp}. "
+                        f"Using fallback: current time - entry_timestamp"
+                    )
+                    # Fallback: recalculate using current time
+                    current_timestamp = int(time_module.time())
+                    time_held_seconds = current_timestamp - entry_timestamp
+                    
+                    # If still unreasonable, log and skip duration-based logic
+                    if time_held_seconds > MAX_REASONABLE_DURATION_SECONDS:
+                        logger.error(
+                            f"TIMESTAMP ERROR PERSISTS: Skipping duration-based exit logic. "
+                            f"Entry timestamp may be corrupted: {entry_timestamp}"
+                        )
+                        # Skip duration checks but continue with other exit logic
+                        time_held_seconds = None
+                
                 entry_price = indicators.get('position_entry_price', price)
 
-                if entry_price > 0:
+                if entry_price > 0 and time_held_seconds is not None:
                     profit_pct = ((entry_price - price) / entry_price) * 100  # For short: profit = entry - current
                     
                     # Check if trend is still bearish (reason to HOLD)

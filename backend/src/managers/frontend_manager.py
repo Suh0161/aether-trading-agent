@@ -21,35 +21,82 @@ class FrontendManager:
         """
         self.config = config
         self.api_client = api_client
+        
+        # Track last prices per symbol to detect stale prices
+        self.last_prices = {}  # {symbol: {'price': float, 'timestamp': float}}
+        self.price_staleness_threshold = 60.0  # Consider price stale if not updated in 60 seconds
 
     def _try_get_live_price(self, symbol: str, fallback_price: float) -> float:
         """Fetch latest ticker price using the active exchange if available.
 
         This avoids showing 0.00 P&L right after fills by using a fresh price
         instead of the snapshot captured at the start of the cycle.
+        
+        ENHANCED: Validates price freshness and detects stale prices.
         """
         try:
             import api_server  # late import to avoid circulars during app startup
             if getattr(api_server, 'loop_controller_instance', None):
                 loop_controller = api_server.loop_controller_instance
                 if hasattr(loop_controller, 'cycle_controller') and loop_controller.cycle_controller:
-                    exchange_adapter = getattr(loop_controller.cycle_controller, 'exchange_adapter', None)
-                    exchange = getattr(exchange_adapter, 'exchange', None)
+                    cycle_controller = loop_controller.cycle_controller
+                    
+                    # Try multiple ways to get exchange adapter
+                    exchange = None
+                    exchange_adapter = None
+                    
+                    # Method 1: From data_acquisition
+                    if hasattr(cycle_controller, 'data_acquisition'):
+                        exchange_adapter = getattr(cycle_controller.data_acquisition, 'exchange_adapter', None)
+                        if exchange_adapter:
+                            exchange = getattr(exchange_adapter, 'exchange', None)
+                    
+                    # Method 2: From trade_executor
+                    if exchange is None and hasattr(cycle_controller, 'trade_executor'):
+                        trade_executor = cycle_controller.trade_executor
+                        exchange_adapter = getattr(trade_executor, 'exchange_adapter', None)
+                        if exchange_adapter:
+                            exchange = getattr(exchange_adapter, 'exchange', None)
+                    
                     if exchange is None:
+                        logger.debug(f"Exchange not available for live price fetch: {symbol}")
                         return fallback_price
+                    
                     # Prefer Futures public ticker if present (works in demo)
                     sym = symbol.replace('/', '')
-                    if hasattr(exchange, 'fapiPublicGetTickerPrice'):
-                        res = exchange.fapiPublicGetTickerPrice({'symbol': sym})
-                        price = float(res['price']) if isinstance(res, dict) and 'price' in res else float(res)
-                        return price if price > 0 else fallback_price
-                    # Fallback to generic fetch_ticker
-                    if hasattr(exchange, 'fetch_ticker'):
-                        t = exchange.fetch_ticker(symbol)
-                        price = float(t.get('last', fallback_price))
-                        return price if price > 0 else fallback_price
+                    live_price = None
+                    
+                    try:
+                        if hasattr(exchange, 'fapiPublicGetTickerPrice'):
+                            res = exchange.fapiPublicGetTickerPrice({'symbol': sym})
+                            live_price = float(res['price']) if isinstance(res, dict) and 'price' in res else float(res)
+                        # Fallback to generic fetch_ticker
+                        elif hasattr(exchange, 'fetch_ticker'):
+                            t = exchange.fetch_ticker(symbol)
+                            live_price = float(t.get('last', 0))
+                    except Exception as fetch_error:
+                        logger.debug(f"Price fetch error for {symbol}: {fetch_error}")
+                        live_price = None
+                    
+                    # Validate live price
+                    if live_price and live_price > 0:
+                        # Validate price is reasonable (within 10% of fallback to detect errors)
+                        if fallback_price > 0:
+                            price_diff_pct = abs(live_price - fallback_price) / fallback_price
+                            if price_diff_pct > 0.10:  # More than 10% difference
+                                logger.warning(
+                                    f"Price mismatch for {symbol}: live={live_price:.2f}, "
+                                    f"fallback={fallback_price:.2f} (diff: {price_diff_pct*100:.2f}%)"
+                                )
+                                # Use fallback if difference is too large (likely error)
+                                return fallback_price
+                        return live_price
+                    else:
+                        logger.debug(f"Invalid live price for {symbol}: {live_price}")
         except Exception as e:
             logger.debug(f"Live price fetch failed for {symbol}: {e}")
+        
+        # Return fallback if all else fails
         return fallback_price
 
     def update_frontend_all_positions(
@@ -86,8 +133,51 @@ class FrontendManager:
                     continue
 
                 current_price = get_price_from_snapshot(snapshot)
+                
+                # Validate snapshot price is valid
+                if not current_price or current_price <= 0:
+                    logger.warning(f"Invalid snapshot price for {symbol}: {current_price}, skipping position update")
+                    continue
+                
                 # Try to refresh to a live ticker so unrealized P&L moves immediately after fills
-                current_price = self._try_get_live_price(symbol, current_price)
+                # This ensures positions always show current market price, not stale snapshot price
+                live_price = self._try_get_live_price(symbol, current_price)
+                
+                # Use live price if available and valid, otherwise use snapshot price
+                if live_price and live_price > 0:
+                    current_price = live_price
+                    logger.debug(f"Using live price for {symbol}: ${current_price:.2f}")
+                else:
+                    # Fallback to snapshot price, but log if it seems stale
+                    logger.debug(f"Using snapshot price for {symbol}: ${current_price:.2f} (live fetch failed)")
+                
+                # Track price updates to detect staleness
+                import time
+                current_time = time.time()
+                last_price_info = self.last_prices.get(symbol, {})
+                last_price = last_price_info.get('price')
+                last_timestamp = last_price_info.get('timestamp', 0)
+                
+                # Detect if price is stuck (same price for too long)
+                if last_price is not None and abs(current_price - last_price) < 0.01:  # Price unchanged
+                    time_since_update = current_time - last_timestamp
+                    if time_since_update > self.price_staleness_threshold:
+                        logger.warning(
+                            f"Price appears stale for {symbol}: ${current_price:.2f} unchanged for {time_since_update:.1f}s "
+                            f"(threshold: {self.price_staleness_threshold}s)"
+                        )
+                        # Try to force refresh by fetching live price again
+                        force_refresh_price = self._try_get_live_price(symbol, current_price)
+                        if force_refresh_price and force_refresh_price > 0 and abs(force_refresh_price - current_price) > 0.01:
+                            current_price = force_refresh_price
+                            logger.info(f"Price refreshed for {symbol}: ${current_price:.2f} (was ${last_price:.2f})")
+                
+                # Update last price tracking
+                self.last_prices[symbol] = {
+                    'price': current_price,
+                    'timestamp': current_time
+                }
+                
                 base_currency = symbol.split('/')[0]
 
                 # Process swing position

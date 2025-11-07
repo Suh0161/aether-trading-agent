@@ -131,8 +131,9 @@ def calculate_dynamic_sl_tp(price: float, atr_value: float, action: str) -> Tupl
     For SWING trades:
     - Stop loss: 2x ATR (allows for normal volatility)
     - Take profit: 4x ATR (2:1 risk/reward ratio)
-    - Minimum SL distance: 1% of price (prevents SL too close to entry)
-    - Minimum TP distance: 2% of price (ensures meaningful profit target)
+    - Minimum SL distance: 3% of price (prevents scalp-like tight stops for swing trades)
+    - Minimum TP distance: 6% of price (ensures meaningful swing profit targets)
+    - CRITICAL: Always maintains 2:1 risk/reward ratio minimum
 
     Args:
         price: Current price
@@ -145,20 +146,27 @@ def calculate_dynamic_sl_tp(price: float, atr_value: float, action: str) -> Tupl
     # ATR-based stop loss (2x ATR for swing trades)
     sl_distance_atr = atr_value * 2.0
     
-    # Minimum SL distance: 1% of price (prevents SL=entry bugs)
-    sl_distance_min = price * 0.01
+    # Minimum SL distance: 3% of price for SWING trades (prevents scalp-like tight stops)
+    # Swing trades need room to breathe - 1% is too tight and causes scalp-like behavior
+    sl_distance_min = price * 0.03
     sl_distance = max(sl_distance_atr, sl_distance_min)
 
     # Take profit at 2R (4x ATR distance for 2:1 risk/reward)
     tp_distance_atr = atr_value * 4.0
     
-    # Minimum TP distance: 2% of price (ensures meaningful profit target)
-    tp_distance_min = price * 0.02
+    # Minimum TP distance: 6% of price for SWING trades (ensures meaningful swing targets)
+    # Swing trades should target proper swing moves, not tiny scalp moves
+    tp_distance_min = price * 0.06
     tp_distance = max(tp_distance_atr, tp_distance_min)
     
-    # Ensure TP is at least 2x the SL distance (maintain 2:1 R:R minimum)
+    # CRITICAL: Ensure TP is at least 2x the SL distance (maintain 2:1 R:R minimum)
+    # This is the most important check - swing trades MUST have 2:1 R:R minimum
     if tp_distance < sl_distance * 2.0:
         tp_distance = sl_distance * 2.0
+        # Log if we had to adjust to maintain R:R
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Swing TP adjusted to maintain 2:1 R:R: SL={sl_distance/price*100:.2f}%, TP={tp_distance/price*100:.2f}%")
 
     if action == "long":
         stop_loss = price - sl_distance
@@ -166,18 +174,18 @@ def calculate_dynamic_sl_tp(price: float, atr_value: float, action: str) -> Tupl
         
         # Safety check: ensure SL < entry < TP
         if stop_loss >= price:
-            stop_loss = price * 0.99  # Fallback: 1% below entry
+            stop_loss = price * 0.97  # Fallback: 3% below entry (swing minimum)
         if take_profit <= price:
-            take_profit = price * 1.02  # Fallback: 2% above entry
+            take_profit = price * 1.06  # Fallback: 6% above entry (swing minimum)
     else:  # short
         stop_loss = price + sl_distance
         take_profit = price - tp_distance
         
         # Safety check: ensure TP < entry < SL
         if stop_loss <= price:
-            stop_loss = price * 1.01  # Fallback: 1% above entry
+            stop_loss = price * 1.03  # Fallback: 3% above entry (swing minimum)
         if take_profit >= price:
-            take_profit = price * 0.98  # Fallback: 2% below entry
+            take_profit = price * 0.94  # Fallback: 6% below entry (swing minimum)
 
     return stop_loss, take_profit
 

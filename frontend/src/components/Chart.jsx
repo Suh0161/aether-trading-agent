@@ -107,6 +107,11 @@ function Chart({ symbol, trades = [], positions = [] }) {
                 // Always update coinPrices and coinPriceChanges for ticker
                 setCoinPrices(prev => ({ ...prev, ...updates }))
                 setCoinPriceChanges(prev => ({ ...prev, ...changeUpdates }))
+                
+                // Update shared price context
+                Object.entries(updates).forEach(([symbol, price]) => {
+                    updatePrice(symbol, price)
+                })
 
                 // Update selected coin price for single view
                 if (viewMode === 'single') {
@@ -459,6 +464,9 @@ function Chart({ symbol, trades = [], positions = [] }) {
 
                     // Update prices in real-time - this matches Binance Futures exactly
                     setCoinPrices(prev => ({ ...prev, [coinSymbol]: lastPrice }))
+                    
+                    // Update shared price context for other components (Positions, etc.)
+                    updatePrice(coinSymbol, lastPrice)
                     
                     // Update selected coin price for single view header
                     if (viewMode === 'single' && coinSymbol === selectedCoin) {

@@ -93,17 +93,17 @@ class DataAcquisition:
             combined_indicators = {}
 
             for tf in timeframes:
-                # Check cache first
-                cached = self.timeframe_cache.get_cached_indicators(tf)
+                # Check cache first (per-symbol cache)
+                cached = self.timeframe_cache.get_cached_indicators(symbol, tf)
                 if cached:
                     indicators = cached
-                    logger.debug(f"Using cached {tf} timeframe")
+                    logger.debug(f"Using cached {tf} timeframe for {symbol}")
                 else:
                     # Fetch fresh data
                     ohlcv_data = self.data_fetcher.fetch_ohlcv_data(symbol, tf, self._get_limit_for_timeframe(tf))
                     indicators = self.indicator_calculator.compute_indicators(ohlcv_data)
-                    self.timeframe_cache.update_cache(tf, indicators)
-                    logger.debug(f"Updated {tf} timeframe cache")
+                    self.timeframe_cache.update_cache(symbol, tf, indicators)
+                    logger.debug(f"Updated {tf} timeframe cache for {symbol}")
 
                 # Add timeframe prefix to indicators
                 if tf != '1h':  # 1h is primary, no prefix needed

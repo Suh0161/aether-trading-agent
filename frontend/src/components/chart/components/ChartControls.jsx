@@ -11,8 +11,8 @@ function ChartControls({ timeframe, chartType, onTimeframeChange, onChartTypeCha
     ]
 
     const chartTypes = [
-        { value: 'candlestick', label: 'Candlestick', icon: '📊' },
-        { value: 'area', label: 'Area', icon: '📈' }
+        { value: 'candlestick', label: 'Candlestick', icon: null },
+        { value: 'area', label: 'Area', icon: null }
     ]
 
     return (
@@ -41,7 +41,7 @@ function ChartControls({ timeframe, chartType, onTimeframeChange, onChartTypeCha
                             className={`chart-type-btn ${chartType === type.value ? 'active' : ''}`}
                             onClick={() => onChartTypeChange(type.value)}
                         >
-                            <span className="chart-type-icon">{type.icon}</span>
+                            {type.icon && <span className="chart-type-icon">{type.icon}</span>}
                             <span className="chart-type-label">{type.label}</span>
                         </button>
                     ))}

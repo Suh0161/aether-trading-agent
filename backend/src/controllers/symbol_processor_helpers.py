@@ -13,31 +13,73 @@ from src.utils.snapshot_utils import get_price_from_snapshot
 logger = logging.getLogger(__name__)
 
 
-def should_skip_llm_call(processor, symbol: str, snapshot, position_size: float, cycle_count: int) -> bool:
+def should_skip_llm_call(processor, symbol: str, snapshot, position_size: float, cycle_count: int, decision_action: str = None, decision_confidence: float = None) -> bool:
+    """
+    Determine if AI filter call should be skipped based on market stability and recent analysis.
+    
+    Enhanced logic:
+    - Works even with open positions (if market is stable)
+    - Better thresholds for price stability
+    - Considers decision type and confidence
+    
+    Args:
+        processor: SymbolProcessor instance
+        symbol: Trading symbol
+        snapshot: Market snapshot
+        position_size: Current position size
+        cycle_count: Current cycle count
+        decision_action: Decision action (long/short/hold/close)
+        decision_confidence: Strategy confidence
+        
+    Returns:
+        True if should skip, False otherwise
+    """
     try:
         now = int(time.time())
         current_price = get_price_from_snapshot(snapshot)
         rec = processor.last_llm_call.get(symbol)
 
-        if abs(position_size) > 0.0001:
-            return False
-
-        if rec and current_price > 0 and rec.get('price'):
-            delta = abs(current_price - rec['price']) / current_price
-            time_since_last = now - rec.get('timestamp', 0)
-
-            if delta < 0.0015 and time_since_last < 60:
-                return True
-            if delta < 0.003 and time_since_last < 90:
-                return True
-            if delta < 0.005 and time_since_last < 120:
+        # Skip low-confidence HOLD decisions (highest cost savings)
+        if decision_action == 'hold' and decision_confidence is not None:
+            if decision_confidence < 0.3:
+                logger.debug(f"  {symbol}: Skipping AI filter for low-confidence HOLD (conf: {decision_confidence:.2f} < 0.3)")
                 return True
 
+        # If no position and price hasn't changed much, skip
+        if abs(position_size) < 0.0001:
+            if rec and current_price > 0 and rec.get('price'):
+                delta = abs(current_price - rec['price']) / current_price
+                time_since_last = now - rec.get('timestamp', 0)
+
+                # More aggressive thresholds for no-position scenarios
+                if delta < 0.0015 and time_since_last < 60:  # <0.15% change in 60s
+                    return True
+                if delta < 0.003 and time_since_last < 90:  # <0.3% change in 90s
+                    return True
+                if delta < 0.005 and time_since_last < 120:  # <0.5% change in 120s
+                    return True
+        else:
+            # With position open, use more lenient thresholds but still skip if market is very stable
+            if rec and current_price > 0 and rec.get('price'):
+                delta = abs(current_price - rec['price']) / current_price
+                time_since_last = now - rec.get('timestamp', 0)
+
+                # For positions: skip if price change < 0.2% within 90s
+                if delta < 0.002 and time_since_last < 90:
+                    logger.debug(f"  {symbol}: Skipping AI filter (position open, stable market: {delta*100:.3f}% change in {time_since_last}s)")
+                    return True
+                # Or if price change < 0.3% within 120s
+                if delta < 0.003 and time_since_last < 120:
+                    logger.debug(f"  {symbol}: Skipping AI filter (position open, stable market: {delta*100:.3f}% change in {time_since_last}s)")
+                    return True
+
+        # If no recent call or too much time passed, don't skip
         if not rec or (now - rec.get('timestamp', 0)) > 180:
             return False
 
         return False
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Error in should_skip_llm_call: {e}")
         return False
 
 
@@ -114,8 +156,10 @@ def get_strategy_decision(processor, symbol: str, snapshot: Any, position_size: 
 
         if hasattr(processor.decision_provider, 'ai_filter'):
             try:
-                if should_skip_llm_call(processor, symbol, snapshot, position_size, cycle_count):
-                    logger.info(f"  {symbol}: Skipping AI filter (stable market / recent analysis)")
+                # Check if should skip based on decision type, confidence, and market stability
+                if should_skip_llm_call(processor, symbol, snapshot, position_size, cycle_count, 
+                                       decision_action=decision.action, decision_confidence=decision.confidence):
+                    logger.info(f"  {symbol}: Skipping AI filter (stable market / low-confidence HOLD / recent analysis)")
                     return decision
             except Exception:
                 pass
@@ -162,9 +206,18 @@ def get_strategy_decision(processor, symbol: str, snapshot: Any, position_size: 
             logger.info(
                 f"  {symbol}: Calling AI filter for {strategy_type.upper()} {decision.action.upper()} (strategy confidence: {decision.confidence:.2f})..."
             )
-            approved, ai_suggested_leverage, ai_confidence = processor.decision_provider.ai_filter.filter_signal(
-                snapshot, decision, position_size, equity, total_margin_used, all_symbols
-            )
+            # Use batcher if available, otherwise direct call
+            if hasattr(processor.decision_provider.ai_filter, 'batcher') and processor.decision_provider.ai_filter.batcher:
+                # Use batcher (will batch HOLD decisions, immediate for trades)
+                approved, ai_suggested_leverage, ai_confidence = processor.decision_provider.ai_filter.batcher.filter_signal(
+                    snapshot, decision, position_size, equity, total_margin_used, all_symbols,
+                    force_immediate=(decision.action in ['long', 'short', 'close'])
+                )
+            else:
+                # Direct call (pass symbol for caching)
+                approved, ai_suggested_leverage, ai_confidence = processor.decision_provider.ai_filter.filter_signal(
+                    snapshot, decision, position_size, equity, total_margin_used, all_symbols, symbol=symbol
+                )
             try:
                 processor.last_llm_call[symbol] = {
                     'price': get_price_from_snapshot(snapshot),
