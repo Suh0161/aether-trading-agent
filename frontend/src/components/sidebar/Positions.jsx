@@ -92,27 +92,25 @@ function Positions({ positions }) {
               
               const entryPrice = position.entryPrice || 0
               
-              // ENHANCED: Use WebSocket price from chart if available and fresh, otherwise use backend price
-              // This fixes the "stuck price" issue where position price doesn't update
+              // ENHANCED: Always use WebSocket price from chart if available (real-time), otherwise use backend price
+              // This ensures Exit Plan price matches the live chart price
               const coinSymbol = position.coin
               const wsPrice = getPrice(`${coinSymbol}/USDT`) || getPrice(coinSymbol)
               const backendPrice = position.currentPrice || 0
               
-              // Prefer WebSocket price if available and not stale, otherwise use backend price
-              let currentPrice = backendPrice
-              if (wsPrice && !isPriceStale(`${coinSymbol}/USDT`) && !isPriceStale(coinSymbol)) {
-                // WebSocket price is fresh, use it
-                currentPrice = wsPrice
-              } else if (wsPrice && backendPrice > 0) {
-                // WebSocket price exists but may be stale, use it if backend price seems stuck
-                // Check if backend price hasn't changed (stuck)
+              // Always prefer WebSocket price if available (it's real-time from Binance)
+              // Only fall back to backend price if WebSocket price doesn't exist
+              let currentPrice = wsPrice || backendPrice
+              
+              // If we have both prices and they differ significantly, prefer WebSocket (more current)
+              if (wsPrice && backendPrice > 0) {
                 const priceDiff = Math.abs(wsPrice - backendPrice) / backendPrice
-                if (priceDiff > 0.001) { // More than 0.1% difference
-                  // WebSocket price is different, likely more current
+                // If prices differ by more than 0.01%, WebSocket is likely more accurate
+                if (priceDiff > 0.0001) {
                   currentPrice = wsPrice
                 } else {
-                  // Prices are similar, use backend price
-                  currentPrice = backendPrice
+                  // Prices are very close, use WebSocket if available
+                  currentPrice = wsPrice || backendPrice
                 }
               }
               

@@ -1,8 +1,11 @@
 import { useEffect, useState, useRef } from 'react'
 import { createChart, ColorType } from 'lightweight-charts'
+import { usePriceContext } from '../contexts/PriceContext'
 import './Chart.css'
 
 function Chart({ symbol, trades = [], positions = [] }) {
+    // Get updatePrice from PriceContext
+    const { updatePrice: updatePriceContext } = usePriceContext()
     const [selectedCoin, setSelectedCoin] = useState(symbol || 'BTC/USDT')
     const [currentPrice, setCurrentPrice] = useState(null)
     const [priceChange, setPriceChange] = useState(0)
@@ -83,7 +86,8 @@ function Chart({ symbol, trades = [], positions = [] }) {
                 const updates = {}
                 const changeUpdates = {}
                 
-                await Promise.all(coinsToTrack.map(async (coinSymbol) => {
+                // Rate limit: process coins sequentially with small delay to prevent resource exhaustion
+                for (const coinSymbol of coinsToTrack) {
                     try {
                         const symbolFormatted = coinSymbol.replace('/', '')
                         // Use Binance Futures API
@@ -97,10 +101,13 @@ function Chart({ symbol, trades = [], positions = [] }) {
                         
                         updates[coinSymbol] = lastPrice
                         changeUpdates[coinSymbol] = change24h
+                        
+                        // Small delay between requests to prevent resource exhaustion
+                        await new Promise(resolve => setTimeout(resolve, 100))
                     } catch (error) {
                         console.error(`Price update failed for ${coinSymbol}:`, error)
                     }
-                }))
+                }
 
                 if (!isMounted) return
 
@@ -110,7 +117,7 @@ function Chart({ symbol, trades = [], positions = [] }) {
                 
                 // Update shared price context
                 Object.entries(updates).forEach(([symbol, price]) => {
-                    updatePrice(symbol, price)
+                    updatePriceContext(symbol, price)
                 })
 
                 // Update selected coin price for single view
@@ -446,14 +453,25 @@ function Chart({ symbol, trades = [], positions = [] }) {
             const tickerWsKey = `ticker-${coinSymbol}`
             
             // Close existing ticker WebSocket if any
-            if (tickerWsRefs.current[tickerWsKey]) {
-                tickerWsRefs.current[tickerWsKey].close()
+            const existingWs = tickerWsRefs.current[tickerWsKey]
+            if (existingWs) {
+                // Only close if WebSocket is in a state that can be closed
+                if (existingWs.readyState === WebSocket.CONNECTING || existingWs.readyState === WebSocket.OPEN) {
+                    existingWs._isCleaningUp = true
+                    existingWs.close()
+                }
                 delete tickerWsRefs.current[tickerWsKey]
             }
 
             // Connect to Binance Futures ticker stream for real-time last price
             const tickerWs = new WebSocket(`wss://fstream.binance.com/ws/${symbolFormatted}@ticker`)
             tickerWsRefs.current[tickerWsKey] = tickerWs
+            
+            let hasConnected = false // Track if WebSocket ever successfully connected
+
+            tickerWs.onopen = () => {
+                hasConnected = true
+            }
 
             tickerWs.onmessage = (event) => {
                 try {
@@ -466,7 +484,7 @@ function Chart({ symbol, trades = [], positions = [] }) {
                     setCoinPrices(prev => ({ ...prev, [coinSymbol]: lastPrice }))
                     
                     // Update shared price context for other components (Positions, etc.)
-                    updatePrice(coinSymbol, lastPrice)
+                    updatePriceContext(coinSymbol, lastPrice)
                     
                     // Update selected coin price for single view header
                     if (viewMode === 'single' && coinSymbol === selectedCoin) {
@@ -502,30 +520,58 @@ function Chart({ symbol, trades = [], positions = [] }) {
                         }
                     }
                 } catch (error) {
-                    console.error(`Ticker WebSocket error for ${coinSymbol}:`, error)
+                    console.error(`Ticker WebSocket message error for ${coinSymbol}:`, error)
                 }
             }
 
             tickerWs.onerror = (error) => {
-                console.error(`Ticker WebSocket error for ${coinSymbol}:`, error)
+                // Only log errors if WebSocket was previously connected (not just connection failures)
+                // This prevents spam from initial connection attempts
+                if (hasConnected) {
+                    console.error(`Ticker WebSocket error for ${coinSymbol}:`, error)
+                }
             }
 
-            tickerWs.onclose = () => {
-                // Reconnect after 3 seconds
-                setTimeout(() => {
-                    if (tickerWsRefs.current[tickerWsKey] === tickerWs) {
-                        delete tickerWsRefs.current[tickerWsKey]
-                    }
-                }, 3000)
+            tickerWs.onclose = (event) => {
+                // Ignore close events during cleanup to prevent unnecessary logging
+                if (tickerWs._isCleaningUp) {
+                    return
+                }
+                
+                // Only attempt reconnect if component is still mounted and WebSocket was ours
+                if (tickerWsRefs.current[tickerWsKey] === tickerWs) {
+                    delete tickerWsRefs.current[tickerWsKey]
+                    // Reconnection will be handled by useEffect re-running if dependencies change
+                }
             }
         })
 
         return () => {
-            // Cleanup ticker WebSockets
+            // Cleanup ticker WebSockets with a small delay to let connections establish
+            // This reduces "closed before connection established" errors
             Object.keys(tickerWsRefs.current).forEach(key => {
-                if (tickerWsRefs.current[key]) {
-                    tickerWsRefs.current[key].close()
-                    delete tickerWsRefs.current[key]
+                const ws = tickerWsRefs.current[key]
+                if (ws) {
+                    // Set cleanup flag immediately
+                    ws._isCleaningUp = true
+                    
+                    // If still connecting, wait a tiny bit before closing
+                    if (ws.readyState === WebSocket.CONNECTING) {
+                        // Give it 50ms to establish connection, then close
+                        setTimeout(() => {
+                            if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) {
+                                ws.close()
+                            }
+                            delete tickerWsRefs.current[key]
+                        }, 50)
+                    } else if (ws.readyState === WebSocket.OPEN) {
+                        // Already connected, close immediately
+                        ws.close()
+                        delete tickerWsRefs.current[key]
+                    } else {
+                        // Already closed/closing, just clean up
+                        delete tickerWsRefs.current[key]
+                    }
                 }
             })
         }
